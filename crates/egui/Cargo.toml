@@ -1,0 +1,20 @@
+[package]
+name = "pumicite_egui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy_ecs = { version = "0.17.0-dev" }
+bevy_app = { version = "0.17.0-dev" }
+bevy_window = { version = "0.17.0-dev" }
+bevy_asset = { version = "0.17.0-dev" }
+glam = "0.30"
+pumicite = { path = "../../" }
+bevy_pumicite = { path = "../bevy" }
+bytemuck = "1.23"
+tracing = "0.1"
+
+[dependencies.bevy_egui]
+version = "0.37"
+default-features = false
+features = ["manage_clipboard", "open_url", "default_fonts"]

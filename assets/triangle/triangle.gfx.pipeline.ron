@@ -1,0 +1,45 @@
+GraphicsPipeline(
+    shaders: {
+        Vertex: (
+            path: "triangle/triangle.spv",
+            entry_point: "vertexMain",
+        ),
+        Fragment: (
+            path: "triangle/triangle.spv",
+            entry_point: "fragmentMain",
+        ),
+    },
+    layout: Inline(
+        PipelineLayout(
+            push_constants: {
+                Vertex: (0, 8)
+            }
+        )
+    ),
+    vertex_bindings: {
+        0: (
+            stride: 24,
+            input_rate: Vertex,
+            attributes: {
+                0: (
+                    offset: 0,
+                    format: R32G32B32_SFLOAT,
+                ),
+                1: (
+                    offset: 12,
+                    format: R32G32B32_SFLOAT,
+                ),
+            }
+        )
+    },
+    attachments: [
+        (
+            blend_enable: true,
+            blend_equation: (
+                color: (One, Add, OneMinusSrcAlpha),
+                alpha: (One, Add, OneMinusSrcAlpha),
+            ),
+            format: B8G8R8A8_SRGB,
+        )
+    ]
+)

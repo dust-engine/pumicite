@@ -1,0 +1,34 @@
+[package]
+name = "pumicite_scene"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gltf = { version = "1.4.0", default-features = false, features = [
+  "KHR_lights_punctual",
+  "KHR_materials_transmission",
+  "KHR_materials_ior",
+  "KHR_materials_volume",
+  "KHR_materials_unlit",
+  "KHR_materials_emissive_strength",
+  "KHR_texture_transform",
+  "extras",
+  "extensions",
+  "names",
+  "utils",
+] }
+bevy_ecs = "0.17.0-dev"
+bevy_asset = "0.17.0-dev"
+bevy_scene = "0.17.0-dev"
+bevy_transform = "0.17.0-dev"
+bevy_reflect = "0.17.0-dev"
+bevy_tasks = "0.17.0-dev"
+bevy_app = "0.17.0-dev"
+thiserror = "2"
+bevy_pumicite = { path = "../bevy" }
+bytemuck = "1.23"
+image = { version = "0.25", features = ["png", "jpeg", "tiff"], default-features = false }
+glam = "0.30"
+tracing = "0.1"
+bitvec = "1"
+smallvec = "1.15"

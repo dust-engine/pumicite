@@ -1,0 +1,75 @@
+[package]
+name = "pumicite"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = [
+  "crates/*",
+]
+
+[dependencies]
+ash = { git = "https://github.com/0xbeefd1ed/ash", branch = "meta" }
+tracing = "0.1"
+vk-mem = { git = "https://github.com/gwihlidal/vk-mem-rs.git", branch = "bump-ash" }
+glam = "0.30"
+raw-window-handle = "0.6"
+smallvec = "1.15"
+bitvec = "1"
+log = { version = "0.4", features = ["kv"] }
+serde = { version = "1", features = ["derive"] }
+crossbeam-channel = "0.5"
+portable-atomic = "1.5"
+event-listener = "5"
+blocking = "1.6"
+pin-project-lite = "0.2"
+
+bevy_ecs = { version = "0.17.0-dev", optional = true }
+bevy_asset = { version = "0.17.0-dev", optional = true }
+bevy_reflect = { version = "0.17.0-dev", optional = true }
+
+[features]
+bevy = ["bevy_ecs", "bevy_asset", "bevy_reflect"]
+
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+raw-window-metal = "0.4"
+
+[patch.crates-io]
+bevy_a11y = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_ecs = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_app = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_window = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_platform = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_utils = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_transform = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_time = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_tasks = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_reflect = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_ptr = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_math = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_log = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_input = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_diagnostic = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_derive = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_winit = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_internal = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_asset = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_scene = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+
+
+bevy_pbr = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_render = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+bevy_core_pipeline = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+
+
+bevy = { git = "https://github.com/dust-engine/bevy", branch = "release-0.17.3" }
+
+[patch."https://github.com/ash-rs/ash.git"]
+ash = { git = "https://github.com/0xbeefd1ed/ash", branch = "meta" }
+
+[dev-dependencies]
+bytemuck = "1.23"
+bevy = { version = "0.17.0-dev", default-features=false, features=["bevy_winit", "bevy_log", "bevy_asset", "file_watcher", "multi_threaded", "bevy_scene"] }
+bevy_pumicite = { path = "./crates/bevy" }
+pumicite_egui = { path = "./crates/egui" }
+pumicite_scene = { path = "./crates/scene" }

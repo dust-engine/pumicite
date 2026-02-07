@@ -1,0 +1,42 @@
+[package]
+name = "bevy_pumicite"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tracing = "0.1"
+bevy_ecs = "0.17.0-dev"
+bevy_app = "0.17.0-dev"
+bevy_window = "0.17.0-dev"
+bevy_ptr = "0.17.0-dev"
+bevy_winit = "0.17.0-dev"
+bevy_asset = "0.17.0-dev"
+bevy_tasks = "0.17.0-dev"
+bevy_reflect = "0.17.0-dev"
+bevy_transform = "0.17.0-dev"
+bevy_internal = "0.17.0-dev"
+
+either = "1"
+async-lock = "3"
+glam = "0.30"
+pumicite = { path = "../../", features = ["bevy"] }
+raw-window-handle = "0.6"
+ron = "0.12"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+smallvec = "1.15"
+
+ktx2 = { version = "0.4", optional = true, default-features = false, features = ["std"] }
+ddsfile = { version = "0.5", optional = true }
+byteorder = { version = "1.5", optional = true }
+image = { version = "0.25", default-features = false, optional = true }
+
+[dev-dependencies]
+bevy = { version = "0.17.0-dev", default-features = false, features=["bevy_winit", "bevy_asset", "multi_threaded"] }
+
+[features]
+default = ["ktx2", "dds", "png", "jpeg", "tiff"]
+dds = ["ddsfile", "byteorder"]
+png = ["image", "image/png"]
+jpeg = ["image", "image/jpeg"]
+tiff = ["image", "image/tiff"]
