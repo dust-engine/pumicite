@@ -10,7 +10,7 @@
 //!
 //! # Implementation
 //!
-//! When you register a render set via [`PumiciteApp::add_render_set`](crate::PumiciteApp::add_render_set),
+//! When you register a render set via [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set),
 //! this build pass:
 //!
 //! 1. **Maps** the system set to include `prelude` and `submission` systems
@@ -22,7 +22,7 @@
 //! # Internal Use Only
 //!
 //! This module is an implementation detail. Users should interact with render sets
-//! through [`PumiciteApp::add_render_set`](crate::PumiciteApp::add_render_set) and
+//! through [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set) and
 //! [`RenderState`](crate::RenderState). This gives us the ability to fine-tune the
 //! scheduling of render systems, , the actual scheduling of the render systems
 //!
@@ -64,14 +64,14 @@ struct RenderSetMetaSystems {
 /// 2. Configures member systems to share the command encoder
 /// 3. Inserts a submission system that ends recording and submits
 #[derive(Debug, Default)]
-pub(super) struct RenderSetsPass {
+pub(super) struct SubmissionSetsPass {
     /// Maps render set to its associated queue component ID.
-    pub(crate) render_sets_to_queue: HashMap<InternedSystemSet, ComponentId>,
+    pub(crate) submission_sets_to_queue: HashMap<InternedSystemSet, ComponentId>,
     /// Maps render set to its prelude/submission meta-systems.
     render_sets_to_meta_systems: HashMap<SystemSetKey, RenderSetMetaSystems>,
 }
 
-impl ScheduleBuildPass for RenderSetsPass {
+impl ScheduleBuildPass for SubmissionSetsPass {
     type EdgeOptions = ();
 
     fn add_dependency(
@@ -89,7 +89,7 @@ impl ScheduleBuildPass for RenderSetsPass {
         graph: &mut ScheduleGraph,
     ) -> impl Iterator<Item = SystemKey> {
         let interned_set = graph.system_sets.get(set).unwrap();
-        if !self.render_sets_to_queue.contains_key(&interned_set) {
+        if !self.submission_sets_to_queue.contains_key(&interned_set) {
             return Either::Left(std::iter::empty()); // not a system set.
         };
 
@@ -114,7 +114,7 @@ impl ScheduleBuildPass for RenderSetsPass {
         dependency_flattened: &bevy_ecs::schedule::graph::DiGraph<NodeId>,
     ) -> impl Iterator<Item = (bevy_ecs::schedule::NodeId, bevy_ecs::schedule::NodeId)> {
         let interned_set = graph.system_sets.get(set).unwrap();
-        let Some(&queue_component_id) = self.render_sets_to_queue.get(&interned_set) else {
+        let Some(&queue_component_id) = self.submission_sets_to_queue.get(&interned_set) else {
             return Either::Left(std::iter::empty()); // not a system set.
         };
 

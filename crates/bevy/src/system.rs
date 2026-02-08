@@ -6,7 +6,7 @@
 //!
 //! # Command Encoding Workflow
 //!
-//! When you add a system to a render set (via [`PumiciteApp::add_render_set`](crate::PumiciteApp::add_render_set)),
+//! When you add a system to a render set (via [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set)),
 //! the following happens automatically:
 //!
 //! 1. **Prelude**: A command buffer is allocated and recording begins
@@ -71,7 +71,7 @@ use super::queue::Queue;
 /// - Timeline synchronization
 ///
 /// This resource is created automatically when you call
-/// [`PumiciteApp::add_render_set`](crate::PumiciteApp::add_render_set) and should
+/// [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set) and should
 /// not be accessed directly.
 #[derive(Resource)]
 pub(crate) struct RenderSetSharedState {
@@ -128,7 +128,7 @@ unsafe impl Sync for RenderSetSharedState {}
 /// # Requirements
 ///
 /// This parameter is only valid for systems added to a render set via
-/// [`PumiciteApp::add_render_set`](crate::PumiciteApp::add_render_set).
+/// [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set).
 ///
 /// # Panics
 ///

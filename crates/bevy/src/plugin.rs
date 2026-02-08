@@ -16,7 +16,7 @@ use crate::{
     DescriptorHeap, shader::ShaderModule, staging::AsyncTransfer, swapchain::SwapchainSet,
 };
 
-use super::pass::RenderSetsPass;
+use super::pass::SubmissionSetsPass;
 use super::queue::QueueConfiguration;
 use pumicite::{
     Device, Extension, Instance, MissingFeatureError,
@@ -259,11 +259,11 @@ impl Plugin for PumicitePlugin {
         app.get_schedule_mut(PostUpdate)
             .as_mut()
             .unwrap()
-            .add_build_pass(super::pass::RenderSetsPass::default());
+            .add_build_pass(super::pass::SubmissionSetsPass::default());
 
-        app.add_render_set::<super::queue::RenderQueue>(DefaultRenderSet);
-        app.add_render_set::<super::queue::TransferQueue>(DefaultTransferSet);
-        app.add_render_set::<super::queue::ComputeQueue>(DefaultComputeSet);
+        app.add_submission_set::<super::queue::RenderQueue>(DefaultRenderSet);
+        app.add_submission_set::<super::queue::TransferQueue>(DefaultTransferSet);
+        app.add_submission_set::<super::queue::ComputeQueue>(DefaultComputeSet);
         app.configure_sets(
             PostUpdate,
             (
@@ -520,7 +520,7 @@ pub trait PumiciteApp {
     /// # Type Parameters
     ///
     /// - `Q`: Queue marker type (e.g., [`RenderQueue`](crate::queue::RenderQueue), [`ComputeQueue`](crate::queue::ComputeQueue) )
-    fn add_render_set<Q: 'static>(&mut self, set: impl SystemSet + Copy) -> &mut Self;
+    fn add_submission_set<Q: 'static>(&mut self, set: impl SystemSet + Copy) -> &mut Self;
 }
 
 fn get_device_builder(app: &mut App) -> Mut<'_, DeviceBuilder> {
@@ -643,16 +643,16 @@ impl PumiciteApp for App {
         device_builder.enable_feature::<T>(selector)
     }
 
-    fn add_render_set<Q: 'static>(&mut self, set: impl SystemSet + Copy) -> &mut Self {
+    fn add_submission_set<Q: 'static>(&mut self, set: impl SystemSet + Copy) -> &mut Self {
         let queue_config = self.world().resource::<QueueConfiguration>();
         let component_id = queue_config
             .component_id_of_queue::<Q>()
             .expect("Please register this queue first");
 
         let schedule = self.get_schedule_mut(PostUpdate).unwrap();
-        let build_pass = schedule.get_build_pass_mut::<RenderSetsPass>().unwrap();
+        let build_pass = schedule.get_build_pass_mut::<SubmissionSetsPass>().unwrap();
         build_pass
-            .render_sets_to_queue
+            .submission_sets_to_queue
             .insert(set.intern(), component_id);
         self
     }
