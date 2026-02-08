@@ -184,10 +184,11 @@ impl Plugin for PumicitePlugin {
                             if x.properties()
                                 .get::<vk::PhysicalDeviceDriverProperties>()
                                 .driver_id
-                                == vk::DriverId::from_raw(28)
+                                == vk::DriverId::MESA_KOSMICKRISP
                             {
-                                // is KosmicKrisp
-                                score -= 1000;
+                                // is KosmicKrisp.
+                                // prefer KosmicKrisp because it's compliant.
+                                score += 1000;
                             }
                         }
                         match &self.physical_device {
@@ -504,15 +505,15 @@ pub trait PumiciteApp {
         priority: f32,
     ) -> Result<(), QueueNotFoundError>;
 
-    /// Registers a system set as a render set bound to a specific queue.
+    /// Registers a system set as a submission set bound to a specific queue.
     ///
-    /// Systems in a render set share command encoding state and are submitted
+    /// Systems in a submission set share command encoding state and are submitted
     /// to the GPU together in a single `vkQueueSubmit` call. There is a one-to-one
-    /// mapping between render sets and `vkQueueSubmit` calls.
+    /// mapping between submission sets and `vkQueueSubmit` calls.
     ///
     /// # Command Encoding
     ///
-    /// All systems in the render set:
+    /// All systems in the submission set:
     /// - Share a single command pool
     /// - Execute serially (commands are recorded in system order)
     /// - Use [`RenderState`](crate::RenderState) to record commands

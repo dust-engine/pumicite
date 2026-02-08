@@ -1,7 +1,7 @@
-//! Render set schedule build pass implementation.
+//! Submission set schedule build pass implementation.
 //!
 //! This module provides [`RenderSetsPass`], a custom Bevy schedule build pass that
-//! transforms render sets into a sequence of systems with shared command encoding state.
+//! transforms submission sets into a sequence of systems with shared command encoding state.
 //!
 //! By default, this render pass is added to the [`PostUpdate`](bevy::app::PostUpdate)
 //! schedule, in the hope to maximize overlap between rendering and other work that the
@@ -10,7 +10,7 @@
 //!
 //! # Implementation
 //!
-//! When you register a render set via [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set),
+//! When you register a submission set via [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set),
 //! this build pass:
 //!
 //! 1. **Maps** the system set to include `prelude` and `submission` systems
@@ -21,7 +21,7 @@
 //!
 //! # Internal Use Only
 //!
-//! This module is an implementation detail. Users should interact with render sets
+//! This module is an implementation detail. Users should interact with submission sets
 //! through [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set) and
 //! [`RenderState`](crate::RenderState). This gives us the ability to fine-tune the
 //! scheduling of render systems, , the actual scheduling of the render systems
@@ -51,24 +51,24 @@ struct RenderSetMetaSystems {
     submission: SystemKey,
 }
 
-/// Schedule build pass that configures render sets for GPU command encoding.
+/// Schedule build pass that configures submission sets for GPU command encoding.
 ///
 /// This pass is automatically applied to the [`PostUpdate`](bevy::app::PostUpdate) schedule
-/// when render sets are registered.
+/// when submission sets are registered.
 /// It transforms system sets into sequences that share command encoding state.
 ///
 /// # Internal Implementation
 ///
-/// For each registered render set, this pass:
+/// For each registered submission set, this pass:
 /// 1. Inserts a prelude system that begins command recording
 /// 2. Configures member systems to share the command encoder
 /// 3. Inserts a submission system that ends recording and submits
 #[derive(Debug, Default)]
 pub(super) struct SubmissionSetsPass {
-    /// Maps render set to its associated queue component ID.
+    /// Maps submission set to its associated queue component ID.
     pub(crate) submission_sets_to_queue: HashMap<InternedSystemSet, ComponentId>,
-    /// Maps render set to its prelude/submission meta-systems.
-    render_sets_to_meta_systems: HashMap<SystemSetKey, RenderSetMetaSystems>,
+    /// Maps submission set to its prelude/submission meta-systems.
+    submission_sets_to_meta_systems: HashMap<SystemSetKey, RenderSetMetaSystems>,
 }
 
 impl ScheduleBuildPass for SubmissionSetsPass {
@@ -95,7 +95,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
 
         let submission = add_system(graph, world, super::system::submission_system);
         let prelude = add_system(graph, world, super::system::prelude_system);
-        self.render_sets_to_meta_systems.insert(
+        self.submission_sets_to_meta_systems.insert(
             set,
             RenderSetMetaSystems {
                 prelude,
@@ -144,7 +144,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
             );
             shared_state_component_id
         };
-        let meta_systems = self.render_sets_to_meta_systems.get(&set).unwrap();
+        let meta_systems = self.submission_sets_to_meta_systems.get(&set).unwrap();
 
         let mut queue_config = QueueConfig(queue_component_id);
         let mut shared_config = RenderSetSharedStateConfig::new(shared_state_component_id);

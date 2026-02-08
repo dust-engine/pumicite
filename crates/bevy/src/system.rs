@@ -2,18 +2,18 @@
 //!
 //! This module provides the system parameter [`RenderState`] for recording GPU commands
 //! within Bevy systems. It manages command buffer allocation, encoding, and submission
-//! as part of the render set system.
+//! as part of the submission set system.
 //!
 //! # Command Encoding Workflow
 //!
-//! When you add a system to a render set (via [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set)),
+//! When you add a system to a submission set (via [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set)),
 //! the following happens automatically:
 //!
 //! 1. **Prelude**: A command buffer is allocated and recording begins
 //! 2. **Your systems**: Use [`RenderState`] to record commands
 //! 3. **Submission**: The command buffer is ended and submitted to the queue
 //!
-//! All systems in the same render set share a single command buffer and execute
+//! All systems in the same submission set share a single command buffer and execute
 //! serially. Commands are recorded in system execution order.
 //!
 //! # Example
@@ -33,7 +33,7 @@
 //!     });
 //! }
 //!
-//! // Add to a render set
+//! // Add to a submission set
 //! app.add_systems(PostUpdate, my_render_system.in_set(DefaultRenderSet));
 //! ```
 //!
@@ -63,9 +63,9 @@ use std::{ffi::CString, mem::MaybeUninit};
 
 use super::queue::Queue;
 
-/// Internal state shared by all systems in a render set.
+/// Internal state shared by all systems in a submission set.
 ///
-/// Each render set has its own `RenderSetSharedState` instance, managing:
+/// Each submission set has its own `RenderSetSharedState` instance, managing:
 /// - Command pool and buffer allocation
 /// - Command encoding state
 /// - Timeline synchronization
@@ -89,7 +89,7 @@ pub(crate) struct RenderSetSharedState {
     timeline: Timeline,
     /// Current stage index for barrier emission.
     stage_index: u32,
-    /// Debug name for this render set.
+    /// Debug name for this submission set.
     name: CString,
 }
 impl Drop for RenderSetSharedState {
@@ -119,20 +119,20 @@ impl RenderSetSharedState {
 unsafe impl Send for RenderSetSharedState {}
 unsafe impl Sync for RenderSetSharedState {}
 
-/// System parameter for recording GPU commands within a render set.
+/// System parameter for recording GPU commands within a submission set.
 ///
 /// `RenderState` provides access to the shared command encoder for systems
-/// in a render set. Use it to record rendering, compute, and transfer commands
+/// in a submission set. Use it to record rendering, compute, and transfer commands
 /// that will be submitted together with other systems in the same set.
 ///
 /// # Requirements
 ///
-/// This parameter is only valid for systems added to a render set via
+/// This parameter is only valid for systems added to a submission set via
 /// [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set).
 ///
 /// # Panics
 ///
-/// Panics if used in a system that isn't part of a render set.
+/// Panics if used in a system that isn't part of a submission set.
 ///
 /// # Example
 ///
@@ -151,7 +151,7 @@ unsafe impl Sync for RenderSetSharedState {}
 ///     });
 /// }
 ///
-/// // Add to a render set
+/// // Add to a submission set
 /// app.add_systems(PostUpdate, my_render_system.in_set(DefaultRenderSet));
 /// ```
 pub struct RenderState<'world> {
