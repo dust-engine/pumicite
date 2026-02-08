@@ -15,19 +15,10 @@ use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use bevy_pumicite::{
-    DefaultRenderSet, PumiciteApp, RenderState,
-    shader::{ComputePipeline, GraphicsPipeline},
-    staging::UniformRingBuffer,
-    swapchain::SwapchainImage,
-};
+use bevy_pumicite::prelude::*;
 use glam::{IVec2, Mat4, Vec3, Vec3Swizzles};
 use pumicite::buffer::RingBufferSuballocation;
-use pumicite::{
-    Sampler,
-    image::{FullImageView, Image},
-    prelude::*,
-};
+use pumicite::{Sampler, image::{FullImageView, Image}};
 use pumicite_egui::{EguiContexts, EguiPrimaryContextPass, EguiRenderSet, egui};
 
 // LUT dimensions (must match shader constants)
@@ -50,7 +41,7 @@ fn main() {
         .unwrap();
     app.world_mut()
         .entity_mut(primary_window)
-        .insert(bevy_pumicite::swapchain::SwapchainConfig {
+        .insert(SwapchainConfig {
             image_usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT,
             ..Default::default()
         });

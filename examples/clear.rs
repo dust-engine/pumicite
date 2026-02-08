@@ -1,6 +1,5 @@
 use bevy::prelude::*;
-use bevy_pumicite::{DefaultRenderSet, RenderState, swapchain::SwapchainImage};
-use pumicite::prelude::*;
+use bevy_pumicite::prelude::*;
 fn main() {
     let mut app = bevy::app::App::new();
     app.add_plugins(bevy_pumicite::DefaultPlugins);
@@ -13,7 +12,7 @@ fn main() {
         .unwrap();
     app.world_mut()
         .entity_mut(primary_window)
-        .insert(bevy_pumicite::swapchain::SwapchainConfig {
+        .insert(SwapchainConfig {
             image_usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT,
             ..Default::default()
         });

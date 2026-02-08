@@ -7,13 +7,10 @@ use bevy::{
     ecs::prelude::*,
     transform::components::{GlobalTransform, Transform},
 };
-use bevy_pumicite::{
-    DefaultRenderSet, DescriptorHeap, PumiciteApp, RenderState, loader::TextureAsset,
-    shader::GraphicsPipeline, staging::BufferInitializer, swapchain::SwapchainImage,
-};
+use bevy_pumicite::{loader::TextureAsset, prelude::*};
 use bytemuck::{AnyBitPattern, NoUninit};
 use glam::{IVec2, Mat4, UVec2, Vec2, Vec3, Vec3Swizzles, Vec4};
-use pumicite::{buffer::RingBufferSuballocation, image::FullImageView, prelude::*};
+use pumicite::{buffer::RingBufferSuballocation, image::{FullImageView, Image}};
 use pumicite_scene::gltf::{self, GltfMaterialData};
 use std::mem::size_of;
 
@@ -33,7 +30,7 @@ fn main() {
         .next()
         .unwrap();
     app.world_mut().entity_mut(primary_window).insert((
-        bevy_pumicite::swapchain::SwapchainConfig {
+        SwapchainConfig {
             image_usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT,
             ..Default::default()
         },

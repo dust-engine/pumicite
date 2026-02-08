@@ -2,15 +2,12 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use bevy::prelude::*;
-use bevy_pumicite::shader::ComputePipeline;
-use bevy_pumicite::{DefaultRenderSet, RenderState, swapchain::SwapchainImage};
-use bevy_pumicite::{DescriptorHeap, PumiciteApp};
+use bevy_pumicite::prelude::*;
 use bevy_reflect::TypePath;
 use glam::UVec3;
 use pumicite::bindless::ResourceHeap;
 use pumicite::image::Image;
 use pumicite::pipeline::Pipeline;
-use pumicite::prelude::*;
 fn main() {
     let mut app = bevy::app::App::new();
     app.add_plugins(bevy_pumicite::DefaultPlugins);
@@ -23,7 +20,7 @@ fn main() {
         .unwrap();
     app.world_mut()
         .entity_mut(primary_window)
-        .insert(bevy_pumicite::swapchain::SwapchainConfig {
+        .insert(SwapchainConfig {
             image_usage: vk::ImageUsageFlags::TRANSFER_DST,
             ..Default::default()
         });

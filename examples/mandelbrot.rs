@@ -1,11 +1,7 @@
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
-use bevy_pumicite::PumiciteApp;
-use bevy_pumicite::shader::ComputePipeline;
-use bevy_pumicite::staging::UniformRingBuffer;
-use bevy_pumicite::{DefaultRenderSet, RenderState, swapchain::SwapchainImage};
-use pumicite::prelude::*;
+use bevy_pumicite::prelude::*;
 
 const ZOOM_SPEED: f32 = 0.5;
 const MOVE_SPEED: f32 = 500.0;
@@ -22,7 +18,7 @@ fn main() {
         .unwrap();
     app.world_mut()
         .entity_mut(primary_window)
-        .insert(bevy_pumicite::swapchain::SwapchainConfig {
+        .insert(SwapchainConfig {
             image_usage: vk::ImageUsageFlags::TRANSFER_DST
                 | vk::ImageUsageFlags::COLOR_ATTACHMENT
                 | vk::ImageUsageFlags::STORAGE,

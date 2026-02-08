@@ -1,11 +1,7 @@
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::*;
-use bevy_pumicite::PumiciteApp;
-use bevy_pumicite::shader::GraphicsPipeline;
-use bevy_pumicite::staging::DeviceLocalRingBuffer;
-use bevy_pumicite::{DefaultRenderSet, RenderState, swapchain::SwapchainImage};
+use bevy_pumicite::prelude::*;
 use glam::{IVec2, Vec3Swizzles};
-use pumicite::prelude::*;
 fn main() {
     let mut app = bevy::app::App::new();
     app.add_plugins(bevy_pumicite::DefaultPlugins);

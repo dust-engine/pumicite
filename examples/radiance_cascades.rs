@@ -2,11 +2,8 @@ use bevy::input::mouse::MouseButton;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use bevy_pumicite::{
-    DefaultRenderSet, PumiciteApp, RenderState, shader::ComputePipeline,
-    staging::UniformRingBuffer, swapchain::SwapchainImage,
-};
-use pumicite::{image::FullImageView, image::Image, prelude::*};
+use bevy_pumicite::prelude::*;
+use pumicite::image::{FullImageView, Image};
 use pumicite_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 const BASE_RAY_COUNT: u32 = 4;
@@ -22,7 +19,7 @@ fn main() {
         .unwrap();
     app.world_mut()
         .entity_mut(primary_window)
-        .insert(bevy_pumicite::swapchain::SwapchainConfig {
+        .insert(SwapchainConfig {
             image_usage: vk::ImageUsageFlags::TRANSFER_DST
                 | vk::ImageUsageFlags::COLOR_ATTACHMENT
                 | vk::ImageUsageFlags::STORAGE,

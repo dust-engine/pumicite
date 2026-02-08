@@ -1,8 +1,6 @@
-use ash::vk;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use bevy_pumicite::{DefaultRenderSet, RenderState, swapchain::SwapchainImage};
-use pumicite::prelude::*;
+use bevy_pumicite::prelude::*;
 use pumicite_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 fn main() {

@@ -102,6 +102,25 @@ pub use queue::Queue;
 pub use surface::SurfacePlugin;
 pub use system::RenderState;
 
+/// Convenience re-exports for the most commonly used types.
+pub mod prelude {
+    pub use pumicite::prelude::*;
+
+    pub use crate::{
+        DescriptorHeap,
+        PumiciteApp,
+        DefaultComputeSet,
+        DefaultRenderSet,
+        DefaultTransferSet,
+        RenderState,
+        shader::{ComputePipeline, GraphicsPipeline},
+        staging::{
+            BufferInitializer, DeviceLocalRingBuffer, HostVisibleRingBuffer, UniformRingBuffer,
+        },
+        swapchain::{SwapchainConfig, SwapchainImage},
+    };
+}
+
 /// A plugin group that configures Bevy with Pumicite as the rendering backend.
 ///
 /// This is equivalent to [`bevy::DefaultPlugins`] but with
