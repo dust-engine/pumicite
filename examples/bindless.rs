@@ -2,10 +2,10 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use bevy::prelude::*;
-use bevy_reflect::TypePath;
 use bevy_pumicite::shader::ComputePipeline;
 use bevy_pumicite::{DefaultRenderSet, RenderState, swapchain::SwapchainImage};
 use bevy_pumicite::{DescriptorHeap, PumiciteApp};
+use bevy_reflect::TypePath;
 use glam::UVec3;
 use pumicite::bindless::ResourceHeap;
 use pumicite::image::Image;

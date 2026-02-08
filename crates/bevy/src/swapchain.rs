@@ -117,13 +117,24 @@ impl Plugin for SwapchainPlugin {
         app.add_device_extension::<KhrSwapchain>().unwrap();
 
         app.add_device_extension::<ExtSurfaceMaintenance1>().ok();
-        app.add_device_extension::<ExtSwapchainMaintenance1>().ok();
         app.add_device_extension::<ExtSwapchainMutableFormat>()
             .unwrap();
-        app.enable_feature::<vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT>(|x| {
-            &mut x.swapchain_maintenance1
-        })
-        .ok();
+        if !(app
+            .add_device_extension::<ExtSwapchainMaintenance1>()
+            .is_ok()
+            && app
+                .enable_feature::<vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT>(|x| {
+                    &mut x.swapchain_maintenance1
+                })
+                .is_ok())
+        {
+            // Without VK_EXT_swapchain_maintenance1, dropping a swapchain is techncially UB because
+            // there's no way to ensure that the vkQueuePresentKHR has finished before we're allowed
+            // to drop the semaphore used for that presentation.
+            tracing::warn!(
+                "VK_EXT_swapchain_maintenance1 is missing from this Vulkan implementation. Without this extension, dropping a swapchain is technically undefined behavior."
+            )
+        }
 
         app.add_systems(
             bevy_app::PostUpdate,

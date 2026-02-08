@@ -8,7 +8,7 @@ use bevy::{
     transform::components::{GlobalTransform, Transform},
 };
 use bevy_pumicite::{
-    DefaultRenderSet, DescriptorHeap, RenderState, PumiciteApp, loader::TextureAsset,
+    DefaultRenderSet, DescriptorHeap, PumiciteApp, RenderState, loader::TextureAsset,
     shader::GraphicsPipeline, staging::BufferInitializer, swapchain::SwapchainImage,
 };
 use bytemuck::{AnyBitPattern, NoUninit};

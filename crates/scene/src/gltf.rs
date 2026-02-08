@@ -13,7 +13,6 @@ use bevy_ecs::{
     relationship::RelatedSpawner,
     world::{EntityWorldMut, FromWorld, World},
 };
-use bevy_reflect::Reflect;
 use bevy_pumicite::{
     DescriptorHeap,
     loader::TextureAsset,
@@ -24,6 +23,7 @@ use bevy_pumicite::{
     },
     staging::AsyncTransferGuard,
 };
+use bevy_reflect::Reflect;
 use bevy_tasks::ConditionalSendFuture;
 use bevy_transform::components::{GlobalTransform, Transform};
 use bytemuck::{AnyBitPattern, NoUninit};

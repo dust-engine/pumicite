@@ -75,16 +75,18 @@ pub struct DefaultTransferSet;
 /// Strategy for selecting a Vulkan physical device.
 ///
 /// When multiple GPUs are available, this enum determines which one to use.
-#[derive(Default)]
 pub enum PhysicalDeviceSearchStrategy {
-    /// Prefer discrete GPUs for maximum performance.
-    ///
-    /// This is the default strategy.
-    #[default]
-    Performance,
+    /// Automatically select a physical device.
+    Auto {
+        /// When both integrated GPU and discrete GPU are present:
+        /// - If set to true: prefer GPUs marked as [`vk::PhysicalDeviceType::INTEGRATED_GPU`]
+        /// - If set to false: prefer GPUs marked as [`vk::PhysicalDeviceType::DISCRETE_GPU`]
+        prefer_integrated: bool,
 
-    /// Prefer integrated GPUs for lower power consumption.
-    LowPower,
+        /// When multiple Vulkan implementations exist for the same GPU, prefer
+        /// drivers in the order that they were specified in this list.
+        preferred_drivers: smallvec::SmallVec<[vk::DriverId; 4]>,
+    },
 
     /// Select a specific GPU by its index in the enumerated device list.
     ///
@@ -148,7 +150,41 @@ pub struct PumicitePlugin {
 impl Default for PumicitePlugin {
     fn default() -> Self {
         Self {
-            physical_device: Default::default(),
+            physical_device: PhysicalDeviceSearchStrategy::Auto {
+                prefer_integrated: false,
+                preferred_drivers: {
+                    #[cfg(target_vendor = "apple")]
+                    {
+                        // Apple platforms: prefer KosmicKrisp over MoltenVK
+                        smallvec::smallvec![vk::DriverId::MESA_KOSMICKRISP, vk::DriverId::MOLTENVK,]
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        smallvec::smallvec![
+                            vk::DriverId::MESA_RADV,
+                            vk::DriverId::AMD_PROPRIETARY,
+                            vk::DriverId::NVIDIA_PROPRIETARY,
+                        ]
+                    }
+                    #[cfg(target_os = "windows")]
+                    {
+                        // Windows: prefer proprietary drivers
+                        smallvec::smallvec![
+                            vk::DriverId::AMD_PROPRIETARY,
+                            vk::DriverId::NVIDIA_PROPRIETARY,
+                            vk::DriverId::INTEL_PROPRIETARY_WINDOWS,
+                        ]
+                    }
+                    #[cfg(not(any(
+                        target_os = "windows",
+                        target_os = "linux",
+                        target_vendor = "apple"
+                    )))]
+                    {
+                        smallvec::smallvec![vk::DriverId::from_raw(0),]
+                    }
+                },
+            },
             resource_heap_size: 1024,
             sampler_heap_size: 128,
         }
@@ -171,47 +207,38 @@ impl Plugin for PumicitePlugin {
             .unwrap()
             .collect::<Vec<_>>();
         let physical_device_index = match &self.physical_device {
-            PhysicalDeviceSearchStrategy::LowPower | PhysicalDeviceSearchStrategy::Performance => {
-                physical_devices
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .map(|(i, x)| {
-                        let mut score = 0;
+            PhysicalDeviceSearchStrategy::Auto {
+                prefer_integrated,
+                preferred_drivers,
+            } => physical_devices
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, device)| {
+                    let device_type = device.properties().device_type;
+                    let driver_id = device
+                        .properties()
+                        .get::<vk::PhysicalDeviceDriverProperties>()
+                        .driver_id;
 
-                        #[cfg(target_vendor = "apple")]
-                        {
-                            if x.properties()
-                                .get::<vk::PhysicalDeviceDriverProperties>()
-                                .driver_id
-                                == vk::DriverId::MESA_KOSMICKRISP
-                            {
-                                // is KosmicKrisp.
-                                // prefer KosmicKrisp because it's compliant.
-                                score += 1000;
-                            }
-                        }
-                        match &self.physical_device {
-                            PhysicalDeviceSearchStrategy::Performance
-                                if x.properties().device_type
-                                    == vk::PhysicalDeviceType::DISCRETE_GPU =>
-                            {
-                                score += 100;
-                            }
-                            PhysicalDeviceSearchStrategy::LowPower
-                                if x.properties().device_type
-                                    == vk::PhysicalDeviceType::INTEGRATED_GPU =>
-                            {
-                                score += 100;
-                            }
-                            _ => {}
-                        }
-                        (i, score)
-                    })
-                    .max_by_key(|x| x.1)
-                    .map(|x| x.0)
-                    .unwrap_or_default()
-            }
+                    let is_real_gpu = matches!(
+                        device_type,
+                        vk::PhysicalDeviceType::INTEGRATED_GPU
+                            | vk::PhysicalDeviceType::DISCRETE_GPU
+                    );
+                    let preferred_type = if *prefer_integrated {
+                        device_type == vk::PhysicalDeviceType::INTEGRATED_GPU
+                    } else {
+                        device_type == vk::PhysicalDeviceType::DISCRETE_GPU
+                    };
+                    let driver_rank = preferred_drivers
+                        .iter()
+                        .position(|&d| d == driver_id)
+                        .map_or(0, |pos| (preferred_drivers.len() - pos) as i32);
+
+                    (is_real_gpu, preferred_type, driver_rank)
+                })
+                .map(|(i, _)| i)
+                .unwrap_or_default(),
             PhysicalDeviceSearchStrategy::Index(i) => *i,
             PhysicalDeviceSearchStrategy::Callback(callback) => callback(&physical_devices),
         };

@@ -16,7 +16,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use bevy_pumicite::{
-    DefaultRenderSet, RenderState, PumiciteApp,
+    DefaultRenderSet, PumiciteApp, RenderState,
     shader::{ComputePipeline, GraphicsPipeline},
     staging::UniformRingBuffer,
     swapchain::SwapchainImage,

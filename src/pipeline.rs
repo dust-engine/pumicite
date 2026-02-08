@@ -347,7 +347,7 @@ pub struct PipelineLayout {
     device: Device,
     handle: vk::PipelineLayout,
     /// Keep descriptor set layouts alive
-    _descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>>
+    _descriptor_set_layouts: Vec<Arc<DescriptorSetLayout>>,
 }
 
 impl PipelineLayout {
@@ -360,7 +360,7 @@ impl PipelineLayout {
     /// - `flags`: Layout creation flags.
     pub fn new<'a>(
         device: Device,
-        set_layouts:  Vec<Arc<DescriptorSetLayout>>,
+        set_layouts: Vec<Arc<DescriptorSetLayout>>,
         push_constant_ranges: &[vk::PushConstantRange],
         flags: vk::PipelineLayoutCreateFlags,
     ) -> VkResult<Self> {

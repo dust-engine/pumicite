@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use bevy_pumicite::{
-    DefaultRenderSet, RenderState, PumiciteApp, shader::ComputePipeline,
+    DefaultRenderSet, PumiciteApp, RenderState, shader::ComputePipeline,
     staging::UniformRingBuffer, swapchain::SwapchainImage,
 };
 use pumicite::{image::FullImageView, image::Image, prelude::*};
