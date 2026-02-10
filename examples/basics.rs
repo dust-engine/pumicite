@@ -65,7 +65,7 @@ pub fn main() {
         );
         yield_now().await;
 
-        encoder.clear_color_image(
+        encoder.clear_color_image_with_layout(
             &*image,
             &vk::ClearColorValue {
                 uint32: [0, 0, 1, 2],

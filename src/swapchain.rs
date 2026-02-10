@@ -215,6 +215,7 @@ impl SwapchainInner {
                             .ok();
                         command_buffer
                     },
+                    last_present_queue: vk::Queue::null(),
                 };
                 Ok(Some(Box::new(img)))
             })
@@ -352,7 +353,7 @@ impl Swapchain {
         }
 
         unsafe {
-            let (image, semaphore, wait_value) = image.into_inner();
+            let (mut image, semaphore, wait_value) = image.into_inner();
             let indice = image.indice;
             assert!(self.images[indice as usize].is_none());
             {
@@ -398,6 +399,11 @@ impl Swapchain {
                 .device()
                 .feature::<vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT>()
                 .is_some_and(|x| x.swapchain_maintenance1 == vk::TRUE);
+            if !has_maintenance_1 {
+                // Workaround: when we don't have VK_EXT_swapchain_maintenance1, set
+                // last_present_queue to be the last presented queue.
+                image.last_present_queue = queue.vk_handle();
+            }
             self.device().queue_submit2(
                 queue.vk_handle(),
                 &[vk::SubmitInfo2::default()
@@ -477,6 +483,9 @@ pub struct SwapchainImageInner {
 
     acquire_semaphore: SharedSemaphore,
     present_semaphore: SharedSemaphore,
+
+    /// Workaround for when implementation does not have VK_EXT_swapchain_maintenance1.
+    last_present_queue: vk::Queue,
 }
 
 impl SwapchainImageInner {
@@ -501,6 +510,16 @@ impl Drop for SwapchainImageInner {
                 self.swapchain
                     .device
                     .destroy_image_view(self.srgb_view.0, None);
+            }
+        }
+        if self.last_present_queue != vk::Queue::null() {
+            unsafe {
+                // Workaround: when VK_EXT_swapchain_maintenance1 is unavailable,
+                // we conservatively wait for the queue itself to become idle.
+                self.swapchain
+                    .device
+                    .queue_wait_idle(self.last_present_queue)
+                    .unwrap();
             }
         }
     }

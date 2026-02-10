@@ -107,11 +107,7 @@ pub mod prelude {
     pub use pumicite::prelude::*;
 
     pub use crate::{
-        DescriptorHeap,
-        PumiciteApp,
-        DefaultComputeSet,
-        DefaultRenderSet,
-        DefaultTransferSet,
+        DefaultComputeSet, DefaultRenderSet, DefaultTransferSet, DescriptorHeap, PumiciteApp,
         RenderState,
         shader::{ComputePipeline, GraphicsPipeline},
         staging::{

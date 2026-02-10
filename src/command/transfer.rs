@@ -57,9 +57,17 @@ impl<'a> CommandEncoder<'a> {
             );
         }
     }
+    pub fn copy_buffer_to_image_with(
+        &mut self,
+        buffer: &'a impl BufferLike,
+        image: &'a impl ImageLike,
+        copies: &[vk::BufferImageCopy],
+    ) {
+        self.copy_buffer_to_image_with_layout(buffer, image, copies, vk::ImageLayout::GENERAL);
+    }
 
     /// Copies data from a buffer to an image.
-    pub fn copy_buffer_to_texture(
+    pub fn copy_buffer_to_image_with_layout(
         &mut self,
         buffer: &'a impl BufferLike,
         image: &'a impl ImageLike,
@@ -96,7 +104,7 @@ impl<'a> CommandEncoder<'a> {
     ///
     /// Unlike a simple copy, blit can scale the image and convert between compatible
     /// formats. Both images must support blit operations for their formats.
-    pub fn blit_image(
+    pub fn blit_image_with_layout(
         &mut self,
         src: &'a impl ImageLike,
         src_image_layout: vk::ImageLayout,
@@ -119,8 +127,86 @@ impl<'a> CommandEncoder<'a> {
         }
     }
 
-    /// Clears a color image to a solid color.
+    pub fn blit_image(
+        &mut self,
+        src: &'a impl ImageLike,
+        dst: &'a impl ImageLike,
+        regions: &[vk::ImageBlit],
+        filter: vk::Filter,
+    ) {
+        self.blit_image_with_layout(
+            src,
+            vk::ImageLayout::GENERAL,
+            dst,
+            vk::ImageLayout::GENERAL,
+            regions,
+            filter,
+        );
+    }
+
+    pub fn copy_image_to_image<S: ImageLike, T: ImageLike>(
+        &mut self,
+        src: &'a S,
+        dst: &'a T,
+        region: &[vk::ImageCopy],
+    ) {
+        self.copy_image_to_image_with_layout(
+            src,
+            vk::ImageLayout::GENERAL,
+            dst,
+            vk::ImageLayout::GENERAL,
+            region,
+        );
+    }
+
+    pub fn copy_image_to_image_with_layout<S: ImageLike, T: ImageLike>(
+        &mut self,
+        src: &'a S,
+        src_layout: vk::ImageLayout,
+        dst: &'a T,
+        dst_layout: vk::ImageLayout,
+        region: &[vk::ImageCopy],
+    ) {
+        unsafe {
+            self.device().cmd_copy_image(
+                self.buffer().buffer,
+                src.vk_handle(),
+                src_layout,
+                dst.vk_handle(),
+                dst_layout,
+                region,
+            );
+        }
+    }
+
+    pub fn copy_image_to_buffer_with_layout(
+        &mut self,
+        src_image: &'a impl ImageLike,
+        src_image_layout: vk::ImageLayout,
+        dst_buf: &'a impl BufferLike,
+        regions: &[vk::BufferImageCopy],
+    ) {
+        unsafe {
+            self.device().cmd_copy_image_to_buffer(
+                self.buffer().buffer,
+                src_image.vk_handle(),
+                src_image_layout,
+                dst_buf.vk_handle(),
+                regions,
+            );
+        }
+    }
+
     pub fn clear_color_image<T: ImageLike>(
+        &mut self,
+        image: &'a T,
+        clear_color: &vk::ClearColorValue,
+    ) {
+        self.clear_color_image_with_layout(image, clear_color, vk::ImageLayout::GENERAL);
+    }
+
+    /// Clears a color image to a solid color.
+    pub fn clear_color_image_with_layout<T: ImageLike>(
         &mut self,
         image: &'a T,
         clear_color: &vk::ClearColorValue,

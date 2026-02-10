@@ -51,7 +51,7 @@ fn clear(
             false,
         );
         encoder.emit_barriers();
-        encoder.clear_color_image(
+        encoder.clear_color_image_with_layout(
             current_swapchain_image,
             &vk::ClearColorValue {
                 float32: rgba.to_f32_array(),

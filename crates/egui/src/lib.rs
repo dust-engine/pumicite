@@ -371,7 +371,7 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
                 true,
             );
             encoder.emit_barriers();
-            encoder.copy_buffer_to_texture(
+            encoder.copy_buffer_to_image_with_layout(
                 host_buffer,
                 image.image(),
                 &[vk::BufferImageCopy {

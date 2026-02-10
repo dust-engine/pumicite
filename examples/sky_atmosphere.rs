@@ -18,7 +18,10 @@ use bevy::window::PrimaryWindow;
 use bevy_pumicite::prelude::*;
 use glam::{IVec2, Mat4, Vec3, Vec3Swizzles};
 use pumicite::buffer::RingBufferSuballocation;
-use pumicite::{Sampler, image::{FullImageView, Image}};
+use pumicite::{
+    Sampler,
+    image::{FullImageView, Image},
+};
 use pumicite_egui::{EguiContexts, EguiPrimaryContextPass, EguiRenderSet, egui};
 
 // LUT dimensions (must match shader constants)

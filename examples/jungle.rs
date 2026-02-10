@@ -10,7 +10,10 @@ use bevy::{
 use bevy_pumicite::{loader::TextureAsset, prelude::*};
 use bytemuck::{AnyBitPattern, NoUninit};
 use glam::{IVec2, Mat4, UVec2, Vec2, Vec3, Vec3Swizzles, Vec4};
-use pumicite::{buffer::RingBufferSuballocation, image::{FullImageView, Image}};
+use pumicite::{
+    buffer::RingBufferSuballocation,
+    image::{FullImageView, Image},
+};
 use pumicite_scene::gltf::{self, GltfMaterialData};
 use std::mem::size_of;
 

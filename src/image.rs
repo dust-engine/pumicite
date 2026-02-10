@@ -403,7 +403,7 @@ pub trait ImageExt: ImageLike {
                     copy
                 })
                 .collect();
-            encoder.copy_buffer_to_texture(
+            encoder.copy_buffer_to_image_with_layout(
                 staging_buffer,
                 self,
                 &regions,

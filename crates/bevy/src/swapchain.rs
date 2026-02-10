@@ -131,6 +131,7 @@ impl Plugin for SwapchainPlugin {
             // Without VK_EXT_swapchain_maintenance1, dropping a swapchain is techncially UB because
             // there's no way to ensure that the vkQueuePresentKHR has finished before we're allowed
             // to drop the semaphore used for that presentation.
+            // As a workaround, if we need to drop the present semaphore, we call vkWaitQueueIdle.
             tracing::warn!(
                 "VK_EXT_swapchain_maintenance1 is missing from this Vulkan implementation. Without this extension, dropping a swapchain is technically undefined behavior."
             )
