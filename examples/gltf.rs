@@ -44,9 +44,9 @@ fn main() {
         GlobalTransform::default(),
         Transform::from_translation(Vec3::new(0.0, 0.5, 2.0)),
         FlyCamera {
-            max_speed: 500.0,
-            accel: 500.0,
-            friction: 500.0,
+            max_speed: 1.0,
+            accel: 1.0,
+            friction: 1.0,
             ..Default::default()
         },
     ));

@@ -168,7 +168,7 @@ fn clear(
             false,
         );
         encoder.emit_barriers();
-        encoder.blit_image(
+        encoder.blit_image_with_layout(
             target_image.deref(),
             vk::ImageLayout::GENERAL,
             current_swapchain_image,
