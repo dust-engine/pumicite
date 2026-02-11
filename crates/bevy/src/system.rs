@@ -127,7 +127,8 @@ unsafe impl Sync for RenderSetSharedState {}
 ///
 /// # Requirements
 ///
-/// This parameter is only valid for systems added to a submission set via
+/// This parameter is only valid for systems added to a submission set.
+/// Submission sets are (SystemSet)[`bevy_ecs::schedule::SystemSet`]s added via
 /// [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set).
 ///
 /// # Panics
