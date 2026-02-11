@@ -139,7 +139,7 @@ mod img_loader {
                     (ColorType::Rgba32F, _) => vk::Format::R32G32B32A32_SFLOAT,
                     _ => return Err(ImageLoadingError::UnknownTextureColorType(image.color())),
                 };
-                let mut texture = Image::new_upload(
+                let mut texture = Image::new_private(
                     self.allocator.clone(),
                     &vk::ImageCreateInfo {
                         image_type: vk::ImageType::TYPE_2D,
@@ -153,7 +153,7 @@ mod img_loader {
                         array_layers: 1,
                         samples: vk::SampleCountFlags::TYPE_1,
                         tiling: vk::ImageTiling::OPTIMAL,
-                        usage: vk::ImageUsageFlags::SAMPLED,
+                        usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
                         initial_layout: vk::ImageLayout::UNDEFINED,
                         ..Default::default()
                     },
