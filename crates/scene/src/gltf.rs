@@ -193,9 +193,6 @@ struct BufferGPUView<'a> {
     buffer: Option<Arc<Buffer>>,
     alignment: u32,
     usage: BufferGPUViewUsage,
-    /// If buffer view is for an index buffer, the offset into the per-scene index buffer in bytes,
-    /// indexed by scene id.
-    offset: smallvec::SmallVec<[u64; 1]>,
 }
 enum BufferGPUViewUsage {
     None,
@@ -203,13 +200,13 @@ enum BufferGPUViewUsage {
     IndexBuffer { ty: vk::IndexType },
 }
 struct BufferCPUView<'a> {
-    view: gltf::buffer::View<'a>,
+    _view: gltf::buffer::View<'a>,
     active: bool,
     buffer: Vec<u8>,
 }
 
 struct TextureView<'a> {
-    view: gltf::image::Image<'a>,
+    _view: gltf::image::Image<'a>,
     image: Option<Handle<TextureAsset>>,
     image_inline: Option<Image>,
     is_srgb: bool,
@@ -304,13 +301,12 @@ impl AssetLoader for GltfLoader {
                     buffer: None,
                     alignment: 1,
                     usage: BufferGPUViewUsage::None,
-                    offset: smallvec::SmallVec::new(),
                 })
                 .collect();
             let mut buffer_cpu_views: Vec<BufferCPUView> = gltf
                 .views()
                 .map(|view| BufferCPUView {
-                    view,
+                    _view: view,
                     buffer: Vec::new(),
                     active: false,
                 })
@@ -319,7 +315,7 @@ impl AssetLoader for GltfLoader {
             let mut texture_views: Vec<TextureView> = gltf
                 .images()
                 .map(|view| TextureView {
-                    view,
+                    _view: view,
                     image: None,
                     is_srgb: false,
                     active: false,
