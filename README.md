@@ -4,6 +4,8 @@ A Vulkan rendering framework for Bevy that preserves direct, low-level GPU contr
 while using Bevy's ECS as the backbone for scheduling, concurrency, and resource
 management.
 
+<img src="https://repository-images.githubusercontent.com/1152040319/4887a04b-f01e-41ae-8aa4-5d9e2db84f48" height="250px">
+
 ## Why Pumicite?
 
 Bevy's built-in renderer uses wgpu, which prioritizes safety over giving you direct
