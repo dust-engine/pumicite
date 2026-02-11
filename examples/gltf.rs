@@ -71,10 +71,10 @@ fn main() {
             start_main_render_pass
                 .in_set(DefaultRenderSet)
                 .before(MainRenderPass),
-            prepare_jungle_scene
+            prepare_gltf_scene
                 .in_set(DefaultRenderSet)
                 .before(start_main_render_pass),
-            draw_jungle_scene
+            draw_gltf_scene
                 .in_set(MainRenderPass)
                 .in_set(DefaultRenderSet),
         ),
@@ -89,13 +89,13 @@ struct PbrPipeline {
 }
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let handle: Handle<bevy::scene::Scene> = asset_server.load("jungle/FlightHelmet.gltf");
+    let handle: Handle<bevy::scene::Scene> = asset_server.load("gltf/FlightHelmet.gltf");
     commands.spawn(bevy::scene::SceneRoot(handle));
     commands.insert_resource(PbrPipeline {
-        draw: asset_server.load("jungle/pbr.gfx.pipeline.ron"),
+        draw: asset_server.load("gltf/pbr.gfx.pipeline.ron"),
     });
 
-    commands.insert_resource(PreparedJungleScene::default());
+    commands.insert_resource(PreparedGltfScene::default());
 }
 
 #[derive(Component, Default)]
@@ -240,7 +240,7 @@ fn start_main_render_pass(
 }
 
 #[derive(Default, Resource)]
-struct PreparedJungleScene {
+struct PreparedGltfScene {
     material_buffer: Option<GPUMutex<RingBufferSuballocation>>,
     primitive_buffer: Option<GPUMutex<RingBufferSuballocation>>,
     instance_buffer: Option<GPUMutex<RingBufferSuballocation>>,
@@ -248,7 +248,7 @@ struct PreparedJungleScene {
     material_mapping: BTreeMap<Entity, usize>,
 }
 
-fn prepare_jungle_scene(
+fn prepare_gltf_scene(
     cameras: Query<(&FlyCamera, &Transform, &GlobalTransform)>,
     mut ring_buffer: BufferInitializer,
     models: Query<(&pumicite_scene::Model, &pumicite_scene::ModelInstances)>,
@@ -256,7 +256,7 @@ fn prepare_jungle_scene(
     textures: Res<Assets<TextureAsset>>,
     instance_query: Query<(&GlobalTransform, &Transform, &pumicite_scene::InstanceOf)>,
     mut ctx: RenderState,
-    mut prepared_scene: ResMut<PreparedJungleScene>,
+    mut prepared_scene: ResMut<PreparedGltfScene>,
     mut swapchain_image: Query<
         (&mut SwapchainImage, &mut GBuffer),
         With<bevy::window::PrimaryWindow>,
@@ -365,7 +365,7 @@ fn prepare_jungle_scene(
     });
 }
 
-fn draw_jungle_scene(
+fn draw_gltf_scene(
     pbr_pipeline: Res<PbrPipeline>,
     models: Query<(&pumicite_scene::Model, &pumicite_scene::ModelInstances)>,
     mut ctx: RenderState,
@@ -377,7 +377,7 @@ fn draw_jungle_scene(
         With<bevy::window::PrimaryWindow>,
     >,
     heap: Res<DescriptorHeap>,
-    mut prepared_scene: ResMut<PreparedJungleScene>,
+    mut prepared_scene: ResMut<PreparedGltfScene>,
 ) {
     if models.is_empty() {
         return;

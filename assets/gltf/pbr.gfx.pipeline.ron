@@ -1,11 +1,11 @@
 GraphicsPipeline(
     shaders: {
         Vertex: (
-            path: "jungle/pbr.spv",
+            path: "gltf/pbr.spv",
             entry_point: "vertexMain",
         ),
         Fragment: (
-            path: "jungle/pbr.spv",
+            path: "gltf/pbr.spv",
             entry_point: "fragmentMain",
         ),
     },
