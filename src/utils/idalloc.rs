@@ -57,4 +57,8 @@ impl IdAlloc {
         let slice = &mut self.bits[id as usize..(id + n) as usize];
         slice.fill(false);
     }
+
+    pub fn iter_all(&self) -> impl Iterator<Item = u32> {
+        self.bits.iter_ones().map(|x| x as u32)
+    }
 }

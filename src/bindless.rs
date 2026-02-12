@@ -75,12 +75,28 @@ use crate::{
 /// - Binding 0: Samplers (separate from images)
 /// - Binding 1: Combined image samplers (unused for forward compatibility)
 /// - Binding 2: Mutable descriptors (sampled images, storage images, buffers, etc.)
+
+#[derive(Default)]
+enum ResourceDescriptorKind {
+    #[default]
+    None,
+    ImageView(vk::ImageView),
+    BufferView(vk::BufferView),
+    Buffer,
+}
+
+#[derive(Default)]
+struct ResourceHeapHandles {
+    id_alloc: IdAlloc,
+    handles: Vec<ResourceDescriptorKind>,
+}
+
 struct ResourceHeapInner {
     pool: DescriptorPool,
     layout: Arc<DescriptorSetLayout>,
     set: vk::DescriptorSet,
 
-    id_alloc: Mutex<IdAlloc>,
+    handles: Mutex<ResourceHeapHandles>,
 }
 
 #[derive(Clone)]
@@ -124,7 +140,7 @@ impl ResourceHeap {
         Ok(Self(Arc::new(ResourceHeapInner {
             pool,
             layout: Arc::new(layout),
-            id_alloc: Mutex::new(IdAlloc::default()),
+            handles: Mutex::new(Default::default()),
             set,
         })))
     }
@@ -145,8 +161,19 @@ impl ResourceHeap {
     ) -> VkResult<u32> {
         unsafe {
             let image_view = self.0.pool.device().create_image_view(view, None)?;
-            let mut guard = self.0.id_alloc.lock().unwrap();
-            let handle = guard.alloc_one();
+            let mut guard = self.0.handles.lock().unwrap();
+            let handle = guard.id_alloc.alloc_one();
+            if guard.handles.len() <= handle as usize {
+                guard
+                    .handles
+                    .resize_with(handle as usize + 1, Default::default);
+            }
+            assert!(matches!(
+                guard.handles[handle as usize],
+                ResourceDescriptorKind::None
+            ));
+            guard.handles[handle as usize] = ResourceDescriptorKind::ImageView(image_view);
+            drop(guard);
             self.0.pool.device().update_descriptor_sets(
                 &[vk::WriteDescriptorSet {
                     dst_set: self.0.set,
@@ -165,7 +192,6 @@ impl ResourceHeap {
                 }],
                 &[],
             );
-            self.0.pool.device().destroy_image_view(image_view, None); // Should be ok???
             Ok(handle)
         }
     }
@@ -237,8 +263,19 @@ impl ResourceHeap {
                 },
                 None,
             )?;
-            let mut guard = self.0.id_alloc.lock().unwrap();
-            let handle = guard.alloc_one();
+            let mut guard = self.0.handles.lock().unwrap();
+            let handle = guard.id_alloc.alloc_one();
+            if guard.handles.len() <= handle as usize {
+                guard
+                    .handles
+                    .resize_with(handle as usize + 1, Default::default);
+            }
+            assert!(matches!(
+                guard.handles[handle as usize],
+                ResourceDescriptorKind::None
+            ));
+            guard.handles[handle as usize] = ResourceDescriptorKind::BufferView(buffer_view);
+            drop(guard);
             self.0.pool.device().update_descriptor_sets(
                 &[vk::WriteDescriptorSet {
                     dst_set: self.0.set,
@@ -253,15 +290,25 @@ impl ResourceHeap {
                 }],
                 &[],
             );
-            self.0.pool.device().destroy_buffer_view(buffer_view, None); // Should be ok???
             Ok(handle)
         }
     }
 
     pub fn add_buffer(&self, buffer: impl BufferLike, access: BufferAccessMode) -> VkResult<u32> {
         unsafe {
-            let mut guard = self.0.id_alloc.lock().unwrap();
-            let handle = guard.alloc_one();
+            let mut guard = self.0.handles.lock().unwrap();
+            let handle = guard.id_alloc.alloc_one();
+            if guard.handles.len() <= handle as usize {
+                guard
+                    .handles
+                    .resize_with(handle as usize + 1, Default::default);
+            }
+            assert!(matches!(
+                guard.handles[handle as usize],
+                ResourceDescriptorKind::None
+            ));
+            guard.handles[handle as usize] = ResourceDescriptorKind::Buffer;
+            drop(guard);
             self.0.pool.device().update_descriptor_sets(
                 &[vk::WriteDescriptorSet {
                     dst_set: self.0.set,
@@ -285,8 +332,31 @@ impl ResourceHeap {
     }
 
     pub fn remove(&self, handle: u32) {
-        let mut guard = self.0.id_alloc.lock().unwrap();
-        guard.free(handle, 1);
+        let mut guard = self.0.handles.lock().unwrap();
+        assert!(!matches!(
+            guard.handles[handle as usize],
+            ResourceDescriptorKind::None
+        ));
+        guard.id_alloc.free(handle, 1);
+        guard.handles[handle as usize] = ResourceDescriptorKind::None;
+    }
+}
+
+impl Drop for ResourceHeapInner {
+    fn drop(&mut self) {
+        let handles = self.handles.get_mut().unwrap();
+        for index in handles.id_alloc.iter_all() {
+            match handles.handles[index as usize] {
+                ResourceDescriptorKind::ImageView(view) => unsafe {
+                    self.pool.device().destroy_image_view(view, None);
+                },
+                ResourceDescriptorKind::BufferView(view) => unsafe {
+                    self.pool.device().destroy_buffer_view(view, None);
+                },
+                ResourceDescriptorKind::Buffer => {}
+                ResourceDescriptorKind::None => unreachable!(),
+            }
+        }
     }
 }
 
@@ -310,7 +380,13 @@ struct SamplerHeapInner {
     layout: Arc<DescriptorSetLayout>,
     set: vk::DescriptorSet,
 
-    id_alloc: Mutex<IdAlloc>,
+    handles: Mutex<SamplerHeapHandles>,
+}
+
+#[derive(Default)]
+struct SamplerHeapHandles {
+    id_alloc: IdAlloc,
+    handles: Vec<vk::Sampler>,
 }
 
 #[derive(Clone)]
@@ -367,7 +443,7 @@ impl SamplerHeap {
         Ok(Self(Arc::new(SamplerHeapInner {
             pool,
             layout: Arc::new(layout),
-            id_alloc: Mutex::new(IdAlloc::default()),
+            handles: Mutex::new(Default::default()),
             set,
         })))
     }
@@ -382,8 +458,16 @@ impl SamplerHeap {
     pub fn add(&self, create_info: &vk::SamplerCreateInfo) -> VkResult<u32> {
         unsafe {
             let sampler = self.0.pool.device().create_sampler(create_info, None)?;
-            let mut guard = self.0.id_alloc.lock().unwrap();
-            let handle = guard.alloc_one();
+            let mut guard = self.0.handles.lock().unwrap();
+            let handle = guard.id_alloc.alloc_one();
+            if guard.handles.len() <= handle as usize {
+                guard
+                    .handles
+                    .resize(handle as usize + 1, vk::Sampler::null());
+            }
+            assert_eq!(guard.handles[handle as usize], vk::Sampler::null());
+            guard.handles[handle as usize] = sampler;
+            drop(guard);
             self.0.pool.device().update_descriptor_sets(
                 &[vk::WriteDescriptorSet {
                     dst_set: self.0.set,
@@ -399,14 +483,29 @@ impl SamplerHeap {
                 }],
                 &[],
             );
-            self.0.pool.device().destroy_sampler(sampler, None);
             Ok(handle)
         }
     }
 
     pub fn remove(&self, handle: u32) {
-        let mut guard = self.0.id_alloc.lock().unwrap();
-        guard.free(handle, 1);
+        let mut guard = self.0.handles.lock().unwrap();
+        assert_ne!(guard.handles[handle as usize], vk::Sampler::null());
+        guard.id_alloc.free(handle, 1);
+        guard.handles[handle as usize] = vk::Sampler::null();
+    }
+}
+
+impl Drop for SamplerHeapInner {
+    fn drop(&mut self) {
+        let handles = self.handles.get_mut().unwrap();
+        for index in handles.id_alloc.iter_all() {
+            assert_ne!(handles.handles[index as usize], vk::Sampler::null());
+            unsafe {
+                self.pool
+                    .device()
+                    .destroy_sampler(handles.handles[index as usize], None);
+            }
+        }
     }
 }
 
