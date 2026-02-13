@@ -226,7 +226,13 @@ pub fn tlas_build_system<T: Send + Sync + 'static>(
         vk::AccelerationStructureTypeKHR::TOP_LEVEL,
     )
     .unwrap();
-    let scratch_buffer = device_local_ring_buffer.allocate_buffer(sizes.build_scratch_size, 8);
+    let scratch_offset_alignment: u64 = device
+        .physical_device()
+        .properties()
+        .get::<vk::PhysicalDeviceAccelerationStructurePropertiesKHR>()
+        .min_acceleration_structure_scratch_offset_alignment
+        .into();
+    let scratch_buffer = device_local_ring_buffer.allocate_buffer(sizes.build_scratch_size, scratch_offset_alignment);
     info.dst_acceleration_structure = tlas.vk_handle();
     info.scratch_data = vk::DeviceOrHostAddressKHR {
         device_address: scratch_buffer.device_address(),

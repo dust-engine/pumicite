@@ -308,9 +308,9 @@ fn build_blas_system<T: BLASBuilder>(
                 size_info
             };
 
-            info.scratch_data.device_address = total_scratch_size;
             total_scratch_size =
                 total_scratch_size.next_multiple_of(scratch_offset_alignment as u64);
+            info.scratch_data.device_address = total_scratch_size;
             total_scratch_size += build_sizes.build_scratch_size;
 
             let blas = AccelStruct::new(

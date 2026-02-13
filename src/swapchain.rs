@@ -145,6 +145,9 @@ impl SwapchainInner {
             .enumerate()
             .map(|(i, image)| {
                 let srgb_view = if let Some(srgb_format) = srgb_format {
+                    // Exclude STORAGE usage for sRGB views since sRGB formats
+                    // don't support VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT.
+                    let srgb_usage = info.image_usage & !vk::ImageUsageFlags::STORAGE;
                     unsafe {
                         inner.device.create_image_view(
                             &vk::ImageViewCreateInfo {
@@ -160,7 +163,11 @@ impl SwapchainInner {
                                     layer_count: 1,
                                 },
                                 ..Default::default()
-                            },
+                            }
+                            .push(&mut vk::ImageViewUsageCreateInfo {
+                                usage: srgb_usage,
+                                ..Default::default()
+                            }),
                             None,
                         )?
                     }
