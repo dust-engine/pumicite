@@ -153,16 +153,16 @@ cargo run --example <name>
 
 ## Tutorial
 
-The [tutorial](https://github.com/dust-engine/pumicite/wiki/Tutorial) walks through Pumicite from the ground up:
+The [tutorial](https://github.com/dust-engine/pumicite/wiki) walks through Pumicite from the ground up:
 
-1. [Overview]() -- Motivation, philosophy, and key concepts
-2. [Getting Started]() -- Device creation and first command buffer
-3. [Resource Management]() -- Buffers, images, and memory allocation
-4. [Synchronization]() -- Barriers, resource state tracking, and GPUMutex
-5. [Bevy Integration]() -- Plugins, submission sets, and the ECS render graph
-6. [Compute]() -- Compute pipelines, dispatch, and multi-pass workflows
-7. [Rendering]() -- Dynamic rendering, graphics pipelines, and draw commands
-8. [Bindless]() -- Descriptor heaps and bindless resource indexing
+1. [Overview](https://github.com/dust-engine/pumicite/wiki/Overview) -- Motivation, philosophy, and key concepts
+2. [Getting Started](https://github.com/dust-engine/pumicite/wiki/Overview) -- Device creation and first command buffer
+3. [Resource Management](https://github.com/dust-engine/pumicite/wiki/Resource%20Management) -- Buffers, images, and memory allocation
+4. [Synchronization](https://github.com/dust-engine/pumicite/wiki/Syncronization) -- Barriers, resource state tracking, and GPUMutex
+5. [Bevy Integration](https://github.com/dust-engine/pumicite/wiki/Bevy%20Integration) -- Plugins, submission sets, and the ECS render graph
+6. [Compute](https://github.com/dust-engine/pumicite/wiki/Compute) -- Compute pipelines, dispatch, and multi-pass workflows
+7. [Rendering](https://github.com/dust-engine/pumicite/wiki/Rendering) -- Dynamic rendering, graphics pipelines, and draw commands
+8. [Bindless](https://github.com/dust-engine/pumicite/wiki/Bindless) -- Descriptor heaps and bindless resource indexing
 
 ## License
 

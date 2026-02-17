@@ -12,14 +12,8 @@ use bevy_ecs::{
     world::FromWorld,
 };
 use pumicite::{
-    Allocator, Device,
-    ash::{khr::acceleration_structure::Meta as AccelerationStructureKhr, vk},
-    buffer::{Buffer, BufferLike},
-    command::{CommandBuffer, CommandEncoder},
-    debug::DebugObject,
-    rtx::AccelStruct,
-    sync::Timeline,
-    utils::AsVkHandle,
+    ash::khr::acceleration_structure::Meta as AccelerationStructureKhr, prelude::*,
+    rtx::AccelStruct, sync::Timeline,
 };
 use smallvec::SmallVec;
 
@@ -190,6 +184,10 @@ fn build_blas_system<T: BLASBuilder>(
         });
         let geometry_transfers = pumicite::utils::future::zip_many(geometry_transfer_futures).await;
         tracing::info!("Building {} BLAS", geometry_transfers.len());
+        recorder.memory_barrier(
+            Access::ALL_COMMANDS,
+            Access::ACCELERATION_STRUCTURE_BUILD_READ,
+        );
         pumicite::utils::future::yield_now().await;
 
         let mut total_scratch_size: u64 = 0;

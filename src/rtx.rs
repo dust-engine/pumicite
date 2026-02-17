@@ -561,24 +561,24 @@ impl ShaderBindingTable {
         entry_layout: Layout,
     ) {
         let reserved_size = entry_layout.pad_to_align().size();
-        self.buffer.reserve(reserved_size);
+        let old_len = self.buffer.len();
+        self.buffer.resize(old_len + reserved_size, 0);
 
         unsafe {
             // Copy handle
             std::ptr::copy_nonoverlapping(
                 (handle)(&self.handles, hitgroup_id).as_ptr(),
-                self.buffer.as_mut_ptr().add(self.buffer.len()),
+                self.buffer.as_mut_ptr().add(old_len),
                 self.layout.handle_size as usize,
             );
             if (self.layout.handle_size as usize) < entry_layout.size() {
                 // Copy inline data
                 let slice = &mut std::slice::from_raw_parts_mut(
-                    self.buffer.as_mut_ptr().add(self.buffer.len()),
+                    self.buffer.as_mut_ptr().add(old_len),
                     entry_layout.size(),
                 )[self.layout.handle_size as usize..entry_layout.size()];
                 write_inline_data(slice);
             }
-            self.buffer.set_len(self.buffer.len() + reserved_size);
         }
     }
 
@@ -740,7 +740,7 @@ impl<'a> CommandEncoder<'a> {
                             + shader_binding_table.raygen_index.base_offset()
                             + (raygen_stride * raygen_shader) as u64,
                         stride: raygen_stride as u64,
-                        size: (shader_binding_table.raygen_index.index() * raygen_stride) as u64,
+                        size: raygen_stride as u64,
                     },
                     &vk::StridedDeviceAddressRegionKHR {
                         device_address: buffer.device_address()
