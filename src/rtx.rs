@@ -148,6 +148,71 @@ impl PipelineCache {
         Ok(Pipeline::from_raw(self.device().clone(), pipeline, layout))
     }
 
+    /// Creates a monolithic ray tracing pipeline directly from shaders and groups,
+    /// without using VK_KHR_pipeline_library. This is the fallback path for drivers
+    /// that don't support pipeline libraries.
+    pub fn create_ray_tracing_pipeline_monolithic(
+        &self,
+        create_info: RayTracingPipelineLibraryCreateInfo,
+    ) -> VkResult<Pipeline> {
+        let specialization_infos: Vec<_> = create_info
+            .shaders
+            .iter()
+            .map(|shader| shader.specialization_info.raw_specialization_info())
+            .collect();
+        let stages: Vec<_> = create_info
+            .shaders
+            .iter()
+            .zip(&specialization_infos)
+            .map(
+                |(shader, specialization_info)| vk::PipelineShaderStageCreateInfo {
+                    flags: shader.flags,
+                    stage: shader.stage,
+                    module: shader.module.vk_handle(),
+                    p_name: shader.entry.as_ptr(),
+                    p_specialization_info: specialization_info,
+                    ..Default::default()
+                },
+            )
+            .collect();
+        let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
+            .dynamic_states(&[vk::DynamicState::RAY_TRACING_PIPELINE_STACK_SIZE_KHR]);
+        let mut vk_create_info = vk::RayTracingPipelineCreateInfoKHR {
+            flags: create_info.flags,
+            max_pipeline_ray_recursion_depth: create_info.max_ray_recursion_depth,
+            layout: create_info.layout.vk_handle(),
+            ..Default::default()
+        }
+        .stages(&stages)
+        .groups(create_info.groups);
+        if create_info.dynamic_stack_size {
+            vk_create_info = vk_create_info.dynamic_state(&dynamic_state);
+        }
+
+        let mut pipeline = vk::Pipeline::null();
+        unsafe {
+            (self
+                .device()
+                .extension::<ash::khr::ray_tracing_pipeline::Meta>()
+                .fp()
+                .create_ray_tracing_pipelines_khr)(
+                self.device().handle(),
+                vk::DeferredOperationKHR::null(),
+                self.vk_handle(),
+                1,
+                &vk_create_info,
+                std::ptr::null(),
+                &mut pipeline,
+            )
+            .result()?;
+        };
+        Ok(Pipeline::from_raw(
+            self.device().clone(),
+            pipeline,
+            create_info.layout,
+        ))
+    }
+
     /// Creates a ray tracing pipeline library from shaders and shader groups.
     ///
     /// Pipeline libraries can be linked together using [`create_ray_tracing_pipeline`](Self::create_ray_tracing_pipeline).
@@ -246,22 +311,31 @@ impl Debug for SbtHandles {
             }
         }
         let mut f_struct = f.debug_struct("SbtHandles");
-        for i in 0..self.num_raygen {
-            let data = self.rgen(i as u32);
-            f_struct.field("raygen", &HexStr(data));
-        }
-        for i in 0..self.num_miss {
-            let data = self.rmiss(i as u32);
-            f_struct.field("miss", &HexStr(data));
-        }
-        for i in 0..self.num_callable {
-            let data = self.callable(i as u32);
-            f_struct.field("callable", &HexStr(data));
-        }
-        for i in 0..self.num_hitgroup {
-            let data = self.hitgroup(i as u32);
-            f_struct.field("hitgroup", &HexStr(data));
-        }
+        f_struct.field("handle_size", &self.handle_size);
+        f_struct.field(
+            "raygen",
+            &(0..self.num_raygen)
+                .map(|i| HexStr(self.rgen(i as u32)))
+                .collect::<Vec<_>>(),
+        );
+        f_struct.field(
+            "miss",
+            &(0..self.num_miss)
+                .map(|i| HexStr(self.rmiss(i as u32)))
+                .collect::<Vec<_>>(),
+        );
+        f_struct.field(
+            "callable",
+            &(0..self.num_callable)
+                .map(|i| HexStr(self.callable(i as u32)))
+                .collect::<Vec<_>>(),
+        );
+        f_struct.field(
+            "hitgroup",
+            &(0..self.num_hitgroup)
+                .map(|i| HexStr(self.hitgroup(i as u32)))
+                .collect::<Vec<_>>(),
+        );
         Ok(())
     }
 }
@@ -530,15 +604,16 @@ impl ShaderBindingTable {
         mapper: u64,
         reusing_old_sbt: Option<Self>,
     ) -> Self {
+        let handles = SbtHandles::new(
+            pipeline,
+            layout.raygen.count,
+            layout.miss.count,
+            layout.callable.count,
+            layout.hitgroup.count,
+        )
+        .unwrap();
         Self {
-            handles: SbtHandles::new(
-                pipeline,
-                layout.raygen.count,
-                layout.miss.count,
-                layout.callable.count,
-                layout.hitgroup.count,
-            )
-            .unwrap(),
+            handles: handles,
             hitgroup_index: ShaderBindingTableState::NotSet,
             callable_index: ShaderBindingTableState::NotSet,
             miss_index: ShaderBindingTableState::NotSet,

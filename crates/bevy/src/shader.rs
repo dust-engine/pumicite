@@ -56,7 +56,7 @@ use bevy_reflect::TypePath;
 use pumicite::{
     Device, HasDevice,
     ash::{
-        VkResult,
+        self, VkResult,
         vk::{self, TaggedStructure},
     },
     pipeline::{Pipeline, PipelineCache, ShaderEntry},
@@ -278,12 +278,34 @@ impl ComputePipeline {
 pub struct RayTracingPipelineLoader {
     pipeline_cache: Arc<PipelineCache>,
     heap: Option<DescriptorHeap>,
+    /// Whether to use real VK_KHR_pipeline_library. False when the extension is
+    /// unavailable or on drivers known to have bugs (AMD proprietary).
+    use_pipeline_library: bool,
 }
 impl FromWorld for RayTracingPipelineLoader {
     fn from_world(world: &mut bevy_ecs::world::World) -> Self {
+        let device = world.resource::<Device>();
+        let has_pipeline_library_extension =
+            device.has_extension_named(ash::khr::pipeline_library::NAME);
+        let driver_properties = device
+            .physical_device()
+            .properties()
+            .get::<vk::PhysicalDeviceDriverProperties>();
+        let has_buggy_driver = driver_properties.driver_id == vk::DriverId::AMD_PROPRIETARY;
+        if !has_pipeline_library_extension {
+            tracing::warn!(
+                "Ray tracing pipelines are using emulated pipeline libraries because VK_KHR_pipeline_library is missing. Pipeline linking might be slower."
+            );
+        } else if has_buggy_driver {
+            tracing::warn!(
+                "Ray tracing pipelines are using emulated pipeline libraries because of known bugs in {:?}. Pipeline linking might be slower.",
+                driver_properties.driver_name_as_c_str().unwrap()
+            );
+        }
         Self {
-            pipeline_cache: Arc::new(PipelineCache::null(world.resource::<Device>().clone())),
+            pipeline_cache: Arc::new(PipelineCache::null(device.clone())),
             heap: world.get_resource().cloned(),
+            use_pipeline_library: has_pipeline_library_extension && !has_buggy_driver,
         }
     }
 }
@@ -304,7 +326,7 @@ impl FromWorld for RayTracingPipelineLoader {
 /// ```
 #[derive(Clone, Asset, TypePath)]
 pub struct RayTracingPipelineLibrary {
-    inner: Arc<Pipeline>,
+    inner: RayTracingPipelineLibraryImpl,
     /// Maximum ray recursion depth for this library's shaders.
     pub max_ray_recursion_depth: u32,
     /// Maximum ray payload size in bytes.
@@ -316,16 +338,60 @@ pub struct RayTracingPipelineLibrary {
     /// Shader binding table layout information.
     pub sbt_layout: SbtLayout,
 }
-impl RayTracingPipelineLibrary {
-    pub fn into_inner(self) -> Arc<Pipeline> {
-        self.inner
-    }
-}
-impl Deref for RayTracingPipelineLibrary {
-    type Target = Arc<Pipeline>;
 
-    fn deref(&self) -> &Self::Target {
-        &self.inner
+#[derive(Clone)]
+enum RayTracingPipelineLibraryImpl {
+    /// A real Vulkan pipeline library created with VK_KHR_pipeline_library.
+    Library(Arc<Pipeline>),
+    /// Emulated pipeline library for drivers that don't support VK_KHR_pipeline_library
+    /// (or where it's buggy, e.g. AMD proprietary). Stores the shader data to be inlined
+    /// into the final monolithic pipeline at link time.
+    Monolithic {
+        flags: vk::PipelineCreateFlags,
+        layout: Arc<pumicite::pipeline::PipelineLayout>,
+        shaders: Vec<ShaderEntry<'static>>,
+        groups: Vec<vk::RayTracingShaderGroupCreateInfoKHR<'static>>,
+    },
+}
+
+impl RayTracingPipelineLibrary {
+    /// Returns the inner pipeline, if this was created as a real pipeline library.
+    /// Panics if called on an monolithic (emulated) library.
+    pub fn pipeline(&self) -> &Arc<Pipeline> {
+        match &self.inner {
+            RayTracingPipelineLibraryImpl::Library(p) => p,
+            RayTracingPipelineLibraryImpl::Monolithic { .. } => {
+                panic!("Cannot get pipeline from an inline (emulated) pipeline library")
+            }
+        }
+    }
+
+    /// Returns true if this is an monolithic (emulated) pipeline library.
+    pub fn is_monolithic(&self) -> bool {
+        matches!(self.inner, RayTracingPipelineLibraryImpl::Monolithic { .. })
+    }
+
+    /// Returns the inline data (flags, layout, shaders, groups) for merging into a
+    /// monolithic pipeline. Panics if called on a real pipeline library.
+    pub fn inline_data(
+        &self,
+    ) -> (
+        vk::PipelineCreateFlags,
+        &Arc<pumicite::pipeline::PipelineLayout>,
+        &[ShaderEntry<'static>],
+        &[vk::RayTracingShaderGroupCreateInfoKHR<'static>],
+    ) {
+        match &self.inner {
+            RayTracingPipelineLibraryImpl::Monolithic {
+                flags,
+                layout,
+                shaders,
+                groups,
+            } => (*flags, layout, shaders, groups),
+            RayTracingPipelineLibraryImpl::Library(_) => {
+                panic!("Cannot get inline data from a real pipeline library")
+            }
+        }
     }
 }
 impl AssetLoader for RayTracingPipelineLoader {
@@ -371,7 +437,10 @@ impl AssetLoader for RayTracingPipelineLoader {
             }
         };
 
-        let mut flags = vk::PipelineCreateFlags::LIBRARY_KHR;
+        let mut flags = vk::PipelineCreateFlags::empty();
+        if self.use_pipeline_library {
+            flags |= vk::PipelineCreateFlags::LIBRARY_KHR;
+        }
         {
             if pipeline.disable_optimization {
                 flags |= vk::PipelineCreateFlags::DISABLE_OPTIMIZATION;
@@ -523,27 +592,47 @@ impl AssetLoader for RayTracingPipelineLoader {
             }
         }
 
-        let span = tracing::span!(
-            tracing::Level::INFO,
-            "Creating Ray Tracing Pipeline Library",
-            path = load_context.asset_path().to_string()
-        )
-        .entered();
-        let inner = self.pipeline_cache.create_ray_tracing_pipeline_library(
-            RayTracingPipelineLibraryCreateInfo {
+        let inner = if self.use_pipeline_library {
+            let span = tracing::span!(
+                tracing::Level::INFO,
+                "Creating Ray Tracing Pipeline Library",
+                path = load_context.asset_path().to_string()
+            )
+            .entered();
+            let pipeline_obj = self.pipeline_cache.create_ray_tracing_pipeline_library(
+                RayTracingPipelineLibraryCreateInfo {
+                    flags,
+                    layout,
+                    max_ray_recursion_depth: pipeline.max_ray_recursion_depth,
+                    max_ray_payload_size: pipeline.max_ray_payload_size,
+                    max_hit_attribute_size: pipeline.max_hit_attribute_size,
+                    dynamic_stack_size: pipeline.dynamic_stack_size,
+                    shaders: &shaders,
+                    groups: &groups,
+                },
+            )?;
+            span.exit();
+            RayTracingPipelineLibraryImpl::Library(Arc::new(pipeline_obj))
+        } else {
+            let owned_shaders = shaders
+                .into_iter()
+                .map(|s| ShaderEntry {
+                    module: s.module,
+                    entry: Cow::Owned(s.entry.into_owned()),
+                    flags: s.flags,
+                    stage: s.stage,
+                    specialization_info: s.specialization_info,
+                })
+                .collect();
+            RayTracingPipelineLibraryImpl::Monolithic {
                 flags,
                 layout,
-                max_ray_recursion_depth: pipeline.max_ray_recursion_depth,
-                max_ray_payload_size: pipeline.max_ray_payload_size,
-                max_hit_attribute_size: pipeline.max_hit_attribute_size,
-                dynamic_stack_size: pipeline.dynamic_stack_size,
-                shaders: &shaders,
-                groups: &groups,
-            },
-        )?;
-        span.exit();
+                shaders: owned_shaders,
+                groups,
+            }
+        };
         Ok(RayTracingPipelineLibrary {
-            inner: Arc::new(inner),
+            inner,
             max_ray_recursion_depth: pipeline.max_ray_recursion_depth,
             max_ray_payload_size: pipeline.max_ray_payload_size,
             max_hit_attribute_size: pipeline.max_hit_attribute_size,

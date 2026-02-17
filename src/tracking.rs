@@ -1383,7 +1383,6 @@ mod tests {
                 dst: Access::FRAGMENT_SAMPLED_READ,
             }
         );
-        println!("{:?}", access);
 
         // Access 3: Vertex shader read, SAME layout (no transition)
         let barrier = access.transition(Access::VERTEX_SAMPLED_READ, false);

@@ -144,6 +144,7 @@ impl Drop for ShaderModule {
 ///
 /// Specifies the shader module, entry point, stage, and specialization constants
 /// for a single pipeline stage.
+#[derive(Clone)]
 pub struct ShaderEntry<'a> {
     /// The SPIR-V shader source.
     pub module: Arc<ShaderModule>,
@@ -492,8 +493,20 @@ impl SpecializationInfo {
 
     /// Converts to a Vulkan specialization info structure.
     pub fn raw_specialization_info(&self) -> vk::SpecializationInfo<'_> {
-        vk::SpecializationInfo::default()
-            .map_entries(&self.entries)
-            .data(&self.data)
+        vk::SpecializationInfo {
+            map_entry_count: self.entries.len() as u32,
+            p_map_entries: if self.entries.is_empty() {
+                std::ptr::null()
+            } else {
+                self.entries.as_ptr()
+            },
+            data_size: self.data.len(),
+            p_data: if self.data.is_empty() {
+                std::ptr::null()
+            } else {
+                self.data.as_ptr() as *const _
+            },
+            ..Default::default()
+        }
     }
 }
