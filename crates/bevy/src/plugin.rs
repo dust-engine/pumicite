@@ -308,8 +308,8 @@ impl Plugin for PumicitePlugin {
 
         app.init_asset::<ShaderModule>()
             .init_asset::<PipelineLayout>()
-            .init_asset::<crate::shader::ComputePipeline>()
-            .init_asset::<crate::shader::GraphicsPipeline>()
+            .init_asset::<crate::shader::compute::ComputePipeline>()
+            .init_asset::<crate::shader::graphics::GraphicsPipeline>()
             .init_asset::<crate::loader::TextureAsset>();
 
         app.add_plugins(super::staging::StagingBeltPlugin::default());
@@ -317,10 +317,10 @@ impl Plugin for PumicitePlugin {
         app.preregister_asset_loader::<crate::shader::ShaderLoader>(&["spv"])
             .preregister_asset_loader::<crate::shader::PipelineLayoutLoader>(&["playout.ron"])
             .preregister_asset_loader::<crate::shader::DescriptorSetLayoutLoader>(&["desc.ron"])
-            .preregister_asset_loader::<crate::shader::ComputePipelineLoader>(&[
+            .preregister_asset_loader::<crate::shader::compute::ComputePipelineLoader>(&[
                 "comp.pipeline.ron",
             ])
-            .preregister_asset_loader::<crate::shader::GraphicsPipelineLoader>(&[
+            .preregister_asset_loader::<crate::shader::graphics::GraphicsPipelineLoader>(&[
                 "gfx.pipeline.ron",
             ])
             .preregister_asset_loader::<crate::loader::DdsLoader>(&["dds"])
@@ -366,8 +366,8 @@ impl Plugin for PumicitePlugin {
         app.init_asset_loader::<crate::shader::ShaderLoader>()
             .init_asset_loader::<crate::shader::PipelineLayoutLoader>()
             .init_asset_loader::<crate::shader::DescriptorSetLayoutLoader>()
-            .init_asset_loader::<crate::shader::ComputePipelineLoader>()
-            .init_asset_loader::<crate::shader::GraphicsPipelineLoader>()
+            .init_asset_loader::<crate::shader::compute::ComputePipelineLoader>()
+            .init_asset_loader::<crate::shader::graphics::GraphicsPipelineLoader>()
             .init_asset_loader::<crate::loader::KtxLoader>()
             .init_asset_loader::<crate::loader::DdsLoader>()
             .init_asset_loader::<crate::loader::ImageLoader>();

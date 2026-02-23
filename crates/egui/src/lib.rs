@@ -6,7 +6,7 @@ use bevy_egui::egui::TextureId;
 pub use bevy_egui::*;
 use bevy_pumicite::staging::{BufferInitializer, HostVisibleRingBuffer};
 use bevy_pumicite::{
-    DefaultRenderSet, DefaultTransferSet, PumiciteApp, RenderState, shader::GraphicsPipeline,
+    DefaultRenderSet, DefaultTransferSet, PumiciteApp, RenderState, shader::graphics::GraphicsPipeline,
 };
 use bevy_window::PrimaryWindow;
 use glam::Vec2;
