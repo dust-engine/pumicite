@@ -1,17 +1,23 @@
 GraphicsPipeline(
     shaders: {
+        Task: (
+            path: "mesh_shader_culling/mesh_shader_culling.spv",
+            entry_point: "taskMain",
+        ),
         Mesh: (
-            path: "mesh_shading/mesh_shading.spv",
+            path: "mesh_shader_culling/mesh_shader_culling.spv",
             entry_point: "meshMain",
         ),
         Fragment: (
-            path: "mesh_shading/mesh_shading.spv",
+            path: "mesh_shader_culling/mesh_shader_culling.spv",
             entry_point: "fragmentMain",
         ),
     },
     layout: Inline(
         PipelineLayout(
-
+            push_constants: {
+                Task: (0, 12)
+            }
         )
     ),
     attachments: [

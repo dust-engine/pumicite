@@ -20,8 +20,8 @@ struct MeshStageOutput
 };
 
 [shader("mesh")]
-[outputtopology("triangle")]
 [numthreads(1, 1, 1)]
+[outputtopology("triangle")]
 void meshMain(
     out indices uint3 triangles[1], 
     out vertices MeshStageOutput vertices[3], 

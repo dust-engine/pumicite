@@ -1,23 +1,34 @@
-use bevy::ecs::schedule::IntoScheduleConfigs;
+use bevy::{ecs::schedule::IntoScheduleConfigs, window::PrimaryWindow};
 use bevy::prelude::*;
 use bevy_pumicite::prelude::*;
 use glam::{IVec2, Vec3Swizzles};
+use pumicite_egui::{EguiContexts, EguiPrimaryContextPass, EguiRenderSet};
+
+const DENSITY_LEVEL: u32 = 2;
 
 fn main() {
     let mut app = bevy::app::App::new();
     app.add_plugins(bevy_pumicite::DefaultPlugins);
 
-    app.add_device_extension::<ash::khr::dynamic_rendering::Meta>()
-        .unwrap();
-    app.enable_feature::<vk::PhysicalDeviceDynamicRenderingFeatures>(|x| &mut x.dynamic_rendering)
-        .unwrap();
-    app.add_device_extension::<ash::ext::mesh_shader::Meta>()
-        .unwrap();
-    app.enable_feature::<vk::PhysicalDeviceMeshShaderFeaturesEXT>(|x| &mut x.mesh_shader)
-        .unwrap();
-    app.add_systems(PostUpdate, mesh_shading.in_set(DefaultRenderSet));
+    app.add_device_extension::<ash::khr::dynamic_rendering::Meta>().unwrap();
+    app.enable_feature::<vk::PhysicalDeviceDynamicRenderingFeatures>(|x| &mut x.dynamic_rendering).unwrap();
+
+    app.add_device_extension::<ash::ext::mesh_shader::Meta>().unwrap();
+    app.enable_feature::<vk::PhysicalDeviceMeshShaderFeaturesEXT>(|x| &mut x.mesh_shader).unwrap();
+    app.enable_feature::<vk::PhysicalDeviceMeshShaderFeaturesEXT>(|x| &mut x.task_shader).unwrap();
+
+    // Add egui plugin
+    //app.add_plugins(pumicite_egui::EguiPlugin::<With<PrimaryWindow>>::default());
 
     app.add_systems(Startup, setup);
+    //app.add_systems(EguiPrimaryContextPass, egui_ui);
+    app.add_systems(
+        PostUpdate, 
+        mesh_shader_culling
+            .in_set(DefaultRenderSet)
+            //.before(EguiRenderSet)
+    );
+
     app.run();
 }
 
@@ -28,15 +39,23 @@ struct MeshShadingPipeline {
 
 fn setup(mut commands: Commands, asset_server: ResMut<AssetServer>) {
     commands.insert_resource(MeshShadingPipeline {
-        draw: asset_server.load("mesh_shading/mesh_shading.gfx.pipeline.ron"),
+        draw: asset_server.load("mesh_shader_culling/mesh_shader_culling.gfx.pipeline.ron"),
     });
 }
 
-fn mesh_shading(
+#[derive(Resource, bytemuck::Zeroable, bytemuck::NoUninit, Clone, Copy)]
+#[repr(C)]
+struct PushConstants {
+    cull_center: Vec2,
+    cull_radius: f32,
+}
+
+fn mesh_shader_culling(
     mut swapchain_image: Single<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
     mut state: RenderState,
     pipeline: Res<MeshShadingPipeline>,
-    graphics_pipelines: Res<Assets<GraphicsPipeline>>
+    graphics_pipelines: Res<Assets<GraphicsPipeline>>,
+    //push_constants: Res<PushConstants>
 ) {
     let pipeline = graphics_pipelines.get(&pipeline.draw);
 
@@ -94,9 +113,32 @@ fn mesh_shading(
                     },
                 }],
             );
+            
+
+            pass.push_constants(
+                pipeline.layout(),
+                vk::ShaderStageFlags::TASK_EXT,
+                0,
+                &bytemuck::bytes_of(&PushConstants {
+                    cull_center: Vec2 { x: 2.0, y: 2.0 },
+                    cull_radius: 1.0
+                }),
+            );
 
             // Dispatch mesh shading pipeline workgroups
-            pass.draw_mesh_tasks(UVec3::new(1, 1, 1));
+            let n = match DENSITY_LEVEL {
+                2 => 8,
+                1 => 6,
+                0 => 4,
+                _ => 2
+            };
+            pass.draw_mesh_tasks(UVec3::new(n, n, 1));
+
+            // TODO: add egui
         }
     });
 }
+
+// fn egui_ui(mut contexts: EguiContexts, mut push_constants: ResMut<PushConstants>) {
+
+// }
