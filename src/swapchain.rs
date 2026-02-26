@@ -407,7 +407,7 @@ impl Swapchain {
                 .feature::<vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT>()
                 .is_some_and(|x| x.swapchain_maintenance1 == vk::TRUE);
             if !has_maintenance_1 {
-                // Workaround: when we don't have VK_EXT_swapchain_maintenance1, set
+                // Workaround: when we don't have VK_KHR_swapchain_maintenance1, set
                 // last_present_queue to be the last presented queue.
                 image.last_present_queue = queue.vk_handle();
             }
@@ -491,7 +491,7 @@ pub struct SwapchainImageInner {
     acquire_semaphore: SharedSemaphore,
     present_semaphore: SharedSemaphore,
 
-    /// Workaround for when implementation does not have VK_EXT_swapchain_maintenance1.
+    /// Workaround for when implementation does not have VK_KHR_swapchain_maintenance1.
     last_present_queue: vk::Queue,
 }
 
@@ -521,7 +521,7 @@ impl Drop for SwapchainImageInner {
         }
         if self.last_present_queue != vk::Queue::null() {
             unsafe {
-                // Workaround: when VK_EXT_swapchain_maintenance1 is unavailable,
+                // Workaround: when VK_KHR_swapchain_maintenance1 is unavailable,
                 // we conservatively wait for the queue itself to become idle.
                 self.swapchain
                     .device

@@ -66,10 +66,10 @@ use bevy_app::{App, Plugin};
 use bevy_ecs::{prelude::*, query::QueryFilter};
 use bevy_window::{PrimaryWindow, Window};
 use glam::UVec2;
-use pumicite::ash::ext::surface_maintenance1::Meta as ExtSurfaceMaintenance1;
 use pumicite::ash::vk;
 use pumicite::{
-    ash::ext::swapchain_maintenance1::Meta as ExtSwapchainMaintenance1,
+    ash::khr::surface_maintenance1::Meta as KhrSurfaceMaintenance1,
+    ash::khr::swapchain_maintenance1::Meta as KhrSwapchainMaintenance1,
     ash::khr::swapchain_mutable_format::Meta as ExtSwapchainMutableFormat, tracking::ResourceState,
 };
 use pumicite::{ash::khr::swapchain::Meta as KhrSwapchain, swapchain::HDRMode};
@@ -116,24 +116,24 @@ impl Plugin for SwapchainPlugin {
     fn build(&self, app: &mut App) {
         app.add_device_extension::<KhrSwapchain>().unwrap();
 
-        app.add_device_extension::<ExtSurfaceMaintenance1>().ok();
+        app.add_device_extension::<KhrSurfaceMaintenance1>().ok();
         app.add_device_extension::<ExtSwapchainMutableFormat>()
             .unwrap();
         if !(app
-            .add_device_extension::<ExtSwapchainMaintenance1>()
+            .add_device_extension::<KhrSwapchainMaintenance1>()
             .is_ok()
             && app
-                .enable_feature::<vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT>(|x| {
+                .enable_feature::<vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR>(|x| {
                     &mut x.swapchain_maintenance1
                 })
                 .is_ok())
         {
-            // Without VK_EXT_swapchain_maintenance1, dropping a swapchain is techncially UB because
+            // Without VK_KHR_swapchain_maintenance1, dropping a swapchain is techncially UB because
             // there's no way to ensure that the vkQueuePresentKHR has finished before we're allowed
             // to drop the semaphore used for that presentation.
             // As a workaround, if we need to drop the present semaphore, we call vkWaitQueueIdle.
             tracing::warn!(
-                "VK_EXT_swapchain_maintenance1 is missing from this Vulkan implementation. Without this extension, dropping a swapchain is technically undefined behavior."
+                "VK_KHR_swapchain_maintenance1 is missing from this Vulkan implementation. Without this extension, dropping a swapchain is technically undefined behavior."
             )
         }
 

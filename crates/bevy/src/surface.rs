@@ -28,10 +28,10 @@ use bevy_window::{RawHandleWrapper, Window};
 use bevy_winit::DisplayHandleWrapper;
 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 
-use pumicite::ash::ext::surface_maintenance1::Meta as ExtSurfaceMaintenance1;
 use pumicite::ash::ext::swapchain_colorspace::Meta as ExtSwapchainColorspace;
 use pumicite::ash::khr::get_surface_capabilities2::Meta as KhrSurfaceCapabilities2;
 use pumicite::ash::khr::surface::Meta as KhrSurface;
+use pumicite::ash::khr::surface_maintenance1::Meta as KhrSurfaceMaintenance1;
 use pumicite::{Instance, Surface, ash};
 
 use super::PumiciteApp;
@@ -77,7 +77,7 @@ impl Plugin for SurfacePlugin {
         app.add_instance_extension::<KhrSurface>().unwrap();
         app.add_instance_extension::<ExtSwapchainColorspace>().ok();
         app.add_instance_extension::<KhrSurfaceCapabilities2>().ok();
-        app.add_instance_extension::<ExtSurfaceMaintenance1>().ok();
+        app.add_instance_extension::<KhrSurfaceMaintenance1>().ok();
 
         if let Some(display_handle) = app.world().get_resource::<DisplayHandleWrapper>() {
             match display_handle.display_handle().unwrap().as_raw() {
