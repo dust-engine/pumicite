@@ -120,8 +120,8 @@ fn mesh_shader_culling(
                 vk::ShaderStageFlags::TASK_EXT,
                 0,
                 &bytemuck::bytes_of(&PushConstants {
-                    cull_center: Vec2 { x: 2.0, y: 2.0 },
-                    cull_radius: 1.0
+                    cull_center: Vec2 { x: -1.0, y: -1.0 },
+                    cull_radius: 2.0
                 }),
             );
 

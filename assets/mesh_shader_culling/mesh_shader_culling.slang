@@ -102,7 +102,6 @@ struct MeshStageOutput
 [numthreads(numMeshInvocationsX, numMeshInvocationsY, 1)]
 [outputtopology("triangle")]
 void meshMain(
-    in payload SharedData payload,
     out indices uint3 triangles[2 * numMeshInvocationsX * numMeshInvocationsY], 
     out vertices MeshStageOutput vertices[4 * numMeshInvocationsX * numMeshInvocationsY], 
     uint3 DispatchThreadID: SV_DispatchThreadID,
@@ -137,7 +136,7 @@ void meshMain(
 
     uint triangleBaseIndex = 2 * GroupIndex;
     triangles[triangleBaseIndex] = uint3(vertexBaseIndex + 0, vertexBaseIndex + 1, vertexBaseIndex + 2);
-    triangles[triangleBaseIndex] = uint3(vertexBaseIndex + 2, vertexBaseIndex + 3, vertexBaseIndex + 0);
+    triangles[triangleBaseIndex + 1] = uint3(vertexBaseIndex + 2, vertexBaseIndex + 3, vertexBaseIndex + 0);
 }
 
 // Fragment Shader
