@@ -109,7 +109,7 @@ pub mod prelude {
     pub use crate::{
         DefaultComputeSet, DefaultRenderSet, DefaultTransferSet, DescriptorHeap, PumiciteApp,
         RenderState,
-        shader::{ComputePipeline, GraphicsPipeline},
+        shader::{compute::ComputePipeline, graphics::GraphicsPipeline},
         staging::{
             BufferInitializer, DeviceLocalRingBuffer, HostVisibleRingBuffer, UniformRingBuffer,
         },

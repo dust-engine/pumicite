@@ -1,0 +1,27 @@
+GraphicsPipeline(
+    shaders: {
+        Mesh: (
+            path: "mesh_shading/mesh_shading.spv",
+            entry_point: "meshMain",
+        ),
+        Fragment: (
+            path: "mesh_shading/mesh_shading.spv",
+            entry_point: "fragmentMain",
+        ),
+    },
+    layout: Inline(
+        PipelineLayout(
+
+        )
+    ),
+    attachments: [
+        (
+            blend_enable: true,
+            blend_equation: (
+                color: (One, Add, OneMinusSrcAlpha),
+                alpha: (One, Add, OneMinusSrcAlpha),
+            ),
+            format: B8G8R8A8_SRGB,
+        )
+    ]
+)

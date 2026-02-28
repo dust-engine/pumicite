@@ -40,7 +40,7 @@
 use std::ops::{Deref, DerefMut, Range};
 
 use ash::vk;
-use glam::{IVec2, IVec4, UVec2, UVec4, Vec4};
+use glam::{IVec2, IVec4, UVec2, UVec3, UVec4, Vec4};
 
 use crate::{
     Device, HasDevice,
@@ -704,6 +704,103 @@ impl<'a> RenderPass<'_, 'a> {
             );
         }
     }
+
+    /// Executes the currently bound mesh shading pipeline with the specified number of workgroups in each dimension.
+    ///
+    /// Uses `VK_EXT_mesh_shader` if available, otherwise panics.
+    ///
+    /// # Parameters
+    /// - `size`: The number of workgroups to dispatch in (x, y, z) dimensions
+    pub fn draw_mesh_tasks(
+        &mut self,
+        size: UVec3
+    ) {
+        if let Ok(extension) = self
+            .encoder
+            .device()
+            .get_extension::<ash::ext::mesh_shader::Meta>()
+        {
+            unsafe {
+                (extension.fp().cmd_draw_mesh_tasks_ext)(
+                    self.encoder.buffer().buffer, 
+                    size.x, 
+                    size.y, 
+                    size.z
+                );
+            }
+        } else {
+            todo!()
+        }
+    }
+
+    /// Executes the currently bound mesh shading pipeline with draw parameters read from an indirect buffer on GPU timeline.
+    ///
+    /// Uses `VK_EXT_mesh_shader` if available, otherwise panics.
+    ///
+    /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndirectCommand`] structs.
+    pub fn draw_mesh_tasks_indirect(
+        &mut self,
+        indirect_buffer: &'a impl BufferLike,
+        draw_count: u32,
+        stride: u32,
+    ) {
+        if let Ok(extension) = self
+            .encoder
+            .device()
+            .get_extension::<ash::ext::mesh_shader::Meta>()
+        {
+            unsafe {
+                (extension.fp().cmd_draw_mesh_tasks_indirect_ext)(
+                    self.encoder.buffer().buffer,
+                    indirect_buffer.vk_handle(),
+                    indirect_buffer.offset(),
+                    draw_count,
+                    stride
+                );
+            }
+        } else {
+            todo!()
+        }
+    }
+
+    /// Dispatches mesh shading work.
+    ///
+    /// Executes the currently bound mesh shading pipeline with the specified number of
+    /// workgroups in each dimension.
+    ///
+    /// Uses `VK_EXT_mesh_shader` if available, otherwise panics.
+    ///
+    /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawMeshTasksIndirectCommandEXT`] structs.
+    /// `count_buffer` contains a `u32` specifying the actual number of draws.
+    pub fn draw_mesh_tasks_indirect_count(
+        &mut self,
+        indirect_buffer: &'a impl BufferLike,
+        count_buffer: &'a impl BufferLike,
+        max_draw_count: u32,
+        stride: u32,
+    ) {
+        if let Ok(extension) = self
+            .encoder
+            .device()
+            .get_extension::<ash::ext::mesh_shader::Meta>()
+        {
+            unsafe {
+                (extension.fp().cmd_draw_mesh_tasks_indirect_count_ext)(
+                    self.encoder.buffer().buffer,
+                    indirect_buffer.vk_handle(),
+                    indirect_buffer.offset(),
+                    count_buffer.vk_handle(),
+                    count_buffer.offset(),
+                    max_draw_count,
+                    stride,
+                );
+            }
+        } else {
+            panic!()
+        }
+    }
+
+
 
     /// Ends the current render pass.
     pub fn end(self) {

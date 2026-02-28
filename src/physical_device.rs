@@ -741,6 +741,10 @@ impl_feature_for_ext!(
     vk::PhysicalDeviceShaderDrawParameterFeatures<'static>,
     khr::shader_draw_parameters::Meta
 );
+impl_feature_for_ext!(
+    vk::PhysicalDeviceMeshShaderFeaturesEXT<'static>,
+    ext::mesh_shader::Meta
+);
 
 #[cfg(test)]
 mod tests {
