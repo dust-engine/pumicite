@@ -2,7 +2,7 @@ use bevy::{ecs::schedule::IntoScheduleConfigs, window::PrimaryWindow};
 use bevy::prelude::*;
 use bevy_pumicite::prelude::*;
 use glam::{IVec2, Vec3Swizzles};
-use pumicite_egui::{EguiContexts, EguiPrimaryContextPass, EguiRenderSet};
+use pumicite_egui::{EguiContexts, EguiPrimaryContextPass, EguiRenderSet, egui};
 
 const DENSITY_LEVEL: u32 = 2;
 
@@ -18,15 +18,15 @@ fn main() {
     app.enable_feature::<vk::PhysicalDeviceMeshShaderFeaturesEXT>(|x| &mut x.task_shader).unwrap();
 
     // Add egui plugin
-    //app.add_plugins(pumicite_egui::EguiPlugin::<With<PrimaryWindow>>::default());
+    app.add_plugins(pumicite_egui::EguiPlugin::<With<PrimaryWindow>>::default());
 
     app.add_systems(Startup, setup);
-    //app.add_systems(EguiPrimaryContextPass, egui_ui);
+    app.add_systems(EguiPrimaryContextPass, egui_ui);
     app.add_systems(
         PostUpdate, 
         mesh_shader_culling
             .in_set(DefaultRenderSet)
-            //.before(EguiRenderSet)
+            .before(EguiRenderSet)
     );
 
     app.run();
@@ -40,6 +40,10 @@ struct MeshShadingPipeline {
 fn setup(mut commands: Commands, asset_server: ResMut<AssetServer>) {
     commands.insert_resource(MeshShadingPipeline {
         draw: asset_server.load("mesh_shader_culling/mesh_shader_culling.gfx.pipeline.ron"),
+    });
+    commands.insert_resource(PushConstants {
+        cull_center: Vec2 { x: -0.25, y: -0.25 },
+        cull_radius: 0.75,
     });
 }
 
@@ -55,7 +59,7 @@ fn mesh_shader_culling(
     mut state: RenderState,
     pipeline: Res<MeshShadingPipeline>,
     graphics_pipelines: Res<Assets<GraphicsPipeline>>,
-    //push_constants: Res<PushConstants>
+    push_constants: Res<PushConstants>
 ) {
     let pipeline = graphics_pipelines.get(&pipeline.draw);
 
@@ -114,15 +118,11 @@ fn mesh_shader_culling(
                 }],
             );
             
-
             pass.push_constants(
                 pipeline.layout(),
                 vk::ShaderStageFlags::TASK_EXT,
                 0,
-                &bytemuck::bytes_of(&PushConstants {
-                    cull_center: Vec2 { x: -1.0, y: -1.0 },
-                    cull_radius: 2.0
-                }),
+                &bytemuck::bytes_of(&*push_constants),
             );
 
             // Dispatch mesh shading pipeline workgroups
@@ -133,12 +133,18 @@ fn mesh_shader_culling(
                 _ => 2
             };
             pass.draw_mesh_tasks(UVec3::new(n, n, 1));
-
-            // TODO: add egui
         }
     });
 }
 
-// fn egui_ui(mut contexts: EguiContexts, mut push_constants: ResMut<PushConstants>) {
 
-// }
+fn egui_ui(mut contexts: EguiContexts, mut push_constants: ResMut<PushConstants>) {
+    egui::Window::new("Mesh Shader Culling")
+        .default_width(300.0)
+        .show(contexts.ctx_mut().unwrap(), |ui| {
+            ui.heading("Configurations:\n");
+            ui.add(egui::Slider::new(&mut push_constants.cull_center.x, -0.5..=0.5).text("Cull Center X"));
+            ui.add(egui::Slider::new(&mut push_constants.cull_center.y, -0.5..=0.5).text("Cull Center Y"));
+            ui.add(egui::Slider::new(&mut push_constants.cull_radius, 0.0..=1.0).text("Cull Radius"));
+        });
+}
