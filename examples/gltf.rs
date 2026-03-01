@@ -177,7 +177,7 @@ struct CameraUniforms {
 pub struct MainRenderPass;
 
 fn start_main_render_pass(
-    mut ctx: RenderState,
+    mut ctx: SubmissionState,
     mut swapchain_image: Query<
         (&mut SwapchainImage, &mut GBuffer),
         With<bevy::window::PrimaryWindow>,
@@ -255,7 +255,7 @@ fn prepare_gltf_scene(
     materials: Query<(Entity, &pumicite_scene::gltf::GltfMaterial)>,
     textures: Res<Assets<TextureAsset>>,
     instance_query: Query<(&GlobalTransform, &Transform, &pumicite_scene::InstanceOf)>,
-    mut ctx: RenderState,
+    mut ctx: SubmissionState,
     mut prepared_scene: ResMut<PreparedGltfScene>,
     mut swapchain_image: Query<
         (&mut SwapchainImage, &mut GBuffer),
@@ -368,7 +368,7 @@ fn prepare_gltf_scene(
 fn draw_gltf_scene(
     pbr_pipeline: Res<PbrPipeline>,
     models: Query<(&pumicite_scene::Model, &pumicite_scene::ModelInstances)>,
-    mut ctx: RenderState,
+    mut ctx: SubmissionState,
 
     pipelines: Res<Assets<GraphicsPipeline>>,
 

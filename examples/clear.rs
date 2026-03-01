@@ -23,7 +23,7 @@ fn main() {
 
 fn clear(
     mut swapchain_image: Query<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
-    mut state: RenderState,
+    mut state: SubmissionState,
     time: Res<Time>,
 ) {
     let Ok(mut swapchain_image) = swapchain_image.single_mut() else {

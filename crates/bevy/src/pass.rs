@@ -69,6 +69,8 @@ pub(super) struct SubmissionSetsPass {
     pub(crate) submission_sets_to_queue: HashMap<InternedSystemSet, ComponentId>,
     /// Maps submission set to its prelude/submission meta-systems.
     submission_sets_to_meta_systems: HashMap<SystemSetKey, RenderSetMetaSystems>,
+    /// Maps render sets to its config system
+    pub(crate) render_sets_to_systems: HashMap<InternedSystemSet, SystemKey>,
 }
 
 impl ScheduleBuildPass for SubmissionSetsPass {

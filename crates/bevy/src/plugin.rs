@@ -1,6 +1,6 @@
 use bevy_app::prelude::*;
 use bevy_asset::AssetApp;
-use bevy_ecs::prelude::*;
+use bevy_ecs::{prelude::*, schedule::{Schedulable, SystemKey}, system::BoxedSystem};
 use pumicite::{
     ash::{
         khr,
@@ -10,7 +10,7 @@ use pumicite::{
     bevy::PipelineLayout,
     physical_device::PhysicalDevice,
 };
-use std::ffi::CStr;
+use std::{alloc::System, ffi::CStr};
 
 use crate::{
     DescriptorHeap, shader::ShaderModule, staging::AsyncTransfer, swapchain::SwapchainSet,
@@ -305,6 +305,8 @@ impl Plugin for PumicitePlugin {
         // Optional extensions
         app.add_device_extension::<khr::deferred_host_operations::Meta>()
             .ok();
+        app.add_device_extension::<khr::dynamic_rendering_local_read::Meta>()
+            .ok();
 
         app.init_asset::<ShaderModule>()
             .init_asset::<PipelineLayout>()
@@ -549,6 +551,10 @@ pub trait PumiciteApp {
     ///
     /// - `Q`: Queue marker type (e.g., [`RenderQueue`](crate::queue::RenderQueue), [`ComputeQueue`](crate::queue::ComputeQueue) )
     fn add_submission_set<Q: 'static>(&mut self, set: impl SystemSet + Copy) -> &mut Self;
+
+    
+
+    fn add_render_set<M>(&mut self, set: impl SystemSet, system: impl IntoSystem<(), (), M>);
 }
 
 fn get_device_builder(app: &mut App) -> Mut<'_, DeviceBuilder> {
@@ -683,5 +689,22 @@ impl PumiciteApp for App {
             .submission_sets_to_queue
             .insert(set.intern(), component_id);
         self
+    }
+
+    fn add_render_set<M>(&mut self, set: impl SystemSet, system: impl IntoSystem<(), (), M>) {
+        let interned_set = set.intern();
+        let schedule = self.get_schedule_mut(PostUpdate).unwrap();
+
+        // Add the config system to the schedule graph, placing it inside the render set
+        let result = schedule
+            .graph_mut()
+            .process_configs(system.in_set(set).into_configs(), true);
+        assert_eq!(result.nodes.len(), 1);
+        let system_key = result.nodes[0].as_system().unwrap();
+
+        let build_pass = schedule.get_build_pass_mut::<SubmissionSetsPass>().unwrap();
+        build_pass
+            .render_sets_to_systems
+            .insert(interned_set, system_key);
     }
 }

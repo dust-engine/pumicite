@@ -155,10 +155,10 @@ unsafe impl Sync for RenderSetSharedState {}
 /// // Add to a submission set
 /// app.add_systems(PostUpdate, my_render_system.in_set(DefaultRenderSet));
 /// ```
-pub struct RenderState<'world> {
+pub struct SubmissionState<'world> {
     state: Mut<'world, RenderSetSharedState>,
 }
-impl RenderState<'_> {
+impl SubmissionState<'_> {
     /// Encode commands outside an active render pass.
     ///
     /// If the command encoder has an active encoder, end the active encoder
@@ -189,10 +189,10 @@ impl RenderState<'_> {
     }
 }
 
-unsafe impl SystemParam for RenderState<'_> {
+unsafe impl SystemParam for SubmissionState<'_> {
     type State = ComponentId;
 
-    type Item<'world, 'state> = RenderState<'world>;
+    type Item<'world, 'state> = SubmissionState<'world>;
 
     fn init_state(_world: &mut World) -> ComponentId {
         ComponentId::new(usize::MAX)
@@ -207,12 +207,12 @@ unsafe impl SystemParam for RenderState<'_> {
         unsafe {
             if *state == ComponentId::new(usize::MAX) {
                 panic!(
-                    "System {} was never added to a RenderSet!",
+                    "System {} was never added to a SubmissionSet!",
                     system_meta.name()
                 )
             }
             let value = world.get_resource_mut_by_id(*state).unwrap();
-            RenderState {
+            SubmissionState {
                 state: value.with_type(),
             }
         }
@@ -255,7 +255,7 @@ impl RenderSetSharedStateConfig {
     }
 }
 
-pub(crate) fn prelude_system(mut shared: RenderState) {
+pub(crate) fn prelude_system(mut shared: SubmissionState) {
     let shared = shared.state.as_mut();
     shared.stage_index = 0;
     assert!(shared.recording_command_buffer.is_none());
@@ -284,7 +284,7 @@ pub(crate) fn prelude_system(mut shared: RenderState) {
 }
 
 pub(crate) fn submission_system(
-    mut shared: RenderState,
+    mut shared: SubmissionState,
     mut queue: Queue<()>, // to be configured.
 ) {
     shared.record(|_| {}); // Close any open encoders.
