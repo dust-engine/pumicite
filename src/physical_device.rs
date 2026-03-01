@@ -678,7 +678,7 @@ impl_feature_for_ext!(
 );
 impl_feature_for_ext!(
     vk::PhysicalDevicePipelineLibraryGroupHandlesFeaturesEXT<'static>,
-    khr::ray_tracing_pipeline::Meta
+    ext::pipeline_library_group_handles::Meta
 );
 impl_feature_for_ext!(
     vk::PhysicalDeviceAccelerationStructureFeaturesKHR<'static>,
