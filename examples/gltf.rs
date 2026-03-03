@@ -62,21 +62,19 @@ fn main() {
 
     app.enable_bindless().unwrap();
 
+    app.add_render_set(MainRenderPass, start_main_render_pass);
+    app.configure_sets(PostUpdate, MainRenderPass.in_set(DefaultRenderSet));
+
     app.add_systems(
         PostUpdate,
         (
             gbuffer_resize
                 .in_set(DefaultRenderSet)
-                .before(start_main_render_pass),
-            start_main_render_pass
-                .in_set(DefaultRenderSet)
                 .before(MainRenderPass),
             prepare_gltf_scene
                 .in_set(DefaultRenderSet)
-                .before(start_main_render_pass),
-            draw_gltf_scene
-                .in_set(MainRenderPass)
-                .in_set(DefaultRenderSet),
+                .before(MainRenderPass),
+            draw_gltf_scene.in_set(MainRenderPass),
         ),
     );
     app.add_systems(Startup, setup);

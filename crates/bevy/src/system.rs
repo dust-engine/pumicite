@@ -1,6 +1,6 @@
 //! Command encoding infrastructure for render systems.
 //!
-//! This module provides the system parameter [`RenderState`] for recording GPU commands
+//! This module provides the system parameter [`SubmissionState`] for recording GPU commands
 //! within Bevy systems. It manages command buffer allocation, encoding, and submission
 //! as part of the submission set system.
 //!
@@ -10,7 +10,7 @@
 //! the following happens automatically:
 //!
 //! 1. **Prelude**: A command buffer is allocated and recording begins
-//! 2. **Your systems**: Use [`RenderState`] to record commands
+//! 2. **Your systems**: Use [`SubmissionState`] to record commands
 //! 3. **Submission**: The command buffer is ended and submitted to the queue
 //!
 //! All systems in the same submission set share a single command buffer and execute
@@ -20,9 +20,9 @@
 //!
 //! ```no_run
 //! use bevy::prelude::*;
-//! use bevy_pumicite::{RenderState, DefaultRenderSet};
+//! use bevy_pumicite::{SubmissionState, DefaultRenderSet};
 //!
-//! fn my_render_system(mut ctx: RenderState) {
+//! fn my_render_system(mut ctx: SubmissionState) {
 //!     ctx.record(|encoder| {
 //!         // Record transfer, compute, or setup commands
 //!     });
@@ -39,11 +39,11 @@
 //!
 //! # Active Render Pass
 //!
-//! The [`RenderState::render`] method only works when a render pass is active.
+//! The [`SubmissionState::render`] method only works when a render pass is active.
 //! If called without an active render pass, the callback is not invoked.
 //! Call [`CommandEncoder::begin_rendering`] to begin a render pass.
 //!
-//! Use [`RenderState::record`] for commands outside render passes.
+//! Use [`SubmissionState::record`] for commands outside render passes.
 
 use bevy_ecs::{
     component::{ComponentId, Tick},
@@ -121,7 +121,7 @@ unsafe impl Sync for RenderSetSharedState {}
 
 /// System parameter for recording GPU commands within a submission set.
 ///
-/// `RenderState` provides access to the shared command encoder for systems
+/// `SubmissionState` provides access to the shared command encoder for systems
 /// in a submission set. Use it to record rendering, compute, and transfer commands
 /// that will be submitted together with other systems in the same set.
 ///
@@ -139,9 +139,9 @@ unsafe impl Sync for RenderSetSharedState {}
 ///
 /// ```no_run
 /// use bevy::prelude::*;
-/// use bevy_pumicite::{RenderState, DefaultRenderSet};
+/// use bevy_pumicite::{SubmissionState, DefaultRenderSet};
 ///
-/// fn my_render_system(mut ctx: RenderState) {
+/// fn my_render_system(mut ctx: SubmissionState) {
 ///     ctx.record(|encoder| {
 ///         // Record transfer, compute, or setup commands
 ///     });

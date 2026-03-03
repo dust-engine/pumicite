@@ -1,6 +1,10 @@
 use bevy_app::prelude::*;
 use bevy_asset::AssetApp;
-use bevy_ecs::{prelude::*, schedule::{Schedulable, SystemKey}, system::BoxedSystem};
+use bevy_ecs::{
+    prelude::*,
+    schedule::{Schedulable, SystemKey},
+    system::BoxedSystem,
+};
 use pumicite::{
     ash::{
         khr,
@@ -25,9 +29,9 @@ use pumicite::{
     physical_device::Feature,
 };
 
-/// The default system set for rendering operations.
+/// The default submission set for rendering operations.
 ///
-/// Systems in this set are submitted to the [`RenderQueue`](crate::queue::RenderQueue),
+/// Systems in this submission set are submitted to the [`RenderQueue`](crate::queue::RenderQueue),
 /// which supports [`vk::QueueFlags::GRAPHICS`] and most likely [`vk::QueueFlags::COMPUTE`] on
 /// desktop GPUs.
 ///
@@ -50,9 +54,9 @@ use pumicite::{
 #[derive(Debug, SystemSet, Hash, PartialEq, Eq, Clone, Copy)]
 pub struct DefaultRenderSet;
 
-/// The default system set for compute operations.
+/// The default submission set for compute operations.
 ///
-/// Systems in this set are submitted to the [`ComputeQueue`](crate::queue::ComputeQueue),
+/// Systems in this submission set are submitted to the [`ComputeQueue`](crate::queue::ComputeQueue),
 /// which supports [`vk::QueueFlags::COMPUTE`].
 ///
 /// # Ordering
@@ -61,9 +65,9 @@ pub struct DefaultRenderSet;
 #[derive(Debug, SystemSet, Hash, PartialEq, Eq, Clone, Copy)]
 pub struct DefaultComputeSet;
 
-/// The default system set for data transfer operations.
+/// The default submission set for data transfer operations.
 ///
-/// Systems in this set are submitted to the [`TransferQueue`](crate::queue::TransferQueue),
+/// Systems in this submission set are submitted to the [`TransferQueue`](crate::queue::TransferQueue),
 /// which supports [`vk::QueueFlags::TRANSFER`].
 ///
 /// # Ordering
@@ -545,15 +549,52 @@ pub trait PumiciteApp {
     /// All systems in the submission set:
     /// - Share a single command pool
     /// - Execute serially (commands are recorded in system order)
-    /// - Use [`RenderState`](crate::RenderState) to record commands
+    /// - Use [`SubmissionState`](crate::SubmissionState) to record commands
     ///
     /// # Type Parameters
     ///
     /// - `Q`: Queue marker type (e.g., [`RenderQueue`](crate::queue::RenderQueue), [`ComputeQueue`](crate::queue::ComputeQueue) )
     fn add_submission_set<Q: 'static>(&mut self, set: impl SystemSet + Copy) -> &mut Self;
 
-    
-
+    /// Registers a system set as a render set with a configuration system.
+    ///
+    /// A render set corresponds to a single Vulkan dynamic rendering render pass
+    /// within a submission set. The `system` parameter is the configuration system
+    /// responsible for setting up render targets and calling
+    /// [`CommandEncoder::begin_rendering`](pumicite::command::CommandEncoder::begin_rendering).
+    /// It is guaranteed to run before all other systems in the render set.
+    ///
+    /// Other systems added to the render set by the user (via `.in_set(set)`) can then
+    /// call [`SubmissionState::render`](crate::SubmissionState::render) to draw into the
+    /// active render pass started by the configuration system.
+    ///
+    /// # Scheduling
+    ///
+    /// The render set must be placed inside exactly one submission set (via
+    /// `.in_set(submission_set)`). Failing to do so will panic at schedule build time.
+    ///
+    /// Within a submission set, render systems are scheduled in such a way to minimize
+    /// transitions between render and compute workloads.
+    ///
+    /// # Parameters
+    ///
+    /// - `set`: The system set that will act as the render set.
+    /// - `system`: The configuration system that begins the render pass.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    ///# use bevy::prelude::*;
+    ///# use bevy_pumicite::{SubmissionState, DefaultRenderSet};
+    ///# #[derive(Debug, SystemSet, Hash, PartialEq, Eq, Clone, Copy)]
+    ///# struct MyRenderSet;
+    ///# fn begin_my_render_pass(ctx: SubmissionState) {}
+    /// App::new()
+    ///     // Place the render set inside a submission set
+    ///     .configure_sets(PostUpdate, MyRenderSet.in_set(DefaultRenderSet))
+    ///     // Register the render set with its configuration system
+    ///     .add_render_set(MyRenderSet, begin_my_render_pass);
+    /// ```
     fn add_render_set<M>(&mut self, set: impl SystemSet, system: impl IntoSystem<(), (), M>);
 }
 

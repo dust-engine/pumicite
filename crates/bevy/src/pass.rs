@@ -23,7 +23,7 @@
 //!
 //! This module is an implementation detail. Users should interact with submission sets
 //! through [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set) and
-//! [`RenderState`](crate::RenderState). This gives us the ability to fine-tune the
+//! [`SubmissionState`](crate::SubmissionState). This gives us the ability to fine-tune the
 //! scheduling of render systems, , the actual scheduling of the render systems
 //!
 
