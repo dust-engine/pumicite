@@ -177,7 +177,7 @@ impl SubmissionState<'_> {
     pub fn render(&mut self, encode: impl FnOnce(RenderPass)) {
         let Some(pass) = self.state.encoder.continue_rendering() else {
             tracing::warn!(
-                "`RenderSetSharedStateWrapper::render` called without an active render pass"
+                "`SubmissionState::render` called without an active render pass"
             );
             return;
         };
