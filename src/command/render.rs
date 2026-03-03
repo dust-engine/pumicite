@@ -711,10 +711,7 @@ impl<'a> RenderPass<'_, 'a> {
     ///
     /// # Parameters
     /// - `size`: The number of workgroups to dispatch in (x, y, z) dimensions
-    pub fn draw_mesh_tasks(
-        &mut self,
-        size: UVec3
-    ) {
+    pub fn draw_mesh_tasks(&mut self, size: UVec3) {
         if let Ok(extension) = self
             .encoder
             .device()
@@ -722,10 +719,10 @@ impl<'a> RenderPass<'_, 'a> {
         {
             unsafe {
                 (extension.fp().cmd_draw_mesh_tasks_ext)(
-                    self.encoder.buffer().buffer, 
-                    size.x, 
-                    size.y, 
-                    size.z
+                    self.encoder.buffer().buffer,
+                    size.x,
+                    size.y,
+                    size.z,
                 );
             }
         } else {
@@ -755,7 +752,7 @@ impl<'a> RenderPass<'_, 'a> {
                     indirect_buffer.vk_handle(),
                     indirect_buffer.offset(),
                     draw_count,
-                    stride
+                    stride,
                 );
             }
         } else {
@@ -799,8 +796,6 @@ impl<'a> RenderPass<'_, 'a> {
             panic!()
         }
     }
-
-
 
     /// Ends the current render pass.
     pub fn end(self) {

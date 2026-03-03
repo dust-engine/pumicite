@@ -1,5 +1,3 @@
-
-
 use pumicite::ash::vk;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -89,10 +87,8 @@ pub struct GraphicsPipeline {
 
     /// Dynamic: VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY
     #[serde(default)]
-    pub topology: RequiredDynamicState<
-        PrimitiveTopology,
-        { vk::DynamicState::PRIMITIVE_TOPOLOGY.as_raw() },
-    >,
+    pub topology:
+        RequiredDynamicState<PrimitiveTopology, { vk::DynamicState::PRIMITIVE_TOPOLOGY.as_raw() }>,
 
     /// Dynamic: VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE
     #[serde(default)]
@@ -146,8 +142,7 @@ pub struct GraphicsPipeline {
     pub sample_shading: Option<f32>,
 
     #[serde(default)]
-    pub sample_mask:
-        OptionalDynamicState<Vec<u32>, { vk::DynamicState::SAMPLE_MASK_EXT.as_raw() }>,
+    pub sample_mask: OptionalDynamicState<Vec<u32>, { vk::DynamicState::SAMPLE_MASK_EXT.as_raw() }>,
 
     #[serde(default)]
     pub alpha_to_coverage_enable:
@@ -182,16 +177,14 @@ pub struct GraphicsPipeline {
 
     /// min, max
     #[serde(default)]
-    pub depth_bounds:
-        OptionalDynamicState<(f32, f32), { vk::DynamicState::DEPTH_BOUNDS.as_raw() }>,
+    pub depth_bounds: OptionalDynamicState<(f32, f32), { vk::DynamicState::DEPTH_BOUNDS.as_raw() }>,
 
     #[serde(default)]
     pub blend_logic_op_enable:
         RequiredDynamicState<bool, { vk::DynamicState::LOGIC_OP_ENABLE_EXT.as_raw() }>,
 
     #[serde(default)]
-    pub blend_logic_op:
-        OptionalDynamicState<String, { vk::DynamicState::LOGIC_OP_EXT.as_raw() }>,
+    pub blend_logic_op: OptionalDynamicState<String, { vk::DynamicState::LOGIC_OP_EXT.as_raw() }>,
 
     pub attachments: Vec<Attachment>,
 
@@ -346,8 +339,7 @@ pub struct StencilState {
     pub ops: RequiredDynamicState<StencilStateOps, { vk::DynamicState::STENCIL_OP.as_raw() }>,
     pub compare_mask:
         RequiredDynamicState<u32, { vk::DynamicState::STENCIL_COMPARE_MASK.as_raw() }>,
-    pub write_mask:
-        RequiredDynamicState<u32, { vk::DynamicState::STENCIL_WRITE_MASK.as_raw() }>,
+    pub write_mask: RequiredDynamicState<u32, { vk::DynamicState::STENCIL_WRITE_MASK.as_raw() }>,
     pub reference: RequiredDynamicState<u32, { vk::DynamicState::STENCIL_REFERENCE.as_raw() }>,
 }
 #[derive(Serialize, Deserialize)]
@@ -582,8 +574,7 @@ fn viewport_default() -> CountedDynamicState<Viewport> {
 fn scissor_default() -> CountedDynamicState<Rect2D> {
     CountedDynamicState::Count(1)
 }
-fn line_width_default() -> RequiredDynamicState<f32, { vk::DynamicState::LINE_WIDTH.as_raw() }>
-{
+fn line_width_default() -> RequiredDynamicState<f32, { vk::DynamicState::LINE_WIDTH.as_raw() }> {
     RequiredDynamicState::Static(1.0)
 }
 
@@ -679,9 +670,7 @@ impl From<DescriptorType> for pumicite::ash::vk::DescriptorType {
             DescriptorType::StorageBufferDynamic => vk::DescriptorType::STORAGE_BUFFER_DYNAMIC,
             DescriptorType::InputAttachment => vk::DescriptorType::INPUT_ATTACHMENT,
             DescriptorType::InlineUniformBlock => vk::DescriptorType::INLINE_UNIFORM_BLOCK,
-            DescriptorType::AccelerationStructure => {
-                vk::DescriptorType::ACCELERATION_STRUCTURE_KHR
-            }
+            DescriptorType::AccelerationStructure => vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
             DescriptorType::Mutable => vk::DescriptorType::MUTABLE_EXT,
         }
     }
@@ -711,9 +700,7 @@ impl From<ShaderStage> for pumicite::ash::vk::ShaderStageFlags {
         match value {
             ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,
             ShaderStage::TessellationControl => vk::ShaderStageFlags::TESSELLATION_CONTROL,
-            ShaderStage::TessellationEvaluation => {
-                vk::ShaderStageFlags::TESSELLATION_EVALUATION
-            }
+            ShaderStage::TessellationEvaluation => vk::ShaderStageFlags::TESSELLATION_EVALUATION,
             ShaderStage::Geometry => vk::ShaderStageFlags::GEOMETRY,
             ShaderStage::Fragment => vk::ShaderStageFlags::FRAGMENT,
             ShaderStage::Compute => vk::ShaderStageFlags::COMPUTE,

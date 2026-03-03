@@ -54,10 +54,7 @@ use bevy_ecs::world::FromWorld;
 use bevy_reflect::TypePath;
 use pumicite::{
     Device, HasDevice,
-    ash::{
-        self, VkResult,
-        vk
-    },
+    ash::{self, VkResult, vk},
     pipeline::{Pipeline, PipelineCache, ShaderEntry},
     rtx::{RayTracingPipelineLibraryCreateInfo, SbtLayout},
 };
@@ -68,7 +65,6 @@ use crate::DescriptorHeap;
 pub mod compute;
 pub mod graphics;
 pub mod ron_types;
-
 
 /// Error type for shader loading failures.
 #[derive(Error, Debug)]

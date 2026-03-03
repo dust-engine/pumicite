@@ -1,5 +1,5 @@
-use bevy::{ecs::schedule::IntoScheduleConfigs, window::PrimaryWindow};
 use bevy::prelude::*;
+use bevy::{ecs::schedule::IntoScheduleConfigs, window::PrimaryWindow};
 use bevy_pumicite::prelude::*;
 use glam::{IVec2, Vec3Swizzles};
 use pumicite_egui::{EguiContexts, EguiPrimaryContextPass, EguiRenderSet, egui};
@@ -10,12 +10,17 @@ fn main() {
     let mut app = bevy::app::App::new();
     app.add_plugins(bevy_pumicite::DefaultPlugins);
 
-    app.add_device_extension::<ash::khr::dynamic_rendering::Meta>().unwrap();
-    app.enable_feature::<vk::PhysicalDeviceDynamicRenderingFeatures>(|x| &mut x.dynamic_rendering).unwrap();
+    app.add_device_extension::<ash::khr::dynamic_rendering::Meta>()
+        .unwrap();
+    app.enable_feature::<vk::PhysicalDeviceDynamicRenderingFeatures>(|x| &mut x.dynamic_rendering)
+        .unwrap();
 
-    app.add_device_extension::<ash::ext::mesh_shader::Meta>().unwrap();
-    app.enable_feature::<vk::PhysicalDeviceMeshShaderFeaturesEXT>(|x| &mut x.mesh_shader).unwrap();
-    app.enable_feature::<vk::PhysicalDeviceMeshShaderFeaturesEXT>(|x| &mut x.task_shader).unwrap();
+    app.add_device_extension::<ash::ext::mesh_shader::Meta>()
+        .unwrap();
+    app.enable_feature::<vk::PhysicalDeviceMeshShaderFeaturesEXT>(|x| &mut x.mesh_shader)
+        .unwrap();
+    app.enable_feature::<vk::PhysicalDeviceMeshShaderFeaturesEXT>(|x| &mut x.task_shader)
+        .unwrap();
 
     // Add egui plugin
     app.add_plugins(pumicite_egui::EguiPlugin::<With<PrimaryWindow>>::default());
@@ -23,10 +28,10 @@ fn main() {
     app.add_systems(Startup, setup);
     app.add_systems(EguiPrimaryContextPass, egui_ui);
     app.add_systems(
-        PostUpdate, 
+        PostUpdate,
         mesh_shader_culling
             .in_set(DefaultRenderSet)
-            .before(EguiRenderSet)
+            .before(EguiRenderSet),
     );
 
     app.run();
@@ -59,7 +64,7 @@ fn mesh_shader_culling(
     mut state: RenderState,
     pipeline: Res<MeshShadingPipeline>,
     graphics_pipelines: Res<Assets<GraphicsPipeline>>,
-    push_constants: Res<PushConstants>
+    push_constants: Res<PushConstants>,
 ) {
     let pipeline = graphics_pipelines.get(&pipeline.draw);
 
@@ -117,7 +122,7 @@ fn mesh_shader_culling(
                     },
                 }],
             );
-            
+
             pass.push_constants(
                 pipeline.layout(),
                 vk::ShaderStageFlags::TASK_EXT,
@@ -130,21 +135,28 @@ fn mesh_shader_culling(
                 2 => 8,
                 1 => 6,
                 0 => 4,
-                _ => 2
+                _ => 2,
             };
             pass.draw_mesh_tasks(UVec3::new(n, n, 1));
         }
     });
 }
 
-
 fn egui_ui(mut contexts: EguiContexts, mut push_constants: ResMut<PushConstants>) {
     egui::Window::new("Mesh Shader Culling")
         .default_width(300.0)
         .show(contexts.ctx_mut().unwrap(), |ui| {
             ui.heading("Configurations:\n");
-            ui.add(egui::Slider::new(&mut push_constants.cull_center.x, -0.5..=0.5).text("Cull Center X"));
-            ui.add(egui::Slider::new(&mut push_constants.cull_center.y, -0.5..=0.5).text("Cull Center Y"));
-            ui.add(egui::Slider::new(&mut push_constants.cull_radius, 0.0..=1.0).text("Cull Radius"));
+            ui.add(
+                egui::Slider::new(&mut push_constants.cull_center.x, -0.5..=0.5)
+                    .text("Cull Center X"),
+            );
+            ui.add(
+                egui::Slider::new(&mut push_constants.cull_center.y, -0.5..=0.5)
+                    .text("Cull Center Y"),
+            );
+            ui.add(
+                egui::Slider::new(&mut push_constants.cull_radius, 0.0..=1.0).text("Cull Radius"),
+            );
         });
 }

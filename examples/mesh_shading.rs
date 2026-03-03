@@ -36,7 +36,7 @@ fn mesh_shading(
     mut swapchain_image: Single<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
     mut state: RenderState,
     pipeline: Res<MeshShadingPipeline>,
-    graphics_pipelines: Res<Assets<GraphicsPipeline>>
+    graphics_pipelines: Res<Assets<GraphicsPipeline>>,
 ) {
     let pipeline = graphics_pipelines.get(&pipeline.draw);
 

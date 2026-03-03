@@ -1,9 +1,4 @@
-
-use std::{
-    ffi::CString,
-    ops::Deref,
-    sync::Arc,
-};
+use std::{ffi::CString, ops::Deref, sync::Arc};
 
 use bevy_asset::{Asset, AssetLoader, LoadedAsset};
 use bevy_ecs::world::FromWorld;
@@ -16,8 +11,8 @@ use pumicite::{
 };
 
 use crate::{
-    DescriptorHeap, 
-    shader::{PipelineLayoutLoader, PipelineLoaderError, ShaderModule, ron_types}
+    DescriptorHeap,
+    shader::{PipelineLayoutLoader, PipelineLoaderError, ShaderModule, ron_types},
 };
 
 /// A loaded graphics pipeline asset.

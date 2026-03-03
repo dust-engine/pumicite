@@ -1,10 +1,4 @@
-
-use std::{
-    borrow::Cow,
-    ffi::CString,
-    ops::Deref,
-    sync::Arc,
-};
+use std::{borrow::Cow, ffi::CString, ops::Deref, sync::Arc};
 
 use bevy_asset::{Asset, AssetLoader, LoadedAsset};
 use bevy_ecs::world::FromWorld;
@@ -16,8 +10,8 @@ use pumicite::{
 };
 
 use crate::{
-    DescriptorHeap, 
-    shader::{PipelineLayoutLoader, PipelineLoaderError, ShaderModule, ron_types}
+    DescriptorHeap,
+    shader::{PipelineLayoutLoader, PipelineLoaderError, ShaderModule, ron_types},
 };
 
 /// Asset loader for compute pipelines (`.comp.pipeline.ron` files).
