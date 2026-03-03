@@ -23,6 +23,11 @@ fn main() {
 
     app.add_render_set(pumicite_egui::EguiRenderSet, start_main_render_pass);
 
+    app.configure_sets(
+        PostUpdate,
+        pumicite_egui::EguiRenderSet.in_set(DefaultRenderSet),
+    );
+
     app.run();
 }
 
