@@ -62,21 +62,19 @@ fn main() {
 
     app.enable_bindless().unwrap();
 
+    app.add_render_set(MainRenderPass, start_main_render_pass);
+    app.configure_sets(PostUpdate, MainRenderPass.in_set(DefaultRenderSet));
+
     app.add_systems(
         PostUpdate,
         (
             gbuffer_resize
                 .in_set(DefaultRenderSet)
-                .before(start_main_render_pass),
-            start_main_render_pass
-                .in_set(DefaultRenderSet)
                 .before(MainRenderPass),
             prepare_gltf_scene
                 .in_set(DefaultRenderSet)
-                .before(start_main_render_pass),
-            draw_gltf_scene
-                .in_set(MainRenderPass)
-                .in_set(DefaultRenderSet),
+                .before(MainRenderPass),
+            draw_gltf_scene.in_set(MainRenderPass),
         ),
     );
     app.add_systems(Startup, setup);
@@ -177,7 +175,7 @@ struct CameraUniforms {
 pub struct MainRenderPass;
 
 fn start_main_render_pass(
-    mut ctx: RenderState,
+    mut ctx: SubmissionState,
     mut swapchain_image: Query<
         (&mut SwapchainImage, &mut GBuffer),
         With<bevy::window::PrimaryWindow>,
@@ -255,7 +253,7 @@ fn prepare_gltf_scene(
     materials: Query<(Entity, &pumicite_scene::gltf::GltfMaterial)>,
     textures: Res<Assets<TextureAsset>>,
     instance_query: Query<(&GlobalTransform, &Transform, &pumicite_scene::InstanceOf)>,
-    mut ctx: RenderState,
+    mut ctx: SubmissionState,
     mut prepared_scene: ResMut<PreparedGltfScene>,
     mut swapchain_image: Query<
         (&mut SwapchainImage, &mut GBuffer),
@@ -368,7 +366,7 @@ fn prepare_gltf_scene(
 fn draw_gltf_scene(
     pbr_pipeline: Res<PbrPipeline>,
     models: Query<(&pumicite_scene::Model, &pumicite_scene::ModelInstances)>,
-    mut ctx: RenderState,
+    mut ctx: SubmissionState,
 
     pipelines: Res<Assets<GraphicsPipeline>>,
 

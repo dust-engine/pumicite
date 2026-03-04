@@ -1,6 +1,6 @@
 //! Command encoding infrastructure for render systems.
 //!
-//! This module provides the system parameter [`RenderState`] for recording GPU commands
+//! This module provides the system parameter [`SubmissionState`] for recording GPU commands
 //! within Bevy systems. It manages command buffer allocation, encoding, and submission
 //! as part of the submission set system.
 //!
@@ -10,7 +10,7 @@
 //! the following happens automatically:
 //!
 //! 1. **Prelude**: A command buffer is allocated and recording begins
-//! 2. **Your systems**: Use [`RenderState`] to record commands
+//! 2. **Your systems**: Use [`SubmissionState`] to record commands
 //! 3. **Submission**: The command buffer is ended and submitted to the queue
 //!
 //! All systems in the same submission set share a single command buffer and execute
@@ -20,9 +20,9 @@
 //!
 //! ```no_run
 //! use bevy::prelude::*;
-//! use bevy_pumicite::{RenderState, DefaultRenderSet};
+//! use bevy_pumicite::{SubmissionState, DefaultRenderSet};
 //!
-//! fn my_render_system(mut ctx: RenderState) {
+//! fn my_render_system(mut ctx: SubmissionState) {
 //!     ctx.record(|encoder| {
 //!         // Record transfer, compute, or setup commands
 //!     });
@@ -39,11 +39,11 @@
 //!
 //! # Active Render Pass
 //!
-//! The [`RenderState::render`] method only works when a render pass is active.
+//! The [`SubmissionState::render`] method only works when a render pass is active.
 //! If called without an active render pass, the callback is not invoked.
 //! Call [`CommandEncoder::begin_rendering`] to begin a render pass.
 //!
-//! Use [`RenderState::record`] for commands outside render passes.
+//! Use [`SubmissionState::record`] for commands outside render passes.
 
 use bevy_ecs::{
     component::{ComponentId, Tick},
@@ -121,7 +121,7 @@ unsafe impl Sync for RenderSetSharedState {}
 
 /// System parameter for recording GPU commands within a submission set.
 ///
-/// `RenderState` provides access to the shared command encoder for systems
+/// `SubmissionState` provides access to the shared command encoder for systems
 /// in a submission set. Use it to record rendering, compute, and transfer commands
 /// that will be submitted together with other systems in the same set.
 ///
@@ -139,9 +139,9 @@ unsafe impl Sync for RenderSetSharedState {}
 ///
 /// ```no_run
 /// use bevy::prelude::*;
-/// use bevy_pumicite::{RenderState, DefaultRenderSet};
+/// use bevy_pumicite::{SubmissionState, DefaultRenderSet};
 ///
-/// fn my_render_system(mut ctx: RenderState) {
+/// fn my_render_system(mut ctx: SubmissionState) {
 ///     ctx.record(|encoder| {
 ///         // Record transfer, compute, or setup commands
 ///     });
@@ -155,10 +155,10 @@ unsafe impl Sync for RenderSetSharedState {}
 /// // Add to a submission set
 /// app.add_systems(PostUpdate, my_render_system.in_set(DefaultRenderSet));
 /// ```
-pub struct RenderState<'world> {
+pub struct SubmissionState<'world> {
     state: Mut<'world, RenderSetSharedState>,
 }
-impl RenderState<'_> {
+impl SubmissionState<'_> {
     /// Encode commands outside an active render pass.
     ///
     /// If the command encoder has an active encoder, end the active encoder
@@ -174,10 +174,12 @@ impl RenderState<'_> {
     ///
     /// If the command encoder doesn't already have an active render pass,
     /// `encode` will not be called and nothing will be encoded.
+    #[track_caller]
     pub fn render(&mut self, encode: impl FnOnce(RenderPass)) {
         let Some(pass) = self.state.encoder.continue_rendering() else {
             tracing::warn!(
-                "`RenderSetSharedStateWrapper::render` called without an active render pass"
+                "`SubmissionState::render` called at {} without an active render pass",
+                std::panic::Location::caller()
             );
             return;
         };
@@ -189,10 +191,10 @@ impl RenderState<'_> {
     }
 }
 
-unsafe impl SystemParam for RenderState<'_> {
+unsafe impl SystemParam for SubmissionState<'_> {
     type State = ComponentId;
 
-    type Item<'world, 'state> = RenderState<'world>;
+    type Item<'world, 'state> = SubmissionState<'world>;
 
     fn init_state(_world: &mut World) -> ComponentId {
         ComponentId::new(usize::MAX)
@@ -207,12 +209,12 @@ unsafe impl SystemParam for RenderState<'_> {
         unsafe {
             if *state == ComponentId::new(usize::MAX) {
                 panic!(
-                    "System {} was never added to a RenderSet!",
+                    "System {} was never added to a SubmissionSet!",
                     system_meta.name()
                 )
             }
             let value = world.get_resource_mut_by_id(*state).unwrap();
-            RenderState {
+            SubmissionState {
                 state: value.with_type(),
             }
         }
@@ -255,7 +257,7 @@ impl RenderSetSharedStateConfig {
     }
 }
 
-pub(crate) fn prelude_system(mut shared: RenderState) {
+pub(crate) fn prelude_system(mut shared: SubmissionState) {
     let shared = shared.state.as_mut();
     shared.stage_index = 0;
     assert!(shared.recording_command_buffer.is_none());
@@ -284,7 +286,7 @@ pub(crate) fn prelude_system(mut shared: RenderState) {
 }
 
 pub(crate) fn submission_system(
-    mut shared: RenderState,
+    mut shared: SubmissionState,
     mut queue: Queue<()>, // to be configured.
 ) {
     shared.record(|_| {}); // Close any open encoders.

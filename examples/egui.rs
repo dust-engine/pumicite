@@ -21,6 +21,13 @@ fn main() {
             .in_set(DefaultRenderSet),
     );
 
+    app.add_render_set(pumicite_egui::EguiRenderSet, start_main_render_pass);
+
+    app.configure_sets(
+        PostUpdate,
+        pumicite_egui::EguiRenderSet.in_set(DefaultRenderSet),
+    );
+
     app.run();
 }
 
@@ -49,7 +56,7 @@ fn ui_example_system(mut contexts: EguiContexts, mut state: Local<UIState>) {
 /// is so that egui can piggy-back on an already existing render pass and doesn't
 /// have to start a new one - important for mobile performance.
 fn start_main_render_pass(
-    mut ctx: RenderState,
+    mut ctx: SubmissionState,
     mut swapchain_image: Query<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
 ) {
     let Ok(mut swapchain_image) = swapchain_image.single_mut() else {

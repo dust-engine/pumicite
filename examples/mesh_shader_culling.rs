@@ -61,7 +61,7 @@ struct PushConstants {
 
 fn mesh_shader_culling(
     mut swapchain_image: Single<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
-    mut state: RenderState,
+    mut state: SubmissionState,
     pipeline: Res<MeshShadingPipeline>,
     graphics_pipelines: Res<Assets<GraphicsPipeline>>,
     push_constants: Res<PushConstants>,

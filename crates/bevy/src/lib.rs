@@ -100,7 +100,7 @@ pub use plugin::{
 };
 pub use queue::Queue;
 pub use surface::SurfacePlugin;
-pub use system::RenderState;
+pub use system::SubmissionState;
 
 /// Convenience re-exports for the most commonly used types.
 pub mod prelude {
@@ -108,7 +108,7 @@ pub mod prelude {
 
     pub use crate::{
         DefaultComputeSet, DefaultRenderSet, DefaultTransferSet, DescriptorHeap, PumiciteApp,
-        RenderState,
+        SubmissionState,
         shader::{compute::ComputePipeline, graphics::GraphicsPipeline},
         staging::{
             BufferInitializer, DeviceLocalRingBuffer, HostVisibleRingBuffer, UniformRingBuffer,

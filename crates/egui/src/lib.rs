@@ -6,7 +6,7 @@ use bevy_egui::egui::TextureId;
 pub use bevy_egui::*;
 use bevy_pumicite::staging::{BufferInitializer, HostVisibleRingBuffer};
 use bevy_pumicite::{
-    DefaultRenderSet, DefaultTransferSet, PumiciteApp, RenderState,
+    DefaultRenderSet, DefaultTransferSet, PumiciteApp, SubmissionState,
     shader::graphics::GraphicsPipeline,
 };
 use bevy_window::PrimaryWindow;
@@ -83,7 +83,6 @@ impl<Filter: QueryFilter + Send + Sync + 'static> Plugin for EguiPlugin<Filter> 
                 collect_outputs::<Filter>.in_set(DefaultTransferSet),
                 prepare_image::<Filter>.in_set(DefaultTransferSet),
                 draw::<Filter>
-                    .in_set(DefaultRenderSet)
                     .in_set(EguiRenderSet)
                     .after(collect_outputs::<Filter>)
                     .after(prepare_image::<Filter>),
@@ -165,7 +164,7 @@ fn set_egui_input_viewport_scale_factor(mut query: Query<(&mut EguiInput, &bevy_
 fn collect_outputs<Filter: QueryFilter + Send + Sync + 'static>(
     state: ResMut<EguiResources<Filter>>,
     mut uploader: BufferInitializer,
-    mut ctx: RenderState,
+    mut ctx: SubmissionState,
     egui_render_output: Query<&EguiRenderOutput, Filter>,
 ) {
     let Ok(output) = egui_render_output.single() else {
@@ -255,7 +254,7 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
     mut device_buffers: ResMut<EguiResources<Filter>>,
     egui_render_output: Query<&EguiRenderOutput, Filter>,
     allocator: Res<Allocator>,
-    mut ctx: RenderState,
+    mut ctx: SubmissionState,
     mut host_visible_ring_buffer: ResMut<HostVisibleRingBuffer>,
 ) {
     let Ok(output) = egui_render_output.single() else {
@@ -417,7 +416,7 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
 
 /// Issue draw commands for egui.
 fn draw<Filter: QueryFilter + Send + Sync + 'static>(
-    mut state: RenderState,
+    mut state: SubmissionState,
     mut buffers: ResMut<EguiResources<Filter>>,
     mut egui_render_output: Query<(&EguiRenderOutput, &mut EguiContext), Filter>,
 

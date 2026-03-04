@@ -99,7 +99,7 @@ struct ExamplePushConstant {
 
 fn clear(
     mut swapchain_image: Query<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
-    mut state: RenderState,
+    mut state: SubmissionState,
     example_resource: Res<ExampleResource>,
     pipelines: Res<Assets<ComputePipeline>>,
     mut example_assets: ResMut<Assets<MyBindlessImageAsset>>,

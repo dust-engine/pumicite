@@ -70,20 +70,28 @@ fn main() {
     app.add_systems(
         PostUpdate,
         (
-            prepare_atmosphere_uniform,
-            compute_luts,
-            render_skyview_lut,
-            prepare_render_sky,
-            start_main_render_pass,
-            render_sky,
+            (
+                prepare_atmosphere_uniform,
+                compute_luts,
+                render_skyview_lut,
+                prepare_render_sky,
+            )
+                .chain()
+                .in_set(DefaultRenderSet)
+                .before(MainRenderPass),
+            (render_sky.in_set(MainRenderPass)),
         )
-            .chain()
-            .in_set(DefaultRenderSet)
-            .before(EguiRenderSet),
+            .chain(),
     );
 
+    app.add_render_set(MainRenderPass, start_main_render_pass);
+    app.configure_sets(PostUpdate, MainRenderPass.in_set(DefaultRenderSet));
+    app.configure_sets(PostUpdate, EguiRenderSet.in_set(MainRenderPass));
     app.run();
 }
+
+#[derive(SystemSet, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone, Copy)]
+pub struct MainRenderPass;
 
 // Atmosphere parameters - must match shader struct layout exactly
 #[repr(C)]
@@ -569,7 +577,7 @@ fn egui_ui(mut contexts: EguiContexts, mut atmosphere: ResMut<AtmosphereState>) 
 }
 
 fn start_main_render_pass(
-    mut ctx: RenderState,
+    mut ctx: SubmissionState,
     mut swapchain_image: Query<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
 ) {
     let Ok(mut swapchain_image) = swapchain_image.single_mut() else {
@@ -628,7 +636,7 @@ fn compute_luts(
     mut luts: ResMut<AtmosphereLUTs>,
     pipelines: Res<Pipelines>,
     compute_pipelines: Res<Assets<ComputePipeline>>,
-    mut state: RenderState,
+    mut state: SubmissionState,
 ) {
     if !atmosphere.needs_lut_update {
         return;
@@ -808,7 +816,7 @@ fn render_skyview_lut(
     mut luts: ResMut<AtmosphereLUTs>,
     pipelines: Res<Pipelines>,
     compute_pipelines: Res<Assets<ComputePipeline>>,
-    mut state: RenderState,
+    mut state: SubmissionState,
 ) {
     let Some(sky_view_pipeline) = compute_pipelines.get(&pipelines.sky_view_lut) else {
         return;
@@ -941,7 +949,7 @@ fn render_skyview_lut(
     });
 }
 
-fn prepare_render_sky(mut luts: ResMut<AtmosphereLUTs>, mut state: RenderState) {
+fn prepare_render_sky(mut luts: ResMut<AtmosphereLUTs>, mut state: SubmissionState) {
     state.record(|encoder| {
         let transmittance_view = encoder.lock(
             &luts.transmittance.view,
@@ -978,7 +986,7 @@ fn render_sky(
     atmosphere: Res<AtmosphereState>,
     pipelines: Res<Pipelines>,
     graphics_pipelines: Res<Assets<GraphicsPipeline>>,
-    mut state: RenderState,
+    mut state: SubmissionState,
     luts: Res<AtmosphereLUTs>,
 ) {
     let Some(sky_render_pipeline) = graphics_pipelines.get(&pipelines.sky_render) else {

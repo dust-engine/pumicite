@@ -113,7 +113,6 @@
 #![feature(min_specialization)]
 #![feature(ptr_metadata)]
 #![feature(box_as_ptr)]
-#![feature(atomic_try_update)]
 #![feature(async_fn_traits, unboxed_closures)]
 
 mod alloc;

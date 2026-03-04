@@ -72,7 +72,7 @@ fn setup(mut commands: Commands, asset_server: ResMut<AssetServer>) {
 
 fn mandelbrot_rendering(
     mut swapchain_image: Query<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
-    mut state: RenderState,
+    mut state: SubmissionState,
     pipeline: Res<MandelbrotPipeline>,
     compute_pipelines: Res<Assets<ComputePipeline>>,
     mut ring_buffer: ResMut<UniformRingBuffer>,

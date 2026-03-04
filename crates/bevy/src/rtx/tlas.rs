@@ -24,7 +24,7 @@ use pumicite::{
 };
 
 use crate::{
-    DefaultComputeSet, DefaultTransferSet, RenderState,
+    DefaultComputeSet, DefaultTransferSet, SubmissionState,
     rtx::blas::BLAS,
     staging::{BufferInitializer, DeviceLocalRingBuffer},
 };
@@ -126,7 +126,7 @@ pub fn tlas_build_input_upload_system<T: Send + Sync + 'static>(
     blas: Query<&BLAS>,
     mut uploader: BufferInitializer,
     mut tlas_resource: ResMut<TLAS<T>>,
-    mut ctx: RenderState,
+    mut ctx: SubmissionState,
 ) {
     assert!(tlas_resource.tlas_input_buffer.is_none());
     // There will be some duplicated entires but that's fine.
@@ -179,7 +179,7 @@ pub fn tlas_build_input_upload_system<T: Send + Sync + 'static>(
 
 pub fn tlas_build_system<T: Send + Sync + 'static>(
     device: Res<Device>,
-    mut ctx: RenderState,
+    mut ctx: SubmissionState,
     mut device_local_ring_buffer: ResMut<DeviceLocalRingBuffer>,
     mut tlas_resource: ResMut<TLAS<T>>,
 ) {

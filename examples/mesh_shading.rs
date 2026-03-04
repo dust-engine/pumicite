@@ -34,7 +34,7 @@ fn setup(mut commands: Commands, asset_server: ResMut<AssetServer>) {
 
 fn mesh_shading(
     mut swapchain_image: Single<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
-    mut state: RenderState,
+    mut state: SubmissionState,
     pipeline: Res<MeshShadingPipeline>,
     graphics_pipelines: Res<Assets<GraphicsPipeline>>,
 ) {
