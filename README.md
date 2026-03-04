@@ -9,13 +9,15 @@ management.
 ## Why Pumicite?
 
 Bevy's built-in renderer uses wgpu, which prioritizes safety over giving you direct
-control of the GPU. Pumicite takes a different approach: instead of building a render
-graph abstraction on top of the engine, it treats **Bevy systems as render graph nodes**
+control of the GPU. Pumicite takes a different approach: it provides you with the essential tools
+to write an efficient and flexible Vulkan application, but leaves enough room for you to fine tune your
+application and make the best out of Vulkan.
+
+Instead of building a render graph abstraction on top of Bevy, it treats **Bevy systems as render graph nodes**
 and **system ordering as node dependencies**. A schedule build pass automatically
 handles command buffer allocation, barrier insertion, and queue submission.
 
-You write Bevy systems that record Vulkan commands. The framework takes care of the
-rest.
+You write Bevy systems that record Vulkan commands. Pumicite takes care of the rest.
 
 ```rust
 use bevy::prelude::*;
@@ -63,7 +65,7 @@ fn clear(
   `ScheduleBuildPass` transforms system sets into `vkQueueSubmit` calls.
 
 - **Coroutine-as-Render-Graph** -- Record commands with Rust async/await, or ideally coroutines
-  when it stabalizes. Yield points emit barriers and enable cross-future barrier merging.
+  when it stabilizes. Yield points emit barriers and enable cross-future barrier merging.
 
 - **GPUMutex** -- Timeline semaphore-based cross-queue synchronization. Lock a resource
   on a command encoder and semaphore waits are inserted automatically. Safe deferred
@@ -140,6 +142,9 @@ cargo run --example <name>
 | `mandelbrot` | Interactive compute shader with push descriptors |
 | `bindless` | Compute shader using bindless descriptor indexing |
 | `sky_atmosphere` | Precomputed atmospheric scattering LUTs |
+| `mesh_shading` | Mesh shader pipeline with dynamic rendering |
+| `mesh_shader_culling` | Mesh shader culling with egui debug UI |
+| `egui` | egui integration for immediate-mode debug UIs |
 | `gltf` | glTF model loading with PBR shading |
 
 ## Crates
@@ -156,9 +161,9 @@ cargo run --example <name>
 The [tutorial](https://github.com/dust-engine/pumicite/wiki) walks through Pumicite from the ground up:
 
 1. [Overview](https://github.com/dust-engine/pumicite/wiki/Overview) -- Motivation, philosophy, and key concepts
-2. [Getting Started](https://github.com/dust-engine/pumicite/wiki/Overview) -- Device creation and first command buffer
+2. [Getting Started](https://github.com/dust-engine/pumicite/wiki/Getting-Started) -- Device creation and first command buffer
 3. [Resource Management](https://github.com/dust-engine/pumicite/wiki/Resource%20Management) -- Buffers, images, and memory allocation
-4. [Synchronization](https://github.com/dust-engine/pumicite/wiki/Syncronization) -- Barriers, resource state tracking, and GPUMutex
+4. [Synchronization](https://github.com/dust-engine/pumicite/wiki/Synchronization) -- Barriers, resource state tracking, and GPUMutex
 5. [Bevy Integration](https://github.com/dust-engine/pumicite/wiki/Bevy%20Integration) -- Plugins, submission sets, and the ECS render graph
 6. [Compute](https://github.com/dust-engine/pumicite/wiki/Compute) -- Compute pipelines, dispatch, and multi-pass workflows
 7. [Rendering](https://github.com/dust-engine/pumicite/wiki/Rendering) -- Dynamic rendering, graphics pipelines, and draw commands

@@ -70,20 +70,28 @@ fn main() {
     app.add_systems(
         PostUpdate,
         (
-            prepare_atmosphere_uniform,
-            compute_luts,
-            render_skyview_lut,
-            prepare_render_sky,
-            start_main_render_pass,
-            render_sky,
+            (
+                prepare_atmosphere_uniform,
+                compute_luts,
+                render_skyview_lut,
+                prepare_render_sky,
+            )
+                .chain()
+                .in_set(DefaultRenderSet)
+                .before(MainRenderPass),
+            (render_sky.in_set(MainRenderPass)),
         )
-            .chain()
-            .in_set(DefaultRenderSet)
-            .before(EguiRenderSet),
+            .chain(),
     );
 
+    app.add_render_set(MainRenderPass, start_main_render_pass);
+    app.configure_sets(PostUpdate, MainRenderPass.in_set(DefaultRenderSet));
+    app.configure_sets(PostUpdate, EguiRenderSet.in_set(MainRenderPass));
     app.run();
 }
+
+#[derive(SystemSet, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone, Copy)]
+pub struct MainRenderPass;
 
 // Atmosphere parameters - must match shader struct layout exactly
 #[repr(C)]

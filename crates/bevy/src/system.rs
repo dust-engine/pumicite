@@ -174,10 +174,12 @@ impl SubmissionState<'_> {
     ///
     /// If the command encoder doesn't already have an active render pass,
     /// `encode` will not be called and nothing will be encoded.
+    #[track_caller]
     pub fn render(&mut self, encode: impl FnOnce(RenderPass)) {
         let Some(pass) = self.state.encoder.continue_rendering() else {
             tracing::warn!(
-                "`SubmissionState::render` called without an active render pass"
+                "`SubmissionState::render` called at {} without an active render pass",
+                std::panic::Location::caller()
             );
             return;
         };

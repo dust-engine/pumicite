@@ -83,7 +83,6 @@ impl<Filter: QueryFilter + Send + Sync + 'static> Plugin for EguiPlugin<Filter> 
                 collect_outputs::<Filter>.in_set(DefaultTransferSet),
                 prepare_image::<Filter>.in_set(DefaultTransferSet),
                 draw::<Filter>
-                    .in_set(DefaultRenderSet)
                     .in_set(EguiRenderSet)
                     .after(collect_outputs::<Filter>)
                     .after(prepare_image::<Filter>),
