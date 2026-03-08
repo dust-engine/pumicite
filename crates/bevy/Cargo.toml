@@ -16,7 +16,6 @@ bevy_reflect = "0.17.0-dev"
 bevy_transform = "0.17.0-dev"
 bevy_internal = "0.17.0-dev"
 
-either = "1"
 async-lock = "3"
 glam = "0.30"
 pumicite = { path = "../../", features = ["bevy"] }

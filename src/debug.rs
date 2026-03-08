@@ -17,11 +17,12 @@
 //! Requires the `VK_EXT_debug_utils` extension to be enabled on the instance.
 
 use ash::{VkResult, vk};
+use glam::Vec4;
 use std::ffi::CStr;
 
 use std::sync::RwLock;
 
-use crate::Instance;
+use crate::{HasDevice, Instance, utils::AsVkHandle};
 use ash::ext::debug_utils::Meta as DebugUtilsExt;
 
 /// A callback function type for handling Vulkan debug messages.
@@ -379,6 +380,89 @@ impl crate::Device {
                     object_handle,
                     ..Default::default()
                 })
+        }
+    }
+}
+
+impl crate::Queue {
+    /// Open a new queue debug label region.
+    pub fn begin_label(&mut self, name: &CStr, color: Vec4) {
+        unsafe {
+            if let Ok(debug_utils) = self.device().get_extension::<DebugUtilsExt>() {
+                debug_utils.queue_begin_debug_utils_label(
+                    self.vk_handle(),
+                    &vk::DebugUtilsLabelEXT {
+                        p_label_name: name.as_ptr(),
+                        color: color.into(),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+
+    /// End the queue debug label region.
+    pub fn end_label(&mut self) {
+        if let Ok(debug_utils) = self.device().get_extension::<DebugUtilsExt>() {
+            unsafe {
+                debug_utils.queue_end_debug_utils_label(self.vk_handle());
+            }
+        }
+    }
+    /// Open a new queue debug label region.
+    pub fn insert_label(&mut self, name: &CStr, color: Vec4) {
+        unsafe {
+            if let Ok(debug_utils) = self.device().get_extension::<DebugUtilsExt>() {
+                debug_utils.queue_begin_debug_utils_label(
+                    self.vk_handle(),
+                    &vk::DebugUtilsLabelEXT {
+                        p_label_name: name.as_ptr(),
+                        color: color.into(),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+}
+
+impl crate::command::CommandEncoder<'_> {
+    /// Open a new commad buffer debug label region.
+    pub fn begin_label(&self, name: &CStr, color: Vec4) {
+        if let Ok(debug_utils) = self.device().get_extension::<DebugUtilsExt>() {
+            unsafe {
+                debug_utils.cmd_begin_debug_utils_label(
+                    self.buffer().buffer,
+                    &vk::DebugUtilsLabelEXT {
+                        p_label_name: name.as_ptr(),
+                        color: color.into(),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+    /// End the command buffer debug label region.
+    pub fn end_label(&mut self) {
+        if let Ok(debug_utils) = self.device().get_extension::<DebugUtilsExt>() {
+            unsafe {
+                debug_utils.cmd_end_debug_utils_label(self.buffer().buffer);
+            }
+        }
+    }
+    /// Insert a command buffer debug label.
+    pub fn insert_label(&mut self, name: &CStr, color: Vec4) {
+        if let Ok(debug_utils) = self.device().get_extension::<DebugUtilsExt>() {
+            unsafe {
+                debug_utils.cmd_insert_debug_utils_label(
+                    self.buffer().buffer,
+                    &vk::DebugUtilsLabelEXT {
+                        p_label_name: name.as_ptr(),
+                        color: color.into(),
+                        ..Default::default()
+                    },
+                );
+            }
         }
     }
 }
