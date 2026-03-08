@@ -65,7 +65,7 @@ use std::collections::BTreeSet;
 use bevy_app::{App, Plugin};
 use bevy_ecs::{prelude::*, query::QueryFilter};
 use bevy_window::{PrimaryWindow, Window};
-use glam::UVec2;
+use glam::{UVec2, Vec4};
 use pumicite::ash::vk;
 use pumicite::{
     ash::khr::surface_maintenance1::Meta as KhrSurfaceMaintenance1,
@@ -583,6 +583,7 @@ pub fn present<Filter: QueryFilter>(
         tracing::warn!("Missing swapchain image; present skipped");
         return;
     };
+    queue.begin_label(c"Swapchain Present", Vec4::new(0.0, 0.0, 0.0, 1.0));
     match swapchain.present(swapchain_image, image_state, &mut queue) {
         Ok(_) => {}
         Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
@@ -597,4 +598,5 @@ pub fn present<Filter: QueryFilter>(
             panic!("Error presenting swapchain image: {:?}", e);
         }
     }
+    queue.end_label();
 }

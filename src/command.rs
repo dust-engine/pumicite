@@ -128,14 +128,17 @@ pub struct CommandEncoder<'a> {
     /// Accumulated buffer memory barriers that will be emitted in the next barrier batch.
     pending_buffer_barrier: Vec<vk::BufferMemoryBarrier2<'a>>,
 
-    render_pass_state: RenderPassState,
+    render_pass_state: CommandEncoderRenderPassState,
 }
 unsafe impl<'a> Send for CommandEncoder<'a> {}
 unsafe impl<'a> Sync for CommandEncoder<'a> {}
 
-enum RenderPassState {
+pub enum CommandEncoderRenderPassState {
     OutsideRenderPass,
-    InsideRenderPass { render_area: vk::Rect2D },
+    InsideRenderPass {
+        render_area: vk::Rect2D,
+        start_location: std::panic::Location<'static>,
+    },
 }
 
 impl CommandEncoder<'_> {
@@ -151,7 +154,7 @@ impl CommandEncoder<'_> {
             pending_memory_barrier: MemoryBarrier::default(),
             pending_image_barrier: Vec::new(),
             pending_buffer_barrier: Vec::new(),
-            render_pass_state: RenderPassState::OutsideRenderPass,
+            render_pass_state: CommandEncoderRenderPassState::OutsideRenderPass,
         }
     }
 
@@ -1083,7 +1086,7 @@ impl CommandPool {
             pending_memory_barrier: MemoryBarrier::default(),
             pending_image_barrier: Vec::new(),
             pending_buffer_barrier: Vec::new(),
-            render_pass_state: RenderPassState::OutsideRenderPass,
+            render_pass_state: CommandEncoderRenderPassState::OutsideRenderPass,
         };
 
         CommandEncoderGuard {
@@ -1119,7 +1122,7 @@ impl CommandPool {
             pending_memory_barrier: MemoryBarrier::default(),
             pending_image_barrier: Vec::new(),
             pending_buffer_barrier: Vec::new(),
-            render_pass_state: RenderPassState::OutsideRenderPass,
+            render_pass_state: CommandEncoderRenderPassState::OutsideRenderPass,
         };
 
         (callback)(&mut encoder)

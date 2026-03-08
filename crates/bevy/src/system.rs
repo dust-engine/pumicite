@@ -52,10 +52,13 @@ use bevy_ecs::{
     world::{Mut, World, unsafe_world_cell::UnsafeWorldCell},
 };
 
+use glam::Vec4;
 use pumicite::{
     Device,
     ash::VkResult,
-    command::{CommandBuffer, CommandEncoder, CommandPool, RenderPass},
+    command::{
+        CommandBuffer, CommandEncoder, CommandEncoderRenderPassState, CommandPool, RenderPass,
+    },
     debug::DebugObject,
     sync::Timeline,
 };
@@ -91,6 +94,8 @@ pub(crate) struct RenderSetSharedState {
     stage_index: u32,
     /// Debug name for this submission set.
     name: CString,
+    /// Debug color for the debug region of this submission set.
+    color: Vec4,
 }
 impl Drop for RenderSetSharedState {
     fn drop(&mut self) {
@@ -102,7 +107,12 @@ impl Drop for RenderSetSharedState {
     }
 }
 impl RenderSetSharedState {
-    pub(crate) fn new(device: Device, queue_family_index: u32, name: String) -> VkResult<Self> {
+    pub(crate) fn new(
+        device: Device,
+        queue_family_index: u32,
+        name: String,
+        color: Vec4,
+    ) -> VkResult<Self> {
         let cstring = CString::new(name).unwrap();
         Ok(Self {
             command_pool: CommandPool::new_resettable(device.clone(), queue_family_index)?
@@ -113,6 +123,7 @@ impl RenderSetSharedState {
             timeline: Timeline::new(device)?.with_name(cstring.as_c_str()),
             stage_index: 0,
             name: cstring,
+            color,
         })
     }
 }
@@ -161,11 +172,18 @@ pub struct SubmissionState<'world> {
 impl SubmissionState<'_> {
     /// Encode commands outside an active render pass.
     ///
-    /// If the command encoder has an active encoder, end the active encoder
-    /// before recording any additional commands.
+    /// If the command encoder has an active render pass, `encode` will not be called
+    /// and nothing will be encoded.
+    #[track_caller]
     pub fn record(&mut self, encode: impl FnOnce(&mut CommandEncoder)) {
-        if let Some(render_pass) = self.state.encoder.continue_rendering() {
-            render_pass.end();
+        if let CommandEncoderRenderPassState::InsideRenderPass { start_location, .. } = self.state()
+        {
+            tracing::warn!(
+                "`SubmissionState::record` called at {} when there is an active render pass open. The active render pass was opened at {}",
+                std::panic::Location::caller(),
+                start_location
+            );
+            return;
         }
         encode(&mut self.state.encoder);
     }
@@ -186,8 +204,8 @@ impl SubmissionState<'_> {
         encode(pass);
     }
 
-    pub fn inside_renderpass(&self) -> bool {
-        self.state.encoder.inside_renderpass()
+    pub fn state(&self) -> &CommandEncoderRenderPassState {
+        self.state.encoder.render_pass_state()
     }
 }
 
@@ -230,11 +248,10 @@ unsafe impl SystemParam for SubmissionState<'_> {
 
     fn configurate(
         state: &mut Self::State,
-        system_meta: &mut SystemMeta,
+        _system_meta: &mut SystemMeta,
         config: &mut dyn std::any::Any,
     ) {
         if let Some(config) = config.downcast_ref::<RenderSetSharedStateConfig>() {
-            println!("System {} received config", system_meta.name());
             *state = config.id;
         }
     }
@@ -285,6 +302,16 @@ pub(crate) fn prelude_system(mut shared: SubmissionState) {
     }
 }
 
+pub(crate) fn render_set_ending_system(mut shared: SubmissionState) {
+    let shared = shared.state.as_mut();
+    // End the render pass if one is active
+    if let Some(pass) = shared.encoder.continue_rendering() {
+        // End the debug label region started by the config system
+        pass.end();
+    }
+    shared.encoder.end_label();
+}
+
 pub(crate) fn submission_system(
     mut shared: SubmissionState,
     mut queue: Queue<()>, // to be configured.
@@ -298,7 +325,9 @@ pub(crate) fn submission_system(
         return;
     };
     shared.command_pool.finish(&mut cb).unwrap();
+    queue.begin_label(shared.name.as_c_str(), shared.color);
     queue.submit(&mut cb).unwrap();
+    queue.end_label();
     shared.pending_command_buffers.push(cb);
 }
 

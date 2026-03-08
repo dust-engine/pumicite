@@ -27,7 +27,7 @@
 //! scheduling of render systems, , the actual scheduling of the render systems
 //!
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use bevy_ecs::{
     change_detection::MaybeLocation,
@@ -38,9 +38,11 @@ use bevy_ecs::{
     system::{IntoSystem, System},
     world::World,
 };
-use either::Either;
 
-use crate::queue::{QueueConfig, SharedQueue};
+use crate::{
+    plugin::SubmissionSetConfig,
+    queue::{QueueConfig, SharedQueue},
+};
 use pumicite::Device;
 
 use super::system::{RenderSetSharedState, RenderSetSharedStateConfig};
@@ -71,11 +73,14 @@ struct RenderSetMetaSystems {
 #[derive(Debug, Default)]
 pub(super) struct SubmissionSetsPass {
     /// Maps submission set to its associated queue component ID.
-    pub(crate) submission_sets_to_queue: HashMap<InternedSystemSet, ComponentId>,
+    pub(crate) submission_sets_to_queue:
+        HashMap<InternedSystemSet, (ComponentId, SubmissionSetConfig)>,
     /// Maps submission set to its prelude/submission meta-systems.
     submission_sets_to_meta_systems: HashMap<SystemSetKey, RenderSetMetaSystems>,
     /// Maps render sets to its config system
     pub(crate) render_sets_to_systems: HashMap<InternedSystemSet, SystemKey>,
+    /// Maps render sets to its ending system (added during schedule build)
+    render_sets_to_ending_systems: BTreeMap<SystemSetKey, SystemKey>,
 }
 
 impl ScheduleBuildPass for SubmissionSetsPass {
@@ -92,13 +97,26 @@ impl ScheduleBuildPass for SubmissionSetsPass {
     fn map_set_to_systems(
         &mut self,
         set: bevy_ecs::schedule::SystemSetKey,
+        systems: &mut Vec<SystemKey>,
         world: &mut World,
         graph: &mut ScheduleGraph,
-    ) -> impl Iterator<Item = SystemKey> {
+    ) {
         let interned_set = graph.system_sets.get(set).unwrap();
+
+        // Handle render sets - add ending system
+        if self.render_sets_to_systems.contains_key(&interned_set) {
+            let ending = add_system(graph, world, super::system::render_set_ending_system);
+            self.render_sets_to_ending_systems.insert(set, ending);
+            systems.push(ending);
+        }
+
         if !self.submission_sets_to_queue.contains_key(&interned_set) {
-            return Either::Left(std::iter::empty()); // not a system set.
+            return; // not a submission set.
         };
+
+        if systems.is_empty() {
+            return; // Skip empty submission sets
+        }
 
         let submission = add_system(graph, world, super::system::submission_system);
         let prelude = add_system(graph, world, super::system::prelude_system);
@@ -109,7 +127,8 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                 submission,
             },
         );
-        Either::Right([submission, prelude].into_iter())
+        systems.push(submission);
+        systems.push(prelude);
     }
 
     fn collapse_set(
@@ -125,21 +144,35 @@ impl ScheduleBuildPass for SubmissionSetsPass {
 
         // --- Handle render sets ---
         if let Some(&config_system) = self.render_sets_to_systems.get(&interned_set) {
+            let ending_system = self
+                .render_sets_to_ending_systems
+                .get(&set)
+                .copied()
+                .unwrap();
             // Config system must run before all other systems in this render set.
             // The config system is responsible for beginning the render pass.
+            // Ending system must run after all other systems in this render set.
+            // The ending system is responsible for ending the render pass.
             for &system in systems {
-                if system != config_system {
+                if system != config_system && system != ending_system {
                     edges.push((config_system.into(), system.into()));
+                    edges.push((system.into(), ending_system.into()));
                 }
             }
+            // Ensure config → ending even when there are no user systems
+            edges.push((config_system.into(), ending_system.into()));
         }
 
         // --- Handle submission sets ---
-        if let Some(&queue_component_id) = self.submission_sets_to_queue.get(&interned_set) {
+        if let Some((queue_component_id, config)) = self.submission_sets_to_queue.get(&interned_set)
+        {
+            if systems.is_empty() {
+                return Vec::new().into_iter();
+            }
             let device = world.resource::<Device>().clone();
             let queue_family_index = unsafe {
                 world
-                    .get_resource_by_id(queue_component_id)
+                    .get_resource_by_id(*queue_component_id)
                     .unwrap()
                     .deref::<SharedQueue>()
                     .family_index()
@@ -155,6 +188,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                         device,
                         queue_family_index,
                         format!("{interned_set:?}"),
+                        config.debug_color,
                     ),
                     |ptr| unsafe {
                         // SAFETY: component_id was just initialized and corresponds to resource of type R.
@@ -169,7 +203,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
             };
             let meta_systems = self.submission_sets_to_meta_systems.get(&set).unwrap();
 
-            let mut queue_config = QueueConfig(queue_component_id);
+            let mut queue_config = QueueConfig(*queue_component_id);
             let mut shared_config = RenderSetSharedStateConfig::new(shared_state_component_id);
             for system_node in systems.iter() {
                 let system = graph.systems.get_mut(*system_node).unwrap();
@@ -177,14 +211,13 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                 system
                     .access
                     .add_unfiltered_resource_write(shared_state_component_id);
-                println!("Configured one system named {}", system.name());
             }
 
             let submission_system = graph.systems.get_mut(meta_systems.submission).unwrap();
             submission_system.configurate(&mut queue_config);
             submission_system
                 .access
-                .add_unfiltered_resource_write(queue_component_id);
+                .add_unfiltered_resource_write(*queue_component_id);
 
             let user_systems = systems
                 .iter()

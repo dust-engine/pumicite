@@ -4,7 +4,9 @@
 //! buffers and images, and for updating buffer contents.
 use ash::vk;
 
-use crate::{HasDevice, buffer::BufferLike, image::ImageLike};
+use crate::{
+    HasDevice, buffer::BufferLike, command::CommandEncoderRenderPassState, image::ImageLike,
+};
 
 use super::CommandEncoder;
 
@@ -14,7 +16,10 @@ impl<'a> CommandEncoder<'a> {
     /// This is a convenience method for small updates (≤64KB) that embeds the data
     /// directly in the command stream, avoiding the need for a staging buffer.
     pub fn update_buffer(&mut self, buffer: &'a impl BufferLike, data: &[u8]) {
-        debug_assert!(!self.inside_renderpass());
+        debug_assert!(matches!(
+            self.render_pass_state(),
+            CommandEncoderRenderPassState::OutsideRenderPass
+        ));
         assert!(buffer.size() >= data.len() as u64);
         assert!(data.len() <= 65536);
         unsafe {
@@ -43,7 +48,10 @@ impl<'a> CommandEncoder<'a> {
         dst_offset: u64,
         size: u64,
     ) {
-        debug_assert!(!self.inside_renderpass());
+        debug_assert!(matches!(
+            self.render_pass_state(),
+            CommandEncoderRenderPassState::OutsideRenderPass
+        ));
         unsafe {
             self.device().cmd_copy_buffer(
                 self.buffer().buffer,
@@ -74,7 +82,10 @@ impl<'a> CommandEncoder<'a> {
         copies: &[vk::BufferImageCopy],
         image_layout: vk::ImageLayout,
     ) {
-        debug_assert!(!self.inside_renderpass());
+        debug_assert!(matches!(
+            self.render_pass_state(),
+            CommandEncoderRenderPassState::OutsideRenderPass
+        ));
         let copies_clone;
         let regions = if buffer.offset() > 0 {
             copies_clone = copies
@@ -113,7 +124,10 @@ impl<'a> CommandEncoder<'a> {
         regions: &[vk::ImageBlit],
         filter: vk::Filter,
     ) {
-        debug_assert!(!self.inside_renderpass());
+        debug_assert!(matches!(
+            self.render_pass_state(),
+            CommandEncoderRenderPassState::OutsideRenderPass
+        ));
         unsafe {
             self.device().cmd_blit_image(
                 self.buffer().buffer,
@@ -212,7 +226,10 @@ impl<'a> CommandEncoder<'a> {
         clear_color: &vk::ClearColorValue,
         image_layout: vk::ImageLayout,
     ) {
-        debug_assert!(!self.inside_renderpass());
+        debug_assert!(matches!(
+            self.render_pass_state(),
+            CommandEncoderRenderPassState::OutsideRenderPass
+        ));
         unsafe {
             self.device().cmd_clear_color_image(
                 self.buffer().buffer,

@@ -359,7 +359,7 @@ impl PipelineLayout {
     /// - `set_layouts`: The descriptor set layouts for each set index.
     /// - `push_constant_ranges`: Push constant ranges accessible to shaders.
     /// - `flags`: Layout creation flags.
-    pub fn new<'a>(
+    pub fn new(
         device: Device,
         set_layouts: Vec<Arc<DescriptorSetLayout>>,
         push_constant_ranges: &[vk::PushConstantRange],

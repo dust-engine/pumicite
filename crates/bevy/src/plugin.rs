@@ -1,10 +1,7 @@
 use bevy_app::prelude::*;
 use bevy_asset::AssetApp;
-use bevy_ecs::{
-    prelude::*,
-    schedule::{Schedulable, SystemKey},
-    system::BoxedSystem,
-};
+use bevy_ecs::prelude::*;
+use glam::Vec4;
 use pumicite::{
     ash::{
         khr,
@@ -14,10 +11,11 @@ use pumicite::{
     bevy::PipelineLayout,
     physical_device::PhysicalDevice,
 };
-use std::{alloc::System, ffi::CStr};
+use std::ffi::{CStr, CString};
 
 use crate::{
-    DescriptorHeap, shader::ShaderModule, staging::AsyncTransfer, swapchain::SwapchainSet,
+    DescriptorHeap, SubmissionState, shader::ShaderModule, staging::AsyncTransfer,
+    swapchain::SwapchainSet,
 };
 
 use super::pass::SubmissionSetsPass;
@@ -293,9 +291,24 @@ impl Plugin for PumicitePlugin {
             .unwrap()
             .add_build_pass(super::pass::SubmissionSetsPass::default());
 
-        app.add_submission_set::<super::queue::RenderQueue>(DefaultRenderSet);
-        app.add_submission_set::<super::queue::TransferQueue>(DefaultTransferSet);
-        app.add_submission_set::<super::queue::ComputeQueue>(DefaultComputeSet);
+        app.add_submission_set::<super::queue::RenderQueue>(
+            DefaultRenderSet,
+            SubmissionSetConfig {
+                debug_color: Vec4::new(1.0, 0.0, 0.0, 1.0),
+            },
+        );
+        app.add_submission_set::<super::queue::TransferQueue>(
+            DefaultTransferSet,
+            SubmissionSetConfig {
+                debug_color: Vec4::new(0.0, 1.0, 0.0, 1.0),
+            },
+        );
+        app.add_submission_set::<super::queue::ComputeQueue>(
+            DefaultComputeSet,
+            SubmissionSetConfig {
+                debug_color: Vec4::new(0.0, 0.0, 1.0, 1.0),
+            },
+        );
         app.configure_sets(
             PostUpdate,
             (
@@ -554,7 +567,11 @@ pub trait PumiciteApp {
     /// # Type Parameters
     ///
     /// - `Q`: Queue marker type (e.g., [`RenderQueue`](crate::queue::RenderQueue), [`ComputeQueue`](crate::queue::ComputeQueue) )
-    fn add_submission_set<Q: 'static>(&mut self, set: impl SystemSet + Copy) -> &mut Self;
+    fn add_submission_set<Q: 'static>(
+        &mut self,
+        set: impl SystemSet + Copy,
+        config: SubmissionSetConfig,
+    ) -> &mut Self;
 
     /// Registers a system set as a render set with a configuration system.
     ///
@@ -616,6 +633,18 @@ fn get_instance_builder(app: &mut App) -> Mut<'_, InstanceBuilder> {
         )
     }
     app.world_mut().get_resource_or_init::<InstanceBuilder>()
+}
+
+#[derive(Debug, Clone)]
+pub struct SubmissionSetConfig {
+    pub debug_color: Vec4,
+}
+impl Default for SubmissionSetConfig {
+    fn default() -> Self {
+        Self {
+            debug_color: Vec4::new(0.0, 0.0, 0.0, 1.0),
+        }
+    }
 }
 
 /// Error returned when no compatible queue could be found or aliased.
@@ -718,7 +747,11 @@ impl PumiciteApp for App {
         device_builder.enable_feature::<T>(selector)
     }
 
-    fn add_submission_set<Q: 'static>(&mut self, set: impl SystemSet + Copy) -> &mut Self {
+    fn add_submission_set<Q: 'static>(
+        &mut self,
+        set: impl SystemSet + Copy,
+        config: SubmissionSetConfig,
+    ) -> &mut Self {
         let queue_config = self.world().resource::<QueueConfiguration>();
         let component_id = queue_config
             .component_id_of_queue::<Q>()
@@ -728,18 +761,33 @@ impl PumiciteApp for App {
         let build_pass = schedule.get_build_pass_mut::<SubmissionSetsPass>().unwrap();
         build_pass
             .submission_sets_to_queue
-            .insert(set.intern(), component_id);
+            .insert(set.intern(), (component_id, config));
         self
     }
 
     fn add_render_set<M>(&mut self, set: impl SystemSet, system: impl IntoSystem<(), (), M>) {
         let interned_set = set.intern();
         let schedule = self.get_schedule_mut(PostUpdate).unwrap();
+        let name = std::any::type_name_of_val(&set);
+
+        let start_render_set_debug_system = move |mut state: SubmissionState| {
+            state.record(|x| {
+                let name = name.split("::").last().unwrap_or("??");
+                x.begin_label(
+                    CString::new(name).unwrap_or_default().as_c_str(),
+                    Vec4::new(1.0, 1.0, 0.5, 1.0),
+                );
+            });
+        };
 
         // Add the config system to the schedule graph, placing it inside the render set
-        let result = schedule
-            .graph_mut()
-            .process_configs(system.in_set(set).into_configs(), true);
+        let result = schedule.graph_mut().process_configs(
+            start_render_set_debug_system
+                .pipe(system)
+                .in_set(set)
+                .into_configs(),
+            true,
+        );
         assert_eq!(result.nodes.len(), 1);
         let system_key = result.nodes[0].as_system().unwrap();
 

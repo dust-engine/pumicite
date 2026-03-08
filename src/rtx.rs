@@ -613,7 +613,7 @@ impl ShaderBindingTable {
         )
         .unwrap();
         Self {
-            handles: handles,
+            handles,
             hitgroup_index: ShaderBindingTableState::NotSet,
             callable_index: ShaderBindingTableState::NotSet,
             miss_index: ShaderBindingTableState::NotSet,
