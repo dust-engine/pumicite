@@ -45,7 +45,7 @@ use glam::{IVec2, IVec4, UVec2, UVec3, UVec4, Vec4};
 use crate::{
     Device, HasDevice,
     buffer::BufferLike,
-    command::RenderPassState,
+    command::CommandEncoderRenderPassState,
     image::ImageViewLike,
     pipeline::{Pipeline, PipelineLayout},
     utils::{AsVkHandle, Version},
@@ -84,7 +84,7 @@ impl<'a> CommandEncoder<'a> {
     pub fn continue_rendering<'this>(&'this mut self) -> Option<RenderPass<'this, 'a>> {
         if matches!(
             self.render_pass_state,
-            RenderPassState::InsideRenderPass { .. }
+            CommandEncoderRenderPassState::InsideRenderPass { .. }
         ) {
             Some(RenderPass { encoder: self })
         } else {
@@ -92,11 +92,8 @@ impl<'a> CommandEncoder<'a> {
         }
     }
 
-    pub fn inside_renderpass(&self) -> bool {
-        matches!(
-            self.render_pass_state,
-            RenderPassState::InsideRenderPass { .. }
-        )
+    pub fn render_pass_state(&self) -> &CommandEncoderRenderPassState {
+        &self.render_pass_state
     }
 }
 
@@ -117,6 +114,7 @@ impl<'encoder, 'a> RenderPassBuilder<'encoder, 'a> {
     ///
     /// After calling this, you can bind pipelines, set dynamic state, and issue
     /// draw commands. Call [`RenderPass::end`] when finished.
+    #[track_caller]
     pub fn begin(mut self) -> RenderPass<'encoder, 'a> {
         self.info.p_color_attachments = self.color_attachments.as_ptr();
         self.info.color_attachment_count = self.color_attachments.len() as u32;
@@ -142,8 +140,9 @@ impl<'encoder, 'a> RenderPassBuilder<'encoder, 'a> {
                 .device()
                 .cmd_begin_rendering(self.encoder.buffer().buffer, &self.info);
         }
-        self.encoder.render_pass_state = super::RenderPassState::InsideRenderPass {
+        self.encoder.render_pass_state = super::CommandEncoderRenderPassState::InsideRenderPass {
             render_area: self.info.render_area,
+            start_location: *std::panic::Location::caller(),
         };
         RenderPass {
             encoder: self.encoder,
@@ -804,12 +803,12 @@ impl<'a> RenderPass<'_, 'a> {
                 .device()
                 .cmd_end_rendering(self.encoder.buffer().buffer);
         }
-        self.encoder.render_pass_state = super::RenderPassState::OutsideRenderPass;
+        self.encoder.render_pass_state = super::CommandEncoderRenderPassState::OutsideRenderPass;
     }
 
     pub fn render_area(&self) -> vk::Rect2D {
         match self.encoder.render_pass_state {
-            RenderPassState::InsideRenderPass { render_area } => render_area,
+            CommandEncoderRenderPassState::InsideRenderPass { render_area, .. } => render_area,
             _ => panic!(),
         }
     }

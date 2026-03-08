@@ -42,7 +42,7 @@ use bevy_ecs::{
 use pumicite::{
     ash::{self, VkResult, vk},
     buffer::{RingBuffer, RingBufferSuballocation},
-    command::{CommandEncoderGuard, CommandPool},
+    command::{CommandEncoderGuard, CommandEncoderRenderPassState, CommandPool},
     prelude::*,
     sync::Timeline,
 };
@@ -307,7 +307,10 @@ impl BufferInitializer<'_> {
         layout: Layout,
         writer: impl FnOnce(&mut [u8]),
     ) -> GPUMutex<RingBufferSuballocation> {
-        assert!(!encoder.inside_renderpass());
+        debug_assert!(matches!(
+            encoder.render_pass_state(),
+            CommandEncoderRenderPassState::OutsideRenderPass
+        ));
         let mut buffer = self
             .device_buffer
             .allocate_buffer(layout.size() as u64, layout.align() as u64);
@@ -341,7 +344,10 @@ impl BufferInitializer<'_> {
         layout: Layout,
         writer: impl FnOnce(&mut [u8]),
     ) -> &'a RingBufferSuballocation {
-        assert!(!ctx.inside_renderpass());
+        debug_assert!(matches!(
+            ctx.render_pass_state(),
+            CommandEncoderRenderPassState::OutsideRenderPass
+        ));
         let mut buffer = self
             .device_buffer
             .allocate_buffer(layout.size() as u64, layout.align() as u64);

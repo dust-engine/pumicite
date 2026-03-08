@@ -14,13 +14,6 @@ fn main() {
 
     app.add_systems(EguiPrimaryContextPass, ui_example_system);
 
-    app.add_systems(
-        PostUpdate,
-        start_main_render_pass
-            .before(pumicite_egui::EguiRenderSet)
-            .in_set(DefaultRenderSet),
-    );
-
     app.add_render_set(pumicite_egui::EguiRenderSet, start_main_render_pass);
 
     app.configure_sets(
