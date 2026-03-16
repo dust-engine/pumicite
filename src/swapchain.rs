@@ -602,45 +602,42 @@ impl SwapchainImageInner {
         }
     }
 }
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub enum HDRMode {
-    /// Creates a swapchain with [`vk::Format::B8G8R8A8_SRGB`]. The display engine expects the color stored in the
-    /// swapchain to be in sRGB color space ([`vk::ColorSpaceKHR::SRGB_NONLINEAR`]).
-    Off,
+/// Specifies the desired swapchain color output mode.
+///
+/// Each variant corresponds to a distinct rendering pipeline with different format,
+/// color space, and post-processing requirements.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum SwapchainColorMode {
+    /// Standard dynamic range output.
+    ///
+    /// Creates a swapchain with [`vk::ColorSpaceKHR::SRGB_NONLINEAR`].
+    /// Prefers [`vk::Format::A2B10G10R10_UNORM_PACK32`] when available
+    /// for reduced banding, falling back to [`vk::Format::B8G8R8A8_UNORM`]
+    /// or [`vk::Format::R8G8B8A8_UNORM`].
+    SDR,
 
-    /// If possible, creates a swapchain with 10 bit colors ([`vk::Format::A2B10G10R10_UNORM_PACK32`]).
-    /// The display engine expects the color stored in the
-    /// swapchain to be in sRGB color space ([`vk::ColorSpaceKHR::SRGB_NONLINEAR`]).
+    /// HDR via scRGB linear float16. Easiest HDR migration path.
     ///
-    /// Falls back to a swapchain with 8 bit color. When operating in this mode, the application should apply the
-    /// gamut curve in postprocessing.
-    Vivid,
+    /// Creates a swapchain with [`vk::Format::R16G16B16A16_SFLOAT`].
+    /// Colors are encoded in linear BT.709 (Rec.709) primaries. Values above 1.0
+    /// represent HDR luminance (1.0 = 80 nits SDR white). No gamut mapping or OETF
+    /// is needed — the compositor handles the conversion to the display’s native space.
+    ScRgbLinear,
 
-    /// This display mode was made to help ease developers that have a Rec709 pipeline into rendering
-    /// in HDR without having to significantly change their color pipelines. The colors in the framebuffer
-    /// for this mode are expected to be encoded in Rec709, but when displayed, if a color is outside of the
-    /// Rec709 RGB cube but inside the display native’s color space, then the color will be correctly displayed
-    /// (otherwise it will be clamped to the monitor’s native color space).
+    /// HDR with explicit color space requiring tone mapping, gamut mapping, and OETF.
     ///
-    /// Creates a swapchain with [`vk::Format::R16G16B16A16_SFLOAT`]. Color should be stored into the
-    /// swapchain image in scRGB color space ([`vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT`]) **with no gamma curve applied**.
-    Progressive,
-
-    /// This display mode was made to provide developers with more sophisticated HDR color pipelines easy integration
-    /// of their pipelines with tone and gamut mapping. The colors in the framebuffer for this mode are expected to be
-    /// encoded in a supported color space queried by the application.
-    ///
-    ///
-    /// Creates a swapchain with [`vk::Format::A2B10G10R10_UNORM_PACK32`]. Application should query
-    /// [`SwapchainImageInner::color_space`] and store colors into the swapchain in this color space.
-    On,
+    /// Creates a swapchain with [`vk::Format::A2B10G10R10_UNORM_PACK32`]. The actual
+    /// color space selected depends on display capabilities. The application **must** query
+    /// [`SwapchainImageInner::color_space`] and configure its post-processing pipeline
+    /// (gamut mapping matrix, transfer function) accordingly.
+    HDR,
 }
 
 pub fn get_surface_preferred_format(
     surface: &Surface,
     physical_device: &PhysicalDevice,
     required_feature_flags: vk::FormatFeatureFlags,
-    hdr_mode: HDRMode,
+    color_mode: &SwapchainColorMode,
 ) -> Option<vk::SurfaceFormatKHR> {
     let supported_formats = physical_device.get_surface_formats(surface).unwrap();
 
@@ -663,70 +660,69 @@ pub fn get_surface_preferred_format(
                     .contains(required_feature_flags)
         })
         .collect();
-    let query_list: &'static [vk::SurfaceFormatKHR] = match hdr_mode {
-        HDRMode::Off => &[vk::SurfaceFormatKHR {
+
+    fn find(
+        candidates: impl IntoIterator<Item = vk::SurfaceFormatKHR>,
+        supported_formats: HashSet<&vk::SurfaceFormatKHR>,
+    ) -> Option<vk::SurfaceFormatKHR> {
+        candidates
+            .into_iter()
+            .find(|f| supported_formats.contains(f))
+    }
+
+    const SDR_CANDIDATES: &'static [vk::SurfaceFormatKHR] = &[
+        vk::SurfaceFormatKHR {
+            format: vk::Format::A2B10G10R10_UNORM_PACK32,
+            color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
+        },
+        vk::SurfaceFormatKHR {
             format: vk::Format::B8G8R8A8_UNORM,
             color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-        }],
-        HDRMode::Vivid => &[
-            vk::SurfaceFormatKHR {
-                format: vk::Format::A2B10G10R10_UNORM_PACK32,
-                color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-            },
-            vk::SurfaceFormatKHR {
-                format: vk::Format::B8G8R8A8_UNORM,
-                color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-            },
-        ],
-        HDRMode::Progressive => &[
-            vk::SurfaceFormatKHR {
-                format: vk::Format::R16G16B16A16_SFLOAT,
-                color_space: vk::ColorSpaceKHR::DISPLAY_NATIVE_AMD,
-            },
-            vk::SurfaceFormatKHR {
-                format: vk::Format::R16G16B16A16_SFLOAT,
-                color_space: vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT,
-            },
-            vk::SurfaceFormatKHR {
-                format: vk::Format::B8G8R8A8_UNORM,
-                color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-            },
-        ],
-        HDRMode::On => &[
-            vk::SurfaceFormatKHR {
-                format: vk::Format::A2B10G10R10_UNORM_PACK32,
-                color_space: vk::ColorSpaceKHR::DISPLAY_NATIVE_AMD,
-            },
-            vk::SurfaceFormatKHR {
-                format: vk::Format::A2B10G10R10_UNORM_PACK32,
-                color_space: vk::ColorSpaceKHR::HDR10_ST2084_EXT,
-            },
-            vk::SurfaceFormatKHR {
-                format: vk::Format::A2B10G10R10_UNORM_PACK32,
-                color_space: vk::ColorSpaceKHR::HDR10_HLG_EXT,
-            },
-            vk::SurfaceFormatKHR {
-                format: vk::Format::A2B10G10R10_UNORM_PACK32,
-                color_space: vk::ColorSpaceKHR::DISPLAY_P3_NONLINEAR_EXT,
-            },
-            vk::SurfaceFormatKHR {
-                format: vk::Format::A2B10G10R10_UNORM_PACK32,
-                color_space: vk::ColorSpaceKHR::PASS_THROUGH_EXT,
-            },
-            vk::SurfaceFormatKHR {
-                format: vk::Format::A2B10G10R10_UNORM_PACK32,
-                color_space: vk::ColorSpaceKHR::BT2020_LINEAR_EXT,
-            },
-            vk::SurfaceFormatKHR {
-                format: vk::Format::B8G8R8A8_UNORM,
-                color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-            },
-        ],
-    };
-    for query in query_list.iter() {
-        if supported_formats.contains(query) {
-            return Some(*query);
-        }
+        },
+    ];
+
+    const SCRGB_CANDIDATES: &'static [vk::SurfaceFormatKHR] = &[
+        vk::SurfaceFormatKHR {
+            format: vk::Format::R16G16B16A16_SFLOAT,
+            color_space: vk::ColorSpaceKHR::DISPLAY_NATIVE_AMD,
+        },
+        vk::SurfaceFormatKHR {
+            format: vk::Format::R16G16B16A16_SFLOAT,
+            color_space: vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT,
+        },
+    ];
+
+    const DEFAULT_HDR_COLOR_SPACES: &[vk::ColorSpaceKHR] = &[
+        vk::ColorSpaceKHR::DISPLAY_NATIVE_AMD,
+        vk::ColorSpaceKHR::HDR10_ST2084_EXT,
+        vk::ColorSpaceKHR::HDR10_HLG_EXT,
+        vk::ColorSpaceKHR::DISPLAY_P3_NONLINEAR_EXT,
+        vk::ColorSpaceKHR::DISPLAY_P3_LINEAR_EXT,
+        vk::ColorSpaceKHR::BT2020_LINEAR_EXT,
+        vk::ColorSpaceKHR::BT709_LINEAR_EXT,
+        vk::ColorSpaceKHR::PASS_THROUGH_EXT,
+    ];
+
+    match color_mode {
+        SwapchainColorMode::SDR => find(SDR_CANDIDATES.iter().copied(), supported_formats),
+        SwapchainColorMode::ScRgbLinear => find(
+            SCRGB_CANDIDATES.iter().chain(SDR_CANDIDATES).copied(),
+            supported_formats,
+        ),
+        SwapchainColorMode::HDR => DEFAULT_HDR_COLOR_SPACES
+            .iter()
+            .find_map(|&cs| {
+                let candidate = vk::SurfaceFormatKHR {
+                    format: vk::Format::A2B10G10R10_UNORM_PACK32,
+                    color_space: cs,
+                };
+                supported_formats.contains(&candidate).then_some(candidate)
+            })
+            .or_else(|| {
+                find(
+                    SCRGB_CANDIDATES.iter().chain(SDR_CANDIDATES).copied(),
+                    supported_formats,
+                )
+            }),
     }
-    None
 }

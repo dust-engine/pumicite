@@ -62,6 +62,10 @@ pub trait BLASBuilder: Resource + FromWorld {
         recorder: &'bb mut CommandEncoder<'b>,
     ) -> impl Future<Output = SmallVec<[BLASBuildGeometry<'b, Self::BufferType>; 1]>>
     + use<'w, 's, 't, 't2, 'b, 'bb, Self>;
+
+    fn is_ready(&self, _params: &mut SystemParamItem<'_, '_, Self::Params>) -> bool {
+        true
+    }
 }
 
 pub enum BLASBuildGeometry<'a, A: BufferLike> {
@@ -160,6 +164,10 @@ fn build_blas_system<T: BLASBuilder>(
     if entities.is_empty() {
         return;
     }
+    let mut params = params.into_inner();
+    if !T::is_ready(builder, &mut params) {
+        return;
+    }
     if entities
         .iter()
         .filter(|(entity, _)| !accel_structs_just_completed.contains(entity))
@@ -174,7 +182,6 @@ fn build_blas_system<T: BLASBuilder>(
     let mut build_range_infos = Vec::<vk::AccelerationStructureBuildRangeInfoKHR>::new();
     let mut infos = Vec::<vk::AccelerationStructureBuildGeometryInfoKHR>::new();
     let future = async |recorder: &mut CommandEncoder| {
-        let mut params = params.into_inner();
         let geometry_transfer_futures = entities.iter().map(|(_, query)| {
             T::geometries(builder, &mut params, query, unsafe {
                 // Unsafely reborrow the recorder.

@@ -399,7 +399,7 @@ impl From<vk::ColorSpaceKHR> for ColorSpace {
         match value {
             vk::ColorSpaceKHR::SRGB_NONLINEAR => ColorSpace {
                 primaries: ColorSpacePrimaries::BT709,
-                transfer_function: ColorSpaceTransferFunction::LINEAR,
+                transfer_function: ColorSpaceTransferFunction::sRGB,
             },
             vk::ColorSpaceKHR::DISPLAY_P3_NONLINEAR_EXT => ColorSpace {
                 primaries: ColorSpacePrimaries::DCI_P3,

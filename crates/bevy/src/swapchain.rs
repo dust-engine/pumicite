@@ -72,7 +72,7 @@ use pumicite::{
     ash::khr::swapchain_maintenance1::Meta as KhrSwapchainMaintenance1,
     ash::khr::swapchain_mutable_format::Meta as ExtSwapchainMutableFormat, tracking::ResourceState,
 };
-use pumicite::{ash::khr::swapchain::Meta as KhrSwapchain, swapchain::HDRMode};
+use pumicite::{ash::khr::swapchain::Meta as KhrSwapchain, swapchain::SwapchainColorMode};
 
 use crate::queue::RenderQueue;
 
@@ -231,14 +231,12 @@ pub struct SwapchainConfig {
     /// Default: `true`
     pub clipped: bool,
 
-    /// HDR mode preference. Only used when [`image_format`](Self::image_format) is `None`.
+    /// Swapchain color output mode. Only used when [`image_format`](Self::image_format) is `None`.
     ///
-    /// - `Off`: Prefer SDR formats (sRGB)
-    /// - `Auto`: Select HDR if available
-    /// - `Required`: Require HDR, fail if unavailable
+    /// See [`SwapchainColorMode`] for details on each mode.
     ///
-    /// Default: `Off`
-    pub hdr: HDRMode,
+    /// Default: `SDR { prefer_10bit: false }`
+    pub color_mode: SwapchainColorMode,
 
     /// Queue family index for pre-present layout transitions. Should match
     /// the queue family used for presentation (typically 0 for graphics).
@@ -258,7 +256,7 @@ impl Default for SwapchainConfig {
             sharing_mode: SharingMode::Exclusive,
             pre_transform: vk::SurfaceTransformFlagsKHR::IDENTITY,
             clipped: true,
-            hdr: HDRMode::Off,
+            color_mode: SwapchainColorMode::SDR,
             queue_family_index: 0,
         }
     }
@@ -359,7 +357,7 @@ fn get_create_info<'a>(
             surface,
             pdevice,
             config.required_feature_flags,
-            config.hdr,
+            &config.color_mode,
         )
         .expect("Unable to find suitable surface format")
     });

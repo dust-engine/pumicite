@@ -42,9 +42,13 @@ pub struct EguiPlugin<Filter: QueryFilter = With<PrimaryWindow>> {
     ///
     /// ### `true` (default)
     /// Converts output colors from sRGB to linear space in the shader. Set it to true when
-    /// it's impractical to alias a sRGB texture as linear as discussed above. This may be
-    /// the case when egui is running as a subpass in a render pass, and other subpasses
-    /// in the render pass expects the output colors to be linear.
+    /// it's impractical to alias a sRGB texture as linear as discussed above.
+    ///
+    /// - This may be the case when egui is running as a subpass in a render pass, and other
+    ///   subpasses in the render pass expects to output colors in linear space.
+    /// - This may also be the case when egui is drawing to a scRGB texture, for example a
+    ///   [R16G16B16A16_SFLOAT](pumicite::utils::format::Format::R16G16B16A16_SFLOAT) texture
+    ///   in [EXTENDED_SRGB_LINEAR_EXT](vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT) color space.
     pub linear_colorspace: bool,
     pub framebuffer_format: pumicite::utils::format::Format,
     pub _filter: std::marker::PhantomData<Filter>,

@@ -268,13 +268,6 @@ impl ScheduleBuildPass for SubmissionSetsPass {
 
         let hierarchy = graph.hierarchy().graph();
 
-        // Collect render set keys for quick lookup
-        let render_set_keys: HashSet<SystemSetKey> = self
-            .render_sets_to_systems
-            .keys()
-            .filter_map(|interned| set_key_map.get(interned).copied())
-            .collect();
-
         // --- Validation: each render set must be in exactly one submission set ---
         for (&render_set_interned, _) in &self.render_sets_to_systems {
             let render_set_key = set_key_map
@@ -356,7 +349,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
             collect_descendant_systems(
                 hierarchy,
                 NodeId::Set(submission_set_key),
-                &render_set_keys,
+                &self.render_sets_to_ending_systems,
                 false,
                 &meta_set,
                 &mut render_systems,
@@ -461,7 +454,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
 fn collect_descendant_systems(
     hierarchy: &bevy_ecs::schedule::graph::DiGraph<NodeId>,
     node: NodeId,
-    render_set_keys: &HashSet<SystemSetKey>,
+    render_sets_to_ending_systems: &BTreeMap<SystemSetKey, SystemKey>,
     in_render_set: bool,
     meta_systems: &HashSet<SystemKey>,
     render_systems: &mut Vec<SystemKey>,
@@ -481,11 +474,15 @@ fn collect_descendant_systems(
                 }
             }
             NodeId::Set(set_key) => {
-                let child_in_render = in_render_set || render_set_keys.contains(&set_key);
+                let mut child_in_render = in_render_set;
+                if let Some(ending_system) = render_sets_to_ending_systems.get(&set_key) {
+                    render_systems.push(*ending_system);
+                    child_in_render = true;
+                }
                 collect_descendant_systems(
                     hierarchy,
                     child,
-                    render_set_keys,
+                    render_sets_to_ending_systems,
                     child_in_render,
                     meta_systems,
                     render_systems,
