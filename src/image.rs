@@ -2,13 +2,11 @@
 //!
 //! This module provides safe wrappers for Vulkan images and utilities for common image operations.
 
-use ash::{VkResult, vk};
+use ash::{VkResult, vk, vk::TaggedStructure};
 use glam::UVec3;
 
-use crate::buffer::{BufferLike, StagingBufferAllocator};
-use crate::command::CommandEncoder;
-use crate::prelude::Access;
-use crate::{Allocator, HasDevice, utils::AsVkHandle};
+use crate::prelude::*;
+use crate::buffer::StagingBufferAllocator;
 use vk_mem::Alloc;
 
 /// Common interface for Vulkan image types.
@@ -40,7 +38,7 @@ pub trait ImageLike: AsVkHandle<Handle = vk::Image> + Send + Sync + 'static {
 ///
 /// Image views define how an image is accessed in shaders, including the
 /// view type, mip levels, and array layers visible through the view.
-pub trait ImageViewLike: AsVkHandle<Handle = vk::ImageView> + Send + Sync + 'static {
+pub trait ImageViewLike: AsVkHandle<Handle = vk::ImageView> + Send + Sync {
     /// Returns the image view type (1D, 2D, 3D, Cube, etc.).
     fn ty(&self) -> vk::ImageViewType;
 
@@ -51,7 +49,7 @@ pub trait ImageViewLike: AsVkHandle<Handle = vk::ImageView> + Send + Sync + 'sta
     fn mip_level_count(&self) -> u32;
 }
 
-/// A regular image fully backed by memory
+/// A GPU-allocated image fully backed by device memory.
 pub struct Image {
     allocator: Allocator,
     handle: vk::Image,
@@ -165,6 +163,7 @@ impl Image {
         }
     }
 
+    /// Returns the underlying VMA allocation.
     pub fn allocation_info(&self) -> vk_mem::AllocationInfo2 {
         self.allocator.get_allocation_info2(&self.allocation)
     }
@@ -292,6 +291,93 @@ impl<T: ImageLike + HasDevice> ImageViewLike for FullImageView<T> {
     }
 }
 
+/// An image bundled with two views: one using a linear format and one using an sRGB format.
+///
+/// This is useful when the same image needs to be sampled with sRGB decode (e.g. for color
+/// textures) and without (e.g. for compute or storage access). The image must have been
+/// created with [`vk::ImageCreateFlags::MUTABLE_FORMAT`] and a compatible format list
+/// ([`vk::ImageFormatListCreateInfo`]).
+///
+/// Both views are automatically destroyed when the `SrgbImageView` is dropped.
+/// Access individual views via [`srgb_view`](Self::srgb_view) and
+/// [`linear_view`](Self::linear_view).
+pub struct SrgbImageView<T: HasDevice + ImageLike> {
+    image: T,
+    linear_view: vk::ImageView,
+    srgb_view: vk::ImageView,
+    ty: vk::ImageViewType,
+}
+
+impl<T: HasDevice + ImageLike> HasDevice for SrgbImageView<T> {
+    fn device(&self) -> &crate::Device {
+        self.image.device()
+    }
+}
+
+impl<T: HasDevice + ImageLike> SrgbImageView<T> {
+    /// Returns a borrowing handle to the sRGB-format view of the image.
+    ///
+    /// Sampling through this view applies the sRGB transfer function, converting
+    /// stored sRGB values to linear values on read.
+    pub fn srgb_view(&self) -> SrgbImageViewItem<'_, T> {
+        SrgbImageViewItem {
+            src: self,
+            view: self.srgb_view,
+        }
+    }
+    /// Returns a borrowing handle to the linear-format view of the image.
+    ///
+    /// Sampling through this view returns raw texel values without any
+    /// transfer function applied.
+    pub fn linear_view(&self) -> SrgbImageViewItem<'_, T> {
+        SrgbImageViewItem {
+            src: self,
+            view: self.linear_view,
+        }
+    }
+    /// Returns a reference to the underlying image.
+    pub fn image(&self) -> &T {
+        &self.image
+    }
+}
+impl<T: ImageLike + HasDevice> Drop for SrgbImageView<T> {
+    fn drop(&mut self) {
+        unsafe {
+            self.image
+                .device()
+                .destroy_image_view(self.linear_view, None);
+            self.image.device().destroy_image_view(self.srgb_view, None);
+        }
+    }
+}
+/// A borrowed reference to one of the two views in an [`SrgbImageView`].
+///
+/// Implements [`ImageViewLike`] and [`AsVkHandle`] so it can be used directly
+/// with descriptor writes and rendering commands.
+pub struct SrgbImageViewItem<'a, T: HasDevice + ImageLike> {
+    src: &'a SrgbImageView<T>,
+    view: vk::ImageView,
+}
+impl<T: HasDevice + ImageLike> AsVkHandle for SrgbImageViewItem<'_, T> {
+    type Handle = vk::ImageView;
+    fn vk_handle(&self) -> Self::Handle {
+        self.view
+    }
+}
+impl<T: HasDevice + ImageLike + 'static> ImageViewLike for SrgbImageViewItem<'_, T> {
+    fn ty(&self) -> vk::ImageViewType {
+        self.src.ty
+    }
+
+    fn array_layer_count(&self) -> u32 {
+        self.src.image.array_layer_count()
+    }
+
+    fn mip_level_count(&self) -> u32 {
+        self.src.image.mip_level_count()
+    }
+}
+
 /// Extension trait providing helper methods for images.
 ///
 /// This trait is automatically implemented for all types implementing [`ImageLike`].
@@ -328,6 +414,82 @@ pub trait ImageExt: ImageLike {
             Ok(FullImageView {
                 image: self,
                 view,
+                ty: view_type,
+            })
+        }
+    }
+
+    /// Creates an [`SrgbImageView`] with separate linear and sRGB-encoded views.
+    ///
+    /// The image must have been created with [`vk::ImageCreateFlags::MUTABLE_FORMAT`] and
+    /// a format list ([vk::ImageFormatListCreateInfo]) that includes both the linear and sRGB variants.
+    ///
+    /// # Parameters
+    /// - `linear_usage` - Usage flags for the linear view
+    /// - `srgb_usage` - Usage flags for the sRGB view
+    ///
+    /// # Errors
+    /// Returns [`vk::Result::ERROR_FORMAT_NOT_SUPPORTED`] if the image's format is already
+    /// sRGB or has no sRGB counterpart.
+    fn create_srgb_view(
+        self,
+        linear_usage: vk::ImageUsageFlags,
+        srgb_usage: vk::ImageUsageFlags,
+    ) -> VkResult<SrgbImageView<Self>>
+    where
+        Self: HasDevice + Sized,
+    {
+        let view_type = match self.ty() {
+            vk::ImageType::TYPE_1D => vk::ImageViewType::TYPE_1D,
+            vk::ImageType::TYPE_2D => vk::ImageViewType::TYPE_2D,
+            vk::ImageType::TYPE_3D => vk::ImageViewType::TYPE_3D,
+            _ => unreachable!(),
+        };
+        unsafe {
+            let srgb_format = crate::utils::format::Format::from(self.format())
+                .to_srgb_format()
+                .ok_or(vk::Result::ERROR_FORMAT_NOT_SUPPORTED)?;
+            let linear_format =
+                crate::utils::format::Format::from(self.format()).to_linear_format();
+            let create_info = vk::ImageViewCreateInfo {
+                image: self.vk_handle(),
+                view_type,
+                components: vk::ComponentMapping::default(),
+                subresource_range: vk::ImageSubresourceRange {
+                    aspect_mask: self.aspects(),
+                    base_mip_level: 0,
+                    base_array_layer: 0,
+                    level_count: self.mip_level_count(),
+                    layer_count: self.array_layer_count(),
+                },
+                ..Default::default()
+            };
+            let linear_view = self.device().create_image_view(
+                &vk::ImageViewCreateInfo {
+                    format: linear_format.into(),
+                    ..create_info
+                }
+                .push(&mut vk::ImageViewUsageCreateInfo {
+                    usage: linear_usage,
+                    ..Default::default()
+                }),
+                None,
+            )?;
+            let srgb_view = self.device().create_image_view(
+                &vk::ImageViewCreateInfo {
+                    format: srgb_format.into(),
+                    ..create_info
+                }
+                .push(&mut vk::ImageViewUsageCreateInfo {
+                    usage: srgb_usage,
+                    ..Default::default()
+                }),
+                None,
+            )?;
+            Ok(SrgbImageView {
+                image: self,
+                linear_view,
+                srgb_view,
                 ty: view_type,
             })
         }
