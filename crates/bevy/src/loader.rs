@@ -401,7 +401,7 @@ impl AssetLoader for KtxLoader {
                 .await
                 .map_err(|_| KtxError::ReadIOError)?; // Skip everything to "mip level array"
 
-            let format_info = pumicite::utils::format::Format::from(format).properties();
+            let format_info = pumicite::types::format::Format::from(format).properties();
             let total_data_size = (0..header.level_count)
                 .map(|mip_level| {
                     let width = (header.pixel_width >> mip_level).max(1);

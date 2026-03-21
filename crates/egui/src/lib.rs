@@ -50,14 +50,14 @@ pub struct EguiPlugin<Filter: QueryFilter = With<PrimaryWindow>> {
     ///   [R16G16B16A16_SFLOAT](pumicite::utils::format::Format::R16G16B16A16_SFLOAT) texture
     ///   in [EXTENDED_SRGB_LINEAR_EXT](vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT) color space.
     pub linear_colorspace: bool,
-    pub framebuffer_format: pumicite::utils::format::Format,
+    pub framebuffer_format: pumicite::types::format::Format,
     pub _filter: std::marker::PhantomData<Filter>,
 }
 impl<Filter: QueryFilter> Default for EguiPlugin<Filter> {
     fn default() -> Self {
         Self {
             linear_colorspace: true,
-            framebuffer_format: pumicite::utils::format::Format::B8G8R8A8_SRGB,
+            framebuffer_format: pumicite::types::format::Format::B8G8R8A8_SRGB,
             _filter: Default::default(),
         }
     }
@@ -128,7 +128,7 @@ impl<Filter: QueryFilter + Send + Sync + 'static> Plugin for EguiPlugin<Filter> 
 
     fn finish(&self, app: &mut App) {
         use bevy_asset::load_embedded_asset;
-        use bevy_pumicite::shader::ron_types::*;
+        use pumicite::types::*;
         let patch = GraphicsPipelineVariant {
             color_formats: BTreeMap::from_iter([(0, self.framebuffer_format)]),
             shaders: BTreeMap::from_iter([(

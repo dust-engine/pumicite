@@ -1,6 +1,8 @@
-use pumicite::ash::vk;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use ash::vk;
+pub mod format;
+
 
 #[derive(Serialize, Deserialize)]
 pub struct ComputePipeline {
@@ -189,10 +191,10 @@ pub struct GraphicsPipeline {
     pub attachments: Vec<Attachment>,
 
     #[serde(default)]
-    pub depth_format: pumicite::utils::format::Format,
+    pub depth_format: format::Format,
 
     #[serde(default)]
-    pub stencil_format: pumicite::utils::format::Format,
+    pub stencil_format: format::Format,
 
     #[serde(default)]
     pub blend_constants:
@@ -223,13 +225,13 @@ pub struct GraphicsPipelineVariant {
     pub shaders: BTreeMap<ShaderStage, BTreeMap<u32, SpecializationConstantType>>,
 
     #[serde(default)]
-    pub depth_format: Option<pumicite::utils::format::Format>,
+    pub depth_format: Option<format::Format>,
 
     #[serde(default)]
-    pub stencil_format: Option<pumicite::utils::format::Format>,
+    pub stencil_format: Option<format::Format>,
 
     #[serde(default)]
-    pub color_formats: BTreeMap<u32, pumicite::utils::format::Format>,
+    pub color_formats: BTreeMap<u32, format::Format>,
 }
 impl GraphicsPipelineVariant {
     pub fn apply_on(&self, pipeline: &mut GraphicsPipeline) {
@@ -267,7 +269,7 @@ pub struct Attachment {
     pub color_write_mask:
         OptionalDynamicState<String, { vk::DynamicState::COLOR_WRITE_MASK_EXT.as_raw() }>,
 
-    pub format: pumicite::utils::format::Format,
+    pub format: format::Format,
 }
 #[derive(Serialize, Deserialize)]
 pub struct BlendEquation {
@@ -480,7 +482,7 @@ pub struct VertexInputBinding {
 }
 #[derive(Serialize, Deserialize, Clone)]
 pub struct VertexInputAttributes {
-    pub format: pumicite::utils::format::Format,
+    pub format: format::Format,
     pub offset: u32,
 }
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -655,7 +657,7 @@ pub enum DescriptorType {
     AccelerationStructure,
     Mutable,
 }
-impl From<DescriptorType> for pumicite::ash::vk::DescriptorType {
+impl From<DescriptorType> for ash::vk::DescriptorType {
     fn from(value: DescriptorType) -> Self {
         match value {
             DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
@@ -695,7 +697,7 @@ pub enum ShaderStage {
     Task,
     Mesh,
 }
-impl From<ShaderStage> for pumicite::ash::vk::ShaderStageFlags {
+impl From<ShaderStage> for vk::ShaderStageFlags {
     fn from(value: ShaderStage) -> Self {
         match value {
             ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,

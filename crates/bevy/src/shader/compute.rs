@@ -11,7 +11,7 @@ use pumicite::{
 
 use crate::{
     DescriptorHeap,
-    shader::{PipelineLayoutLoader, PipelineLoaderError, ShaderModule, ron_types},
+    shader::{PipelineLayoutLoader, PipelineLoaderError, ShaderModule},
 };
 
 /// Asset loader for compute pipelines (`.comp.pipeline.ron` files).
@@ -51,10 +51,10 @@ impl AssetLoader for ComputePipelineLoader {
     ) -> Result<ComputePipeline, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let pipeline: ron_types::ComputePipeline = ron::de::from_bytes(&bytes)?;
+        let pipeline: pumicite_types::ComputePipeline = ron::de::from_bytes(&bytes)?;
 
         let layout = match &pipeline.layout {
-            ron_types::PipelineLayoutRef::Inline(pipeline_layout) => {
+            pumicite_types::PipelineLayoutRef::Inline(pipeline_layout) => {
                 PipelineLayoutLoader::load_inner(
                     pipeline_layout,
                     self.pipeline_cache.device().clone(),
@@ -64,7 +64,7 @@ impl AssetLoader for ComputePipelineLoader {
                 .await?
                 .0
             }
-            ron_types::PipelineLayoutRef::Path(path) => {
+            pumicite_types::PipelineLayoutRef::Path(path) => {
                 load_context
                     .loader()
                     .immediate()
@@ -73,7 +73,7 @@ impl AssetLoader for ComputePipelineLoader {
                     .take()
                     .0
             }
-            ron_types::PipelineLayoutRef::Bindless => {
+            pumicite_types::PipelineLayoutRef::Bindless => {
                 let Some(heap) = self.heap.as_ref() else {
                     return Err(PipelineLoaderError::BindlessPluginNeededError);
                 };

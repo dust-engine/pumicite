@@ -9,6 +9,7 @@ members = [
 ]
 
 [dependencies]
+pumicite_types = { path = "./crates/types" }
 ash = { git = "https://github.com/0xbeefd1ed/ash", branch = "meta" }
 tracing = "0.1"
 vk-mem = { git = "https://github.com/gwihlidal/vk-mem-rs.git", branch = "bump-ash" }

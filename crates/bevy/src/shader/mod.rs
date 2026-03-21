@@ -64,7 +64,6 @@ use crate::DescriptorHeap;
 
 pub mod compute;
 pub mod graphics;
-pub mod ron_types;
 
 /// Error type for shader loading failures.
 #[derive(Error, Debug)]
@@ -289,10 +288,10 @@ impl AssetLoader for RayTracingPipelineLoader {
     ) -> Result<RayTracingPipelineLibrary, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let pipeline: ron_types::RayTracingPipeline = ron::de::from_bytes(&bytes)?;
+        let pipeline: pumicite_types::RayTracingPipeline = ron::de::from_bytes(&bytes)?;
 
         let layout = match &pipeline.layout {
-            ron_types::PipelineLayoutRef::Inline(pipeline_layout) => {
+            pumicite_types::PipelineLayoutRef::Inline(pipeline_layout) => {
                 PipelineLayoutLoader::load_inner(
                     pipeline_layout,
                     self.pipeline_cache.device().clone(),
@@ -302,7 +301,7 @@ impl AssetLoader for RayTracingPipelineLoader {
                 .await?
                 .0
             }
-            ron_types::PipelineLayoutRef::Path(path) => {
+            pumicite_types::PipelineLayoutRef::Path(path) => {
                 load_context
                     .loader()
                     .immediate()
@@ -311,7 +310,7 @@ impl AssetLoader for RayTracingPipelineLoader {
                     .take()
                     .0
             }
-            ron_types::PipelineLayoutRef::Bindless => {
+            pumicite_types::PipelineLayoutRef::Bindless => {
                 let Some(heap) = self.heap.as_ref() else {
                     return Err(PipelineLoaderError::BindlessPluginNeededError);
                 };
@@ -343,20 +342,20 @@ impl AssetLoader for RayTracingPipelineLoader {
             pipeline
                 .stages
                 .iter()
-                .filter(|s| matches!(s, ron_types::RayTracingPipelineShaderStage::RayGen { .. }))
+                .filter(|s| matches!(s, pumicite_types::RayTracingPipelineShaderStage::RayGen { .. }))
                 .chain(
                     pipeline.stages.iter().filter(|s| {
-                        matches!(s, ron_types::RayTracingPipelineShaderStage::Miss { .. })
+                        matches!(s, pumicite_types::RayTracingPipelineShaderStage::Miss { .. })
                     }),
                 )
                 .chain(pipeline.stages.iter().filter(|s| {
-                    matches!(s, ron_types::RayTracingPipelineShaderStage::Callable { .. })
+                    matches!(s, pumicite_types::RayTracingPipelineShaderStage::Callable { .. })
                 }))
                 .chain(pipeline.stages.iter().filter(|s| {
-                    matches!(s, ron_types::RayTracingPipelineShaderStage::HitGroup { .. })
+                    matches!(s, pumicite_types::RayTracingPipelineShaderStage::HitGroup { .. })
                 }))
         {
-            let mut process_shader = async |shader: &ron_types::Shader,
+            let mut process_shader = async |shader: &pumicite_types::Shader,
                                             stage: vk::ShaderStageFlags|
                    -> Result<u32, Self::Error> {
                 let loaded_shader: LoadedAsset<ShaderModule> =
@@ -373,7 +372,7 @@ impl AssetLoader for RayTracingPipelineLoader {
                 Ok(index)
             };
             match shader {
-                ron_types::RayTracingPipelineShaderStage::RayGen { shader, param_size } => {
+                pumicite_types::RayTracingPipelineShaderStage::RayGen { shader, param_size } => {
                     sbt_layout.raygen.param_size = sbt_layout.raygen.param_size.max(*param_size);
                     sbt_layout.raygen.count += 1;
                     groups.push(vk::RayTracingShaderGroupCreateInfoKHR {
@@ -385,7 +384,7 @@ impl AssetLoader for RayTracingPipelineLoader {
                         ..Default::default()
                     });
                 }
-                ron_types::RayTracingPipelineShaderStage::Miss { shader, param_size } => {
+                pumicite_types::RayTracingPipelineShaderStage::Miss { shader, param_size } => {
                     sbt_layout.miss.param_size = sbt_layout.miss.param_size.max(*param_size);
                     sbt_layout.miss.count += 1;
                     groups.push(vk::RayTracingShaderGroupCreateInfoKHR {
@@ -397,7 +396,7 @@ impl AssetLoader for RayTracingPipelineLoader {
                         ..Default::default()
                     });
                 }
-                ron_types::RayTracingPipelineShaderStage::Callable { shader, param_size } => {
+                pumicite_types::RayTracingPipelineShaderStage::Callable { shader, param_size } => {
                     sbt_layout.callable.param_size =
                         sbt_layout.callable.param_size.max(*param_size);
                     sbt_layout.callable.count += 1;
@@ -410,7 +409,7 @@ impl AssetLoader for RayTracingPipelineLoader {
                         ..Default::default()
                     });
                 }
-                ron_types::RayTracingPipelineShaderStage::HitGroup {
+                pumicite_types::RayTracingPipelineShaderStage::HitGroup {
                     ty,
                     intersection,
                     any_hit,
@@ -421,14 +420,14 @@ impl AssetLoader for RayTracingPipelineLoader {
                         sbt_layout.hitgroup.param_size.max(*param_size);
                     sbt_layout.hitgroup.count += 1;
                     let mut process_hitgroup_shader =
-                        async |shader: &ron_types::HitgroupShader,
+                        async |shader: &pumicite_types::HitgroupShader,
                                stage: vk::ShaderStageFlags|
                                -> Result<u32, Self::Error> {
                             let index = match shader {
-                                ron_types::HitgroupShader::Singleton(shader) => {
+                                pumicite_types::HitgroupShader::Singleton(shader) => {
                                     process_shader(shader, stage).await?
                                 }
-                                ron_types::HitgroupShader::Reused(name) => {
+                                pumicite_types::HitgroupShader::Reused(name) => {
                                     if let Some(&group) = reused_shaders.get(name) {
                                         group
                                     } else {
@@ -445,10 +444,10 @@ impl AssetLoader for RayTracingPipelineLoader {
                         };
                     groups.push(vk::RayTracingShaderGroupCreateInfoKHR {
                         ty: match ty {
-                            ron_types::RayTracingPipelineShaderHitGroupType::Triangles => {
+                            pumicite_types::RayTracingPipelineShaderHitGroupType::Triangles => {
                                 vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP
                             }
-                            ron_types::RayTracingPipelineShaderHitGroupType::Aabbs => {
+                            pumicite_types::RayTracingPipelineShaderHitGroupType::Aabbs => {
                                 vk::RayTracingShaderGroupTypeKHR::PROCEDURAL_HIT_GROUP
                             }
                         },
@@ -549,7 +548,7 @@ impl FromWorld for PipelineLayoutLoader {
 
 impl PipelineLayoutLoader {
     async fn load_inner(
-        layout: &ron_types::PipelineLayout,
+        layout: &pumicite_types::PipelineLayout,
         device: Device,
         heap: Option<&DescriptorHeap>,
         ctx: &mut bevy_asset::LoadContext<'_>,
@@ -563,21 +562,21 @@ impl PipelineLayoutLoader {
             Vec::with_capacity(layout.sets.len());
         for descriptor in layout.sets.iter() {
             let layout = match descriptor {
-                ron_types::DescriptorSetLayoutRef::Inline(descriptor) => {
+                pumicite_types::DescriptorSetLayoutRef::Inline(descriptor) => {
                     DescriptorSetLayoutLoader::load_inner(descriptor, device.clone())?.0
                 }
-                ron_types::DescriptorSetLayoutRef::Path(path) => {
+                pumicite_types::DescriptorSetLayoutRef::Path(path) => {
                     let a: LoadedAsset<pumicite::bevy::DescriptorSetLayout> =
                         ctx.loader().immediate().load(path).await?;
                     a.take().0
                 }
-                ron_types::DescriptorSetLayoutRef::SamplerHeap => {
+                pumicite_types::DescriptorSetLayoutRef::SamplerHeap => {
                     let Some(heap) = heap else {
                         return Err(PipelineLoaderError::BindlessPluginNeededError);
                     };
                     heap.sampler_heap().descriptor_layout().clone()
                 }
-                ron_types::DescriptorSetLayoutRef::ResourceHeap => {
+                pumicite_types::DescriptorSetLayoutRef::ResourceHeap => {
                     let Some(heap) = heap else {
                         return Err(PipelineLoaderError::BindlessPluginNeededError);
                     };
@@ -626,7 +625,7 @@ impl AssetLoader for PipelineLayoutLoader {
 
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let layout: ron_types::PipelineLayout = ron::de::from_bytes(&bytes)?;
+        let layout: pumicite_types::PipelineLayout = ron::de::from_bytes(&bytes)?;
 
         let layout = Self::load_inner(
             &layout,
@@ -668,7 +667,7 @@ impl FromWorld for DescriptorSetLayoutLoader {
 }
 impl DescriptorSetLayoutLoader {
     fn load_inner(
-        descriptor: &ron_types::DescriptorSetLayout,
+        descriptor: &pumicite_types::DescriptorSetLayout,
         device: Device,
     ) -> VkResult<pumicite::bevy::DescriptorSetLayout> {
         let bindings: Vec<_> = descriptor
@@ -717,7 +716,7 @@ impl AssetLoader for DescriptorSetLayoutLoader {
 
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let layout: ron_types::DescriptorSetLayout = ron::de::from_bytes(&bytes)?;
+        let layout: pumicite_types::DescriptorSetLayout = ron::de::from_bytes(&bytes)?;
 
         let layout = Self::load_inner(&layout, self.device.clone())?;
         lock.insert(

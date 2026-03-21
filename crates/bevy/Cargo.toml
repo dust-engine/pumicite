@@ -19,6 +19,7 @@ bevy_internal = "0.17.0-dev"
 async-lock = "3"
 glam = "0.30"
 pumicite = { path = "../../", features = ["bevy"] }
+pumicite_types = { path = "../types" }
 raw-window-handle = "0.6"
 ron = "0.12"
 thiserror = "2"
