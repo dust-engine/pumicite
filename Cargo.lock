@@ -961,6 +961,7 @@ dependencies = [
  "glam",
  "image",
  "ktx2",
+ "postcard",
  "pumicite",
  "pumicite_types",
  "raw-window-handle",

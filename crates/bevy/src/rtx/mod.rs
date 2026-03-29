@@ -28,7 +28,10 @@ impl Plugin for RtxPipelinePlugin {
         app.init_asset::<RayTracingPipeline>()
             .init_asset::<RayTracingPipelineLibrary>()
             .preregister_asset_loader::<crate::shader::RayTracingPipelineLoader>(&[
+                #[cfg(feature = "ron")]
                 "rtx.pipeline.ron",
+                #[cfg(feature = "postcard")]
+                "rtx.pipeline.bin",
             ]);
 
         app.add_device_extension::<pumicite::ash::khr::acceleration_structure::Meta>()

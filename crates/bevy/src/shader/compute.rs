@@ -51,7 +51,8 @@ impl AssetLoader for ComputePipelineLoader {
     ) -> Result<ComputePipeline, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let pipeline: pumicite_types::ComputePipeline = ron::de::from_bytes(&bytes)?;
+        let ext = load_context.asset_path().get_full_extension().unwrap_or_default();
+        let pipeline: pumicite_types::ComputePipeline = super::deserialize(&bytes, &ext)?;
 
         let layout = match &pipeline.layout {
             pumicite_types::PipelineLayoutRef::Inline(pipeline_layout) => {
@@ -122,7 +123,12 @@ impl AssetLoader for ComputePipelineLoader {
     }
 
     fn extensions(&self) -> &[&str] {
-        &["comp.pipeline.ron"]
+        &[
+            #[cfg(feature = "ron")]
+            "comp.pipeline.ron",
+            #[cfg(feature = "postcard")]
+            "comp.pipeline.bin",
+        ]
     }
 }
 impl ComputePipeline {

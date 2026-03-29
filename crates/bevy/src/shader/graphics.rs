@@ -68,7 +68,8 @@ impl AssetLoader for GraphicsPipelineLoader {
     ) -> Result<GraphicsPipeline, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let mut pipeline: pumicite_types::GraphicsPipeline = ron::de::from_bytes(&bytes)?;
+        let ext = load_context.asset_path().get_full_extension().unwrap_or_default();
+        let mut pipeline: pumicite_types::GraphicsPipeline = super::deserialize(&bytes, &ext)?;
         settings.apply_on(&mut pipeline);
 
         let layout = match &pipeline.layout {
@@ -624,6 +625,11 @@ impl AssetLoader for GraphicsPipelineLoader {
     }
 
     fn extensions(&self) -> &[&str] {
-        &["gfx.pipeline.ron"]
+        &[
+            #[cfg(feature = "ron")]
+            "gfx.pipeline.ron",
+            #[cfg(feature = "postcard")]
+            "gfx.pipeline.bin",
+        ]
     }
 }

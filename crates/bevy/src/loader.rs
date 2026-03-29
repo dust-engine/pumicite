@@ -49,7 +49,9 @@ impl Drop for TextureAsset {
     }
 }
 
+#[cfg(feature = "dds")]
 pub use dds_loader::*;
+#[cfg(feature = "image")]
 pub use img_loader::*;
 
 #[cfg(feature = "image")]
@@ -230,6 +232,7 @@ mod img_loader {
     }
 }
 
+#[cfg(feature = "ktx2")]
 #[derive(thiserror::Error, Debug)]
 pub enum KtxError {
     #[error("Failed to parse the ktx texture file: {0}")]
@@ -240,9 +243,11 @@ pub enum KtxError {
     #[error("VulkanError")]
     VulkanError(#[from] vk::Result),
 }
+#[cfg(feature = "ktx2")]
 pub struct KtxLoader {
     allocator: Allocator,
 }
+#[cfg(feature = "ktx2")]
 impl FromWorld for KtxLoader {
     fn from_world(world: &mut bevy_ecs::world::World) -> Self {
         Self {
@@ -251,6 +256,7 @@ impl FromWorld for KtxLoader {
     }
 }
 
+#[cfg(feature = "ktx2")]
 mod settings_serde {
     use pumicite::ash::vk;
     use serde::{Deserialize, Serialize};
@@ -281,6 +287,7 @@ mod settings_serde {
     define_serde!(vk::ImageLayout, serde_layout, deser_layout, i32);
 }
 
+#[cfg(feature = "ktx2")]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct KtxLoaderSettings {
     #[serde(
@@ -304,6 +311,7 @@ pub struct KtxLoaderSettings {
     )]
     pub layout: vk::ImageLayout,
 }
+#[cfg(feature = "ktx2")]
 impl Default for KtxLoaderSettings {
     fn default() -> Self {
         Self {
@@ -314,6 +322,7 @@ impl Default for KtxLoaderSettings {
         }
     }
 }
+#[cfg(feature = "ktx2")]
 impl AssetLoader for KtxLoader {
     type Asset = TextureAsset;
 

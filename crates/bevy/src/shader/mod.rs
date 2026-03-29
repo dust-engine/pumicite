@@ -142,14 +142,37 @@ pub enum PipelineLoaderError {
     #[error("Asset load error: {0}")]
     LoadError(#[from] LoadDirectError),
     /// The RON configuration file has syntax errors.
+    #[cfg(feature = "ron")]
     #[error("Pipeline config deserialization error:\n{0}")]
     RonError(#[from] ron::de::SpannedError),
+    /// The postcard binary has decoding errors.
+    #[cfg(feature = "postcard")]
+    #[error("Postcard deserialization error:\n{0}")]
+    PostcardError(#[from] postcard::Error),
     /// The pipeline configuration is invalid.
     #[error("Misconfigured pipeline: {0}")]
     PipelineError(&'static str),
     /// Tried to use bindless layout but bindless wasn't enabled.
     #[error("Bindless plugin not initialized.")]
     BindlessPluginNeededError,
+}
+
+/// Deserialize pipeline configuration from bytes, dispatching by file extension.
+fn deserialize<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+    extension: &str,
+) -> Result<T, PipelineLoaderError> {
+    #[cfg(feature = "postcard")]
+    if extension.ends_with(".bin") {
+        return Ok(postcard::from_bytes::<T>(bytes)?);
+    }
+    #[cfg(feature = "ron")]
+    if extension.ends_with(".ron") {
+        return Ok(ron::de::from_bytes::<T>(bytes)?);
+    }
+    Err(PipelineLoaderError::PipelineError(
+        "unsupported file extension (enable the \"ron\" or \"postcard\" feature)",
+    ))
 }
 
 /// Asset loader for ray tracing pipeline libraries (`.rtx.pipeline.ron` files).
@@ -288,7 +311,8 @@ impl AssetLoader for RayTracingPipelineLoader {
     ) -> Result<RayTracingPipelineLibrary, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let pipeline: pumicite_types::RayTracingPipeline = ron::de::from_bytes(&bytes)?;
+        let ext = load_context.asset_path().get_full_extension().unwrap_or_default();
+        let pipeline: pumicite_types::RayTracingPipeline = deserialize(&bytes, &ext)?;
 
         let layout = match &pipeline.layout {
             pumicite_types::PipelineLayoutRef::Inline(pipeline_layout) => {
@@ -523,11 +547,16 @@ impl AssetLoader for RayTracingPipelineLoader {
     }
 
     fn extensions(&self) -> &[&str] {
-        &["rtx.pipeline.ron"]
+        &[
+            #[cfg(feature = "ron")]
+            "rtx.pipeline.ron",
+            #[cfg(feature = "postcard")]
+            "rtx.pipeline.bin",
+        ]
     }
 }
 
-/// Asset loader for pipeline layouts (`.playout.ron` files).
+/// Asset loader for pipeline layouts (`.playout.ron` / `.playout.bin` files).
 ///
 /// Loads pipeline layout configurations including descriptor set layouts
 /// and push constant ranges. Layouts are cached by path.
@@ -625,7 +654,8 @@ impl AssetLoader for PipelineLayoutLoader {
 
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let layout: pumicite_types::PipelineLayout = ron::de::from_bytes(&bytes)?;
+        let ext = load_context.asset_path().get_full_extension().unwrap_or_default();
+        let layout: pumicite_types::PipelineLayout = deserialize(&bytes, &ext)?;
 
         let layout = Self::load_inner(
             &layout,
@@ -644,7 +674,12 @@ impl AssetLoader for PipelineLayoutLoader {
     }
 
     fn extensions(&self) -> &[&str] {
-        &["playout.ron"]
+        &[
+            #[cfg(feature = "ron")]
+            "playout.ron",
+            #[cfg(feature = "postcard")]
+            "playout.bin",
+        ]
     }
 }
 
@@ -716,7 +751,8 @@ impl AssetLoader for DescriptorSetLayoutLoader {
 
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let layout: pumicite_types::DescriptorSetLayout = ron::de::from_bytes(&bytes)?;
+        let ext = load_context.asset_path().get_full_extension().unwrap_or_default();
+        let layout: pumicite_types::DescriptorSetLayout = deserialize(&bytes, &ext)?;
 
         let layout = Self::load_inner(&layout, self.device.clone())?;
         lock.insert(
