@@ -48,6 +48,13 @@ struct SlangArgs {
     /// Output format
     #[arg(short, long, default_value = "ron")]
     format: OutputFormat,
+
+    /// Set DescriptorSetLayout attributes per set index.
+    /// Format: <SET>:<ATTR>[,<ATTR>...]
+    /// Attributes: push_descriptor, update_after_bind_pool, descriptor_buffer
+    /// Example: --set-attr 0:push_descriptor --set-attr 1:update_after_bind_pool,descriptor_buffer
+    #[arg(long = "set-attr", value_name = "SET:ATTRS")]
+    set_attrs: Vec<String>,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -100,6 +107,51 @@ enum RonType {
     ComputePipeline,
     GraphicsPipeline,
     RaytracingPipeline,
+}
+
+// ---------------------------------------------------------------------------
+// set-attr parsing
+// ---------------------------------------------------------------------------
+
+fn apply_set_attrs(layout: &mut pumicite_types::PipelineLayout, raw: &[String]) {
+    for entry in raw {
+        let Some((idx_str, attrs_str)) = entry.split_once(':') else {
+            eprintln!("error: invalid --set-attr format {entry:?}, expected <SET>:<ATTR>[,<ATTR>...]");
+            std::process::exit(1);
+        };
+        let idx: usize = idx_str.parse().unwrap_or_else(|e| {
+            eprintln!("error: invalid set index {idx_str:?}: {e}");
+            std::process::exit(1);
+        });
+        let set = match layout.sets.get_mut(idx) {
+            Some(pumicite_types::DescriptorSetLayoutRef::Inline(s)) => s,
+            Some(_) => {
+                eprintln!("error: set {idx} is not an inline layout, cannot apply attributes");
+                std::process::exit(1);
+            }
+            None => {
+                eprintln!(
+                    "error: set index {idx} out of range (layout has {} sets)",
+                    layout.sets.len()
+                );
+                std::process::exit(1);
+            }
+        };
+        for attr in attrs_str.split(',') {
+            match attr.trim() {
+                "push_descriptor" => set.push_descriptor = true,
+                "update_after_bind_pool" => set.update_after_bind_pool = true,
+                "descriptor_buffer" => set.descriptor_buffer = true,
+                other => {
+                    eprintln!(
+                        "error: unknown descriptor set attribute {other:?}. \
+                         Valid: push_descriptor, update_after_bind_pool, descriptor_buffer"
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -184,7 +236,8 @@ fn cmd_slang(args: SlangArgs) {
         .unwrap();
     let linked = program.link().unwrap();
     let reflection = linked.layout(0).unwrap();
-    let layout = build_pipeline_layout(reflection);
+    let mut layout = build_pipeline_layout(reflection);
+    apply_set_attrs(&mut layout, &args.set_attrs);
 
     let (bytes, is_text) = match args.format {
         OutputFormat::Ron => (
