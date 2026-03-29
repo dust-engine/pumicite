@@ -57,6 +57,46 @@ fn collect_stages(reflection: &slang::reflection::Shader) -> Vec<ShaderStage> {
         .collect()
 }
 
+pub fn build_descriptor_set_layout(
+    type_layout: &slang::reflection::TypeLayout,
+    set_idx: i64,
+    stages: &[ShaderStage],
+) -> Option<DescriptorSetLayout> {
+    let range_count = type_layout.descriptor_set_descriptor_range_count(set_idx);
+    let mut bindings = Vec::new();
+
+    for range_idx in 0..range_count {
+        let binding_type = type_layout.descriptor_set_descriptor_range_type(set_idx, range_idx);
+        let descriptor_count =
+            type_layout.descriptor_set_descriptor_range_descriptor_count(set_idx, range_idx);
+        let index_offset =
+            type_layout.descriptor_set_descriptor_range_index_offset(set_idx, range_idx);
+
+        let Some(descriptor_type) = slang_binding_type_to_descriptor_type(binding_type) else {
+            continue;
+        };
+
+        bindings.push(Binding {
+            ty: descriptor_type,
+            binding: index_offset as u32,
+            count: descriptor_count.max(1) as u32,
+            stages: stages.to_vec(),
+            samplers: (),
+            update_after_bind: false,
+            update_unused_while_pending: false,
+            partially_bound: false,
+            variable_descriptor_count: false,
+        });
+    }
+
+    (!bindings.is_empty()).then(|| DescriptorSetLayout {
+        push_descriptor: false,
+        update_after_bind_pool: false,
+        descriptor_buffer: false,
+        bindings,
+    })
+}
+
 pub fn build_pipeline_layout(reflection: &slang::reflection::Shader) -> PipelineLayout {
     let stages = collect_stages(reflection);
 
@@ -64,105 +104,35 @@ pub fn build_pipeline_layout(reflection: &slang::reflection::Shader) -> Pipeline
         .global_params_type_layout()
         .expect("no global params type layout");
 
-    // Build descriptor sets from the global type layout's descriptor set structure.
-    let descriptor_set_count = global_type_layout.descriptor_set_count();
+    // Descriptor sets from global parameters.
     let mut sets: Vec<DescriptorSetLayout> = Vec::new();
-
-    for set_idx in 0..descriptor_set_count {
-        let range_count = global_type_layout.descriptor_set_descriptor_range_count(set_idx);
-        let mut bindings = Vec::new();
-
-        for range_idx in 0..range_count {
-            let binding_type =
-                global_type_layout.descriptor_set_descriptor_range_type(set_idx, range_idx);
-            let descriptor_count = global_type_layout
-                .descriptor_set_descriptor_range_descriptor_count(set_idx, range_idx);
-            let index_offset =
-                global_type_layout.descriptor_set_descriptor_range_index_offset(set_idx, range_idx);
-
-            let Some(descriptor_type) = slang_binding_type_to_descriptor_type(binding_type) else {
-                continue;
-            };
-
-            bindings.push(Binding {
-                ty: descriptor_type,
-                binding: index_offset as u32,
-                count: descriptor_count.max(1) as u32,
-                stages: stages.clone(),
-                samplers: (),
-                update_after_bind: false,
-                update_unused_while_pending: false,
-                partially_bound: false,
-                variable_descriptor_count: false,
-            });
-        }
-
-        if !bindings.is_empty() {
-            sets.push(DescriptorSetLayout {
-                push_descriptor: false,
-                update_after_bind_pool: false,
-                descriptor_buffer: false,
-                bindings,
-            });
+    for set_idx in 0..global_type_layout.descriptor_set_count() {
+        if let Some(set) = build_descriptor_set_layout(global_type_layout, set_idx, &stages) {
+            sets.push(set);
         }
     }
 
-    // Also collect descriptor sets from entry-point-specific parameters.
+    // Descriptor sets from entry-point-specific parameters.
     for entry_point in reflection.entry_points() {
         let Some(type_layout) = entry_point.type_layout() else {
             continue;
         };
         let ep_stage =
             slang_stage_to_shader_stage(entry_point.stage()).unwrap_or(ShaderStage::Compute);
-        let ep_set_count = type_layout.descriptor_set_count();
+        let ep_stages = &[ep_stage];
 
-        for set_idx in 0..ep_set_count {
-            let range_count = type_layout.descriptor_set_descriptor_range_count(set_idx);
-            let mut bindings = Vec::new();
-
-            for range_idx in 0..range_count {
-                let binding_type =
-                    type_layout.descriptor_set_descriptor_range_type(set_idx, range_idx);
-                let descriptor_count = type_layout
-                    .descriptor_set_descriptor_range_descriptor_count(set_idx, range_idx);
-                let index_offset =
-                    type_layout.descriptor_set_descriptor_range_index_offset(set_idx, range_idx);
-
-                let Some(descriptor_type) = slang_binding_type_to_descriptor_type(binding_type)
-                else {
-                    continue;
-                };
-
-                bindings.push(Binding {
-                    ty: descriptor_type,
-                    binding: index_offset as u32,
-                    count: descriptor_count.max(1) as u32,
-                    stages: vec![ep_stage],
-                    samplers: (),
-                    update_after_bind: false,
-                    update_unused_while_pending: false,
-                    partially_bound: false,
-                    variable_descriptor_count: false,
-                });
-            }
-
-            if !bindings.is_empty() {
-                sets.push(DescriptorSetLayout {
-                    push_descriptor: false,
-                    update_after_bind_pool: false,
-                    descriptor_buffer: false,
-                    bindings,
-                });
+        for set_idx in 0..type_layout.descriptor_set_count() {
+            if let Some(set) = build_descriptor_set_layout(type_layout, set_idx, ep_stages) {
+                sets.push(set);
             }
         }
     }
 
-    // Build push constants from global uniform data and entry point uniform data.
+    // Push constants from global uniform data and entry point uniform data.
     let mut push_constants = BTreeMap::new();
 
     let global_uniform_size = global_type_layout.size(slang::ParameterCategory::Uniform);
     if global_uniform_size > 0 {
-        // Global push constants are accessible from all stages.
         for &stage in &stages {
             push_constants.insert(stage, (0, global_uniform_size as u32));
         }
@@ -170,10 +140,22 @@ pub fn build_pipeline_layout(reflection: &slang::reflection::Shader) -> Pipeline
 
     let mut offset = global_uniform_size as u32;
     for entry_point in reflection.entry_points() {
-        let Some(type_layout) = entry_point.type_layout() else {
-            continue;
-        };
-        let ep_uniform_size = type_layout.size(slang::ParameterCategory::Uniform);
+        // The entry point's type_layout() is a ConstantBuffer wrapper whose
+        // size(Uniform) is 0. To find the actual push constant size we iterate
+        // the entry point's parameters and sum those in the Uniform category.
+        let ep_uniform_size: usize = entry_point
+            .parameters()
+            .filter(|p| {
+                p.type_layout()
+                    .is_some_and(|tl| tl.parameter_category() == slang::ParameterCategory::Uniform)
+            })
+            .map(|p| {
+                p.type_layout()
+                    .unwrap()
+                    .size(slang::ParameterCategory::Uniform)
+            })
+            .sum();
+
         if ep_uniform_size > 0 {
             if let Some(stage) = slang_stage_to_shader_stage(entry_point.stage()) {
                 push_constants.insert(stage, (offset, ep_uniform_size as u32));
@@ -182,13 +164,11 @@ pub fn build_pipeline_layout(reflection: &slang::reflection::Shader) -> Pipeline
         }
     }
 
-    let descriptor_set_refs = sets
-        .into_iter()
-        .map(DescriptorSetLayoutRef::Inline)
-        .collect();
-
     PipelineLayout {
-        sets: descriptor_set_refs,
+        sets: sets
+            .into_iter()
+            .map(DescriptorSetLayoutRef::Inline)
+            .collect(),
         push_constants,
         independent_sets: false,
     }
