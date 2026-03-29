@@ -10,3 +10,4 @@ glam = "0.30"
 
 [dev-dependencies]
 ron = "0.12"
+postcard = { version = "1", features = ["alloc"] }

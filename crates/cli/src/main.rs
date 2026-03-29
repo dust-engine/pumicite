@@ -116,7 +116,9 @@ enum RonType {
 fn apply_set_attrs(layout: &mut pumicite_types::PipelineLayout, raw: &[String]) {
     for entry in raw {
         let Some((idx_str, attrs_str)) = entry.split_once(':') else {
-            eprintln!("error: invalid --set-attr format {entry:?}, expected <SET>:<ATTR>[,<ATTR>...]");
+            eprintln!(
+                "error: invalid --set-attr format {entry:?}, expected <SET>:<ATTR>[,<ATTR>...]"
+            );
             std::process::exit(1);
         };
         let idx: usize = idx_str.parse().unwrap_or_else(|e| {
