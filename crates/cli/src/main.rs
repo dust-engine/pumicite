@@ -168,8 +168,7 @@ fn build_descriptor_set(
     let mut bindings = Vec::new();
 
     for range_idx in 0..range_count {
-        let binding_type =
-            type_layout.descriptor_set_descriptor_range_type(set_idx, range_idx);
+        let binding_type = type_layout.descriptor_set_descriptor_range_type(set_idx, range_idx);
         let descriptor_count =
             type_layout.descriptor_set_descriptor_range_descriptor_count(set_idx, range_idx);
         let index_offset =
@@ -256,7 +255,10 @@ fn build_pipeline_layout(reflection: &slang::reflection::Shader) -> PipelineLayo
     }
 
     PipelineLayout {
-        sets: sets.into_iter().map(DescriptorSetLayoutRef::Inline).collect(),
+        sets: sets
+            .into_iter()
+            .map(DescriptorSetLayoutRef::Inline)
+            .collect(),
         push_constants,
         independent_sets: false,
     }
@@ -302,8 +304,7 @@ fn cmd_slang(args: SlangArgs) {
             .push(std::ffi::CString::new(parent.to_string_lossy().as_ref()).unwrap());
     }
     for inc in &args.include_paths {
-        search_path_cstrings
-            .push(std::ffi::CString::new(inc.to_string_lossy().as_ref()).unwrap());
+        search_path_cstrings.push(std::ffi::CString::new(inc.to_string_lossy().as_ref()).unwrap());
     }
     let search_path_ptrs: Vec<_> = search_path_cstrings.iter().map(|c| c.as_ptr()).collect();
 
@@ -401,15 +402,18 @@ macro_rules! ron_to_postcard {
 }
 
 fn cmd_ron2bin(args: Ron2BinArgs) {
-    let ron_type = args.r#type.or_else(|| infer_ron_type(&args.input)).unwrap_or_else(|| {
-        eprintln!(
-            "error: cannot infer type from file name {:?}. \
+    let ron_type = args
+        .r#type
+        .or_else(|| infer_ron_type(&args.input))
+        .unwrap_or_else(|| {
+            eprintln!(
+                "error: cannot infer type from file name {:?}. \
              Use --type to specify one of: pipeline-layout, descriptor-set-layout, \
              compute-pipeline, graphics-pipeline, ray-tracing-pipeline",
-            args.input
-        );
-        std::process::exit(1);
-    });
+                args.input
+            );
+            std::process::exit(1);
+        });
 
     let ron_str = std::fs::read_to_string(&args.input).unwrap_or_else(|e| {
         eprintln!("error: failed to read {:?}: {e}", args.input);
@@ -428,7 +432,9 @@ fn cmd_ron2bin(args: Ron2BinArgs) {
         }
     };
 
-    let output = args.output.unwrap_or_else(|| default_postcard_output(&args.input));
+    let output = args
+        .output
+        .unwrap_or_else(|| default_postcard_output(&args.input));
     write_output(&bytes, Some(&output), false);
 }
 

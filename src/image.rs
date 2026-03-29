@@ -5,8 +5,8 @@
 use ash::{VkResult, vk, vk::TaggedStructure};
 use glam::UVec3;
 
-use crate::prelude::*;
 use crate::buffer::StagingBufferAllocator;
+use crate::prelude::*;
 use vk_mem::Alloc;
 
 /// Common interface for Vulkan image types.
@@ -518,7 +518,8 @@ pub trait ImageExt: ImageLike {
         Self: Sized,
     {
         async move {
-            let format_properties = pumicite_types::format::Format::from(self.format()).properties();
+            let format_properties =
+                pumicite_types::format::Format::from(self.format()).properties();
             let bytes_required = format_properties
                 .bytes_required_for_texture(self.extent(), self.mip_level_count())
                 * self.array_layer_count() as u64;

@@ -1,8 +1,7 @@
+use ash::vk;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use ash::vk;
 pub mod format;
-
 
 #[derive(Serialize, Deserialize)]
 pub struct ComputePipeline {

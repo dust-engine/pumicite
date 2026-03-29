@@ -10,6 +10,7 @@ use pumicite::{
     utils::AsVkHandle,
 };
 
+#[cfg(any(feature = "ron", feature = "postcard"))]
 use crate::{
     DescriptorHeap,
     shader::{PipelineLayoutLoader, PipelineLoaderError, ShaderModule},
@@ -43,10 +44,12 @@ impl Deref for GraphicsPipeline {
 /// - Dynamic state
 /// - Specialization constants
 /// - Pipeline variants
+#[cfg(any(feature = "ron", feature = "postcard"))]
 pub struct GraphicsPipelineLoader {
     pipeline_cache: Arc<PipelineCache>,
     heap: Option<DescriptorHeap>,
 }
+#[cfg(any(feature = "ron", feature = "postcard"))]
 impl FromWorld for GraphicsPipelineLoader {
     fn from_world(world: &mut bevy_ecs::world::World) -> Self {
         Self {
@@ -55,6 +58,7 @@ impl FromWorld for GraphicsPipelineLoader {
         }
     }
 }
+#[cfg(any(feature = "ron", feature = "postcard"))]
 impl AssetLoader for GraphicsPipelineLoader {
     type Asset = GraphicsPipeline;
     type Settings = pumicite_types::GraphicsPipelineVariant;
@@ -68,7 +72,10 @@ impl AssetLoader for GraphicsPipelineLoader {
     ) -> Result<GraphicsPipeline, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let ext = load_context.asset_path().get_full_extension().unwrap_or_default();
+        let ext = load_context
+            .asset_path()
+            .get_full_extension()
+            .unwrap_or_default();
         let mut pipeline: pumicite_types::GraphicsPipeline = super::deserialize(&bytes, &ext)?;
         settings.apply_on(&mut pipeline);
 

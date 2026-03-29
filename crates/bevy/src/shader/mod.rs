@@ -131,6 +131,7 @@ impl AssetLoader for ShaderLoader {
 
 /// Error type for pipeline loading failures.
 #[derive(Error, Debug)]
+#[cfg(any(feature = "ron", feature = "postcard"))]
 pub enum PipelineLoaderError {
     /// Vulkan returned an error during pipeline creation.
     #[error("Vulkan Pipeline creation error")]
@@ -158,6 +159,7 @@ pub enum PipelineLoaderError {
 }
 
 /// Deserialize pipeline configuration from bytes, dispatching by file extension.
+#[cfg(any(feature = "ron", feature = "postcard"))]
 fn deserialize<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
     extension: &str,
@@ -179,6 +181,7 @@ fn deserialize<T: serde::de::DeserializeOwned>(
 ///
 /// Creates pipeline libraries that can be linked into complete ray tracing pipelines
 /// via [`RtxPipelineManager`](crate::rtx::RtxPipelineManager).
+#[cfg(any(feature = "ron", feature = "postcard"))]
 pub struct RayTracingPipelineLoader {
     pipeline_cache: Arc<PipelineCache>,
     heap: Option<DescriptorHeap>,
@@ -186,6 +189,7 @@ pub struct RayTracingPipelineLoader {
     /// unavailable or on drivers known to have bugs (AMD proprietary).
     use_pipeline_library: bool,
 }
+#[cfg(any(feature = "ron", feature = "postcard"))]
 impl FromWorld for RayTracingPipelineLoader {
     fn from_world(world: &mut bevy_ecs::world::World) -> Self {
         let device = world.resource::<Device>();
@@ -298,6 +302,7 @@ impl RayTracingPipelineLibrary {
         }
     }
 }
+#[cfg(any(feature = "ron", feature = "postcard"))]
 impl AssetLoader for RayTracingPipelineLoader {
     type Asset = RayTracingPipelineLibrary;
     type Settings = ();
@@ -311,7 +316,10 @@ impl AssetLoader for RayTracingPipelineLoader {
     ) -> Result<RayTracingPipelineLibrary, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let ext = load_context.asset_path().get_full_extension().unwrap_or_default();
+        let ext = load_context
+            .asset_path()
+            .get_full_extension()
+            .unwrap_or_default();
         let pipeline: pumicite_types::RayTracingPipeline = deserialize(&bytes, &ext)?;
 
         let layout = match &pipeline.layout {
@@ -362,22 +370,33 @@ impl AssetLoader for RayTracingPipelineLoader {
 
         // Process stages in canonical order: RayGen, Miss, Callable, HitGroup.
         // SbtHandles assumes this ordering when computing handle offsets.
-        for shader in
-            pipeline
-                .stages
-                .iter()
-                .filter(|s| matches!(s, pumicite_types::RayTracingPipelineShaderStage::RayGen { .. }))
-                .chain(
-                    pipeline.stages.iter().filter(|s| {
-                        matches!(s, pumicite_types::RayTracingPipelineShaderStage::Miss { .. })
-                    }),
+        for shader in pipeline
+            .stages
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s,
+                    pumicite_types::RayTracingPipelineShaderStage::RayGen { .. }
                 )
-                .chain(pipeline.stages.iter().filter(|s| {
-                    matches!(s, pumicite_types::RayTracingPipelineShaderStage::Callable { .. })
-                }))
-                .chain(pipeline.stages.iter().filter(|s| {
-                    matches!(s, pumicite_types::RayTracingPipelineShaderStage::HitGroup { .. })
-                }))
+            })
+            .chain(pipeline.stages.iter().filter(|s| {
+                matches!(
+                    s,
+                    pumicite_types::RayTracingPipelineShaderStage::Miss { .. }
+                )
+            }))
+            .chain(pipeline.stages.iter().filter(|s| {
+                matches!(
+                    s,
+                    pumicite_types::RayTracingPipelineShaderStage::Callable { .. }
+                )
+            }))
+            .chain(pipeline.stages.iter().filter(|s| {
+                matches!(
+                    s,
+                    pumicite_types::RayTracingPipelineShaderStage::HitGroup { .. }
+                )
+            }))
         {
             let mut process_shader = async |shader: &pumicite_types::Shader,
                                             stage: vk::ShaderStageFlags|
@@ -560,11 +579,13 @@ impl AssetLoader for RayTracingPipelineLoader {
 ///
 /// Loads pipeline layout configurations including descriptor set layouts
 /// and push constant ranges. Layouts are cached by path.
+#[cfg(any(feature = "ron", feature = "postcard"))]
 pub struct PipelineLayoutLoader {
     device: Device,
     cache: async_lock::Mutex<HashMap<AssetPath<'static>, Weak<pumicite::pipeline::PipelineLayout>>>,
     heap: Option<DescriptorHeap>,
 }
+#[cfg(any(feature = "ron", feature = "postcard"))]
 impl FromWorld for PipelineLayoutLoader {
     fn from_world(world: &mut bevy_ecs::world::World) -> Self {
         Self {
@@ -575,6 +596,7 @@ impl FromWorld for PipelineLayoutLoader {
     }
 }
 
+#[cfg(any(feature = "ron", feature = "postcard"))]
 impl PipelineLayoutLoader {
     async fn load_inner(
         layout: &pumicite_types::PipelineLayout,
@@ -634,6 +656,7 @@ impl PipelineLayoutLoader {
     }
 }
 
+#[cfg(any(feature = "ron", feature = "postcard"))]
 impl AssetLoader for PipelineLayoutLoader {
     type Asset = pumicite::bevy::PipelineLayout;
 
@@ -654,7 +677,10 @@ impl AssetLoader for PipelineLayoutLoader {
 
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let ext = load_context.asset_path().get_full_extension().unwrap_or_default();
+        let ext = load_context
+            .asset_path()
+            .get_full_extension()
+            .unwrap_or_default();
         let layout: pumicite_types::PipelineLayout = deserialize(&bytes, &ext)?;
 
         let layout = Self::load_inner(
@@ -686,12 +712,14 @@ impl AssetLoader for PipelineLayoutLoader {
 /// Asset loader for descriptor set layouts.
 ///
 /// Used internally by pipeline loaders. Descriptor set layouts are cached.
+#[cfg(any(feature = "ron", feature = "postcard"))]
 pub struct DescriptorSetLayoutLoader {
     device: Device,
     cache: async_lock::Mutex<
         HashMap<AssetPath<'static>, Weak<pumicite::descriptor::DescriptorSetLayout>>,
     >,
 }
+#[cfg(any(feature = "ron", feature = "postcard"))]
 impl FromWorld for DescriptorSetLayoutLoader {
     fn from_world(world: &mut bevy_ecs::world::World) -> Self {
         Self {
@@ -700,6 +728,7 @@ impl FromWorld for DescriptorSetLayoutLoader {
         }
     }
 }
+#[cfg(any(feature = "ron", feature = "postcard"))]
 impl DescriptorSetLayoutLoader {
     fn load_inner(
         descriptor: &pumicite_types::DescriptorSetLayout,
@@ -731,6 +760,7 @@ impl DescriptorSetLayoutLoader {
             .map(pumicite::bevy::DescriptorSetLayout)
     }
 }
+#[cfg(any(feature = "ron", feature = "postcard"))]
 impl AssetLoader for DescriptorSetLayoutLoader {
     type Asset = pumicite::bevy::DescriptorSetLayout;
 
@@ -751,7 +781,10 @@ impl AssetLoader for DescriptorSetLayoutLoader {
 
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let ext = load_context.asset_path().get_full_extension().unwrap_or_default();
+        let ext = load_context
+            .asset_path()
+            .get_full_extension()
+            .unwrap_or_default();
         let layout: pumicite_types::DescriptorSetLayout = deserialize(&bytes, &ext)?;
 
         let layout = Self::load_inner(&layout, self.device.clone())?;

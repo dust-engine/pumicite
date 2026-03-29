@@ -670,7 +670,7 @@ pub fn get_surface_preferred_format(
             .find(|f| supported_formats.contains(f))
     }
 
-    const SDR_CANDIDATES: &'static [vk::SurfaceFormatKHR] = &[
+    const SDR_CANDIDATES: &[vk::SurfaceFormatKHR] = &[
         vk::SurfaceFormatKHR {
             format: vk::Format::A2B10G10R10_UNORM_PACK32,
             color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
@@ -681,7 +681,7 @@ pub fn get_surface_preferred_format(
         },
     ];
 
-    const SCRGB_CANDIDATES: &'static [vk::SurfaceFormatKHR] = &[
+    const SCRGB_CANDIDATES: &[vk::SurfaceFormatKHR] = &[
         vk::SurfaceFormatKHR {
             format: vk::Format::R16G16B16A16_SFLOAT,
             color_space: vk::ColorSpaceKHR::DISPLAY_NATIVE_AMD,

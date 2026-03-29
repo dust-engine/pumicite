@@ -333,32 +333,35 @@ impl Plugin for PumicitePlugin {
 
         app.add_plugins(super::staging::StagingBeltPlugin::default());
 
-        app.preregister_asset_loader::<crate::shader::ShaderLoader>(&["spv"])
-            .preregister_asset_loader::<crate::shader::PipelineLayoutLoader>(&[
+        app.preregister_asset_loader::<crate::shader::ShaderLoader>(&["spv"]);
+
+        #[cfg(any(feature = "ron", feature = "postcard"))]
+        {
+            app.preregister_asset_loader::<crate::shader::PipelineLayoutLoader>(&[
                 #[cfg(feature = "ron")]
                 "playout.ron",
                 #[cfg(feature = "postcard")]
-                "playout.bin"
+                "playout.bin",
             ])
             .preregister_asset_loader::<crate::shader::DescriptorSetLayoutLoader>(&[
                 #[cfg(feature = "ron")]
                 "desc.ron",
                 #[cfg(feature = "postcard")]
-                "desc.bin"
+                "desc.bin",
             ])
             .preregister_asset_loader::<crate::shader::compute::ComputePipelineLoader>(&[
                 #[cfg(feature = "ron")]
                 "comp.pipeline.ron",
                 #[cfg(feature = "postcard")]
-                "comp.pipeline.bin"
+                "comp.pipeline.bin",
             ])
             .preregister_asset_loader::<crate::shader::graphics::GraphicsPipelineLoader>(&[
                 #[cfg(feature = "ron")]
                 "gfx.pipeline.ron",
                 #[cfg(feature = "postcard")]
-                "gfx.pipeline.bin"
-            ])
-            ;
+                "gfx.pipeline.bin",
+            ]);
+        }
         #[cfg(feature = "dds")]
         app.preregister_asset_loader::<crate::loader::DdsLoader>(&["dds"]);
         #[cfg(feature = "image")]
@@ -402,12 +405,14 @@ impl Plugin for PumicitePlugin {
 
     fn cleanup(&self, app: &mut App) {
         // Initialize pipeline loaders in cleanup to ensure that the bindless plugin is available
-        app.init_asset_loader::<crate::shader::ShaderLoader>()
-            .init_asset_loader::<crate::shader::PipelineLayoutLoader>()
-            .init_asset_loader::<crate::shader::DescriptorSetLayoutLoader>()
-            .init_asset_loader::<crate::shader::compute::ComputePipelineLoader>()
-            .init_asset_loader::<crate::shader::graphics::GraphicsPipelineLoader>()
-            ;
+        app.init_asset_loader::<crate::shader::ShaderLoader>();
+        #[cfg(any(feature = "ron", feature = "postcard"))]
+        {
+            app.init_asset_loader::<crate::shader::PipelineLayoutLoader>()
+                .init_asset_loader::<crate::shader::DescriptorSetLayoutLoader>()
+                .init_asset_loader::<crate::shader::compute::ComputePipelineLoader>()
+                .init_asset_loader::<crate::shader::graphics::GraphicsPipelineLoader>();
+        }
         #[cfg(feature = "ktx2")]
         app.init_asset_loader::<crate::loader::KtxLoader>();
         #[cfg(feature = "dds")]
