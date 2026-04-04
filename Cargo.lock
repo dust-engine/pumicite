@@ -3622,7 +3622,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "postcard",
+ "proc-macro2",
  "pumicite_types",
+ "quote",
  "ron 0.12.0",
  "shader-slang",
 ]

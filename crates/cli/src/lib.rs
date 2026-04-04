@@ -6,7 +6,9 @@ use pumicite_types::{
 };
 use shader_slang as slang;
 
-fn slang_binding_type_to_descriptor_type(
+pub mod codegen;
+
+pub fn slang_binding_type_to_descriptor_type(
     binding_type: slang::BindingType,
 ) -> Option<DescriptorType> {
     match binding_type {

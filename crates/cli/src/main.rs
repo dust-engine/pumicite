@@ -80,6 +80,7 @@ impl OptLevel {
 enum OutputFormat {
     Ron,
     Bin,
+    Codegen,
 }
 
 // ---------------------------------------------------------------------------
@@ -238,17 +239,26 @@ fn cmd_slang(args: SlangArgs) {
         .unwrap();
     let linked = program.link().unwrap();
     let reflection = linked.layout(0).unwrap();
-    let mut layout = build_pipeline_layout(reflection);
-    apply_set_attrs(&mut layout, &args.set_attrs);
-
     let (bytes, is_text) = match args.format {
-        OutputFormat::Ron => (
-            ron::ser::to_string_pretty(&layout, Default::default())
-                .unwrap()
-                .into_bytes(),
-            true,
-        ),
-        OutputFormat::Bin => (postcard::to_allocvec(&layout).unwrap(), false),
+        OutputFormat::Codegen => {
+            let code = pumicite_cli::codegen::generate(reflection);
+            (code.into_bytes(), true)
+        }
+        OutputFormat::Ron => {
+            let mut layout = build_pipeline_layout(reflection);
+            apply_set_attrs(&mut layout, &args.set_attrs);
+            (
+                ron::ser::to_string_pretty(&layout, Default::default())
+                    .unwrap()
+                    .into_bytes(),
+                true,
+            )
+        }
+        OutputFormat::Bin => {
+            let mut layout = build_pipeline_layout(reflection);
+            apply_set_attrs(&mut layout, &args.set_attrs);
+            (postcard::to_allocvec(&layout).unwrap(), false)
+        }
     };
 
     write_output(&bytes, args.output.as_ref(), is_text);
