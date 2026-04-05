@@ -1,0 +1,13 @@
+[package]
+name = "pumicite_cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+shader-slang = { git = "https://github.com/0xbeefd1ed/slang-rs.git", rev = "ae22fbc0ffb1c17560c9132d4675757d3287f284" }
+pumicite_types = { path = "../types" }
+ron = "0.12"
+postcard = { version = "1", features = ["alloc"] }
+clap = { version = "4", features = ["derive"] }
+quote = "1"
+proc-macro2 = "1"

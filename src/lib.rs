@@ -149,6 +149,7 @@ pub mod bindless;
 pub mod bevy;
 
 pub use ash;
+pub use pumicite_types as types;
 
 pub mod prelude {
     pub use crate::{

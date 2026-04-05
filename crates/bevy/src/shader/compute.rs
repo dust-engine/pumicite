@@ -9,18 +9,33 @@ use pumicite::{
     pipeline::{Pipeline, PipelineCache, ShaderEntry},
 };
 
+#[cfg(any(feature = "ron", feature = "postcard"))]
 use crate::{
     DescriptorHeap,
-    shader::{PipelineLayoutLoader, PipelineLoaderError, ShaderModule, ron_types},
+    shader::{PipelineLayoutLoader, PipelineLoaderError, ShaderModule},
 };
+
+/// A loaded compute pipeline asset.
+///
+/// Load via asset server with `.comp.pipeline.ron` extension.
+#[derive(Clone, Asset, TypePath)]
+pub struct ComputePipeline(Arc<Pipeline>);
+
+impl ComputePipeline {
+    pub fn into_inner(self) -> Arc<Pipeline> {
+        self.0
+    }
+}
 
 /// Asset loader for compute pipelines (`.comp.pipeline.ron` files).
 ///
 /// Loads compute pipeline configurations and creates Vulkan compute pipelines.
+#[cfg(any(feature = "ron", feature = "postcard"))]
 pub struct ComputePipelineLoader {
     pipeline_cache: Arc<PipelineCache>,
     heap: Option<DescriptorHeap>,
 }
+#[cfg(any(feature = "ron", feature = "postcard"))]
 impl FromWorld for ComputePipelineLoader {
     fn from_world(world: &mut bevy_ecs::world::World) -> Self {
         Self {
@@ -33,11 +48,7 @@ impl FromWorld for ComputePipelineLoader {
     }
 }
 
-/// A loaded compute pipeline asset.
-///
-/// Load via asset server with `.comp.pipeline.ron` extension.
-#[derive(Clone, Asset, TypePath)]
-pub struct ComputePipeline(Arc<Pipeline>);
+#[cfg(any(feature = "ron", feature = "postcard"))]
 impl AssetLoader for ComputePipelineLoader {
     type Asset = ComputePipeline;
     type Settings = ();
@@ -51,10 +62,14 @@ impl AssetLoader for ComputePipelineLoader {
     ) -> Result<ComputePipeline, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let pipeline: ron_types::ComputePipeline = ron::de::from_bytes(&bytes)?;
+        let ext = load_context
+            .asset_path()
+            .get_full_extension()
+            .unwrap_or_default();
+        let pipeline: pumicite_types::ComputePipeline = super::deserialize(&bytes, &ext)?;
 
         let layout = match &pipeline.layout {
-            ron_types::PipelineLayoutRef::Inline(pipeline_layout) => {
+            pumicite_types::PipelineLayoutRef::Inline(pipeline_layout) => {
                 PipelineLayoutLoader::load_inner(
                     pipeline_layout,
                     self.pipeline_cache.device().clone(),
@@ -64,7 +79,7 @@ impl AssetLoader for ComputePipelineLoader {
                 .await?
                 .0
             }
-            ron_types::PipelineLayoutRef::Path(path) => {
+            pumicite_types::PipelineLayoutRef::Path(path) => {
                 load_context
                     .loader()
                     .immediate()
@@ -73,7 +88,7 @@ impl AssetLoader for ComputePipelineLoader {
                     .take()
                     .0
             }
-            ron_types::PipelineLayoutRef::Bindless => {
+            pumicite_types::PipelineLayoutRef::Bindless => {
                 let Some(heap) = self.heap.as_ref() else {
                     return Err(PipelineLoaderError::BindlessPluginNeededError);
                 };
@@ -122,11 +137,11 @@ impl AssetLoader for ComputePipelineLoader {
     }
 
     fn extensions(&self) -> &[&str] {
-        &["comp.pipeline.ron"]
-    }
-}
-impl ComputePipeline {
-    pub fn into_inner(self) -> Arc<Pipeline> {
-        self.0
+        &[
+            #[cfg(feature = "ron")]
+            "comp.pipeline.ron",
+            #[cfg(feature = "postcard")]
+            "comp.pipeline.bin",
+        ]
     }
 }

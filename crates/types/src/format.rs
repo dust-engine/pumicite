@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default)]
-#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 pub enum Format {
     #[default]
     UNDEFINED = 0,

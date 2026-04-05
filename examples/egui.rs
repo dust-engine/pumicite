@@ -8,7 +8,7 @@ fn main() {
     app.add_plugins(bevy_pumicite::DefaultPlugins)
         .add_plugins(pumicite_egui::EguiPlugin::<With<PrimaryWindow>> {
             linear_colorspace: false,
-            framebuffer_format: pumicite::utils::format::Format::B8G8R8A8_UNORM,
+            framebuffer_format: pumicite::types::format::Format::B8G8R8A8_UNORM,
             ..Default::default()
         });
 

@@ -10,16 +10,17 @@ use pumicite::{
     utils::AsVkHandle,
 };
 
+#[cfg(any(feature = "ron", feature = "postcard"))]
 use crate::{
     DescriptorHeap,
-    shader::{PipelineLayoutLoader, PipelineLoaderError, ShaderModule, ron_types},
+    shader::{PipelineLayoutLoader, PipelineLoaderError, ShaderModule},
 };
 
 /// A loaded graphics pipeline asset.
 ///
 /// Load via asset server with `.gfx.pipeline.ron` extension.
 ///
-/// Graphics pipelines can have runtime variants via [`GraphicsPipelineVariant`](ron_types::GraphicsPipelineVariant)
+/// Graphics pipelines can have runtime variants via [`GraphicsPipelineVariant`](pumicite_types::GraphicsPipelineVariant)
 /// for specialization constants and format overrides.
 #[derive(Clone, Asset, TypePath)]
 pub struct GraphicsPipeline(Arc<Pipeline>);
@@ -43,10 +44,12 @@ impl Deref for GraphicsPipeline {
 /// - Dynamic state
 /// - Specialization constants
 /// - Pipeline variants
+#[cfg(any(feature = "ron", feature = "postcard"))]
 pub struct GraphicsPipelineLoader {
     pipeline_cache: Arc<PipelineCache>,
     heap: Option<DescriptorHeap>,
 }
+#[cfg(any(feature = "ron", feature = "postcard"))]
 impl FromWorld for GraphicsPipelineLoader {
     fn from_world(world: &mut bevy_ecs::world::World) -> Self {
         Self {
@@ -55,9 +58,10 @@ impl FromWorld for GraphicsPipelineLoader {
         }
     }
 }
+#[cfg(any(feature = "ron", feature = "postcard"))]
 impl AssetLoader for GraphicsPipelineLoader {
     type Asset = GraphicsPipeline;
-    type Settings = ron_types::GraphicsPipelineVariant;
+    type Settings = pumicite_types::GraphicsPipelineVariant;
     type Error = PipelineLoaderError;
 
     async fn load(
@@ -68,11 +72,15 @@ impl AssetLoader for GraphicsPipelineLoader {
     ) -> Result<GraphicsPipeline, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let mut pipeline: ron_types::GraphicsPipeline = ron::de::from_bytes(&bytes)?;
+        let ext = load_context
+            .asset_path()
+            .get_full_extension()
+            .unwrap_or_default();
+        let mut pipeline: pumicite_types::GraphicsPipeline = super::deserialize(&bytes, &ext)?;
         settings.apply_on(&mut pipeline);
 
         let layout = match &pipeline.layout {
-            ron_types::PipelineLayoutRef::Inline(pipeline_layout) => {
+            pumicite_types::PipelineLayoutRef::Inline(pipeline_layout) => {
                 PipelineLayoutLoader::load_inner(
                     pipeline_layout,
                     self.pipeline_cache.device().clone(),
@@ -82,7 +90,7 @@ impl AssetLoader for GraphicsPipelineLoader {
                 .await?
                 .0
             }
-            ron_types::PipelineLayoutRef::Path(path) => {
+            pumicite_types::PipelineLayoutRef::Path(path) => {
                 load_context
                     .loader()
                     .immediate()
@@ -91,7 +99,7 @@ impl AssetLoader for GraphicsPipelineLoader {
                     .take()
                     .0
             }
-            ron_types::PipelineLayoutRef::Bindless => {
+            pumicite_types::PipelineLayoutRef::Bindless => {
                 let Some(heap) = self.heap.as_ref() else {
                     return Err(PipelineLoaderError::BindlessPluginNeededError);
                 };
@@ -250,27 +258,27 @@ impl AssetLoader for GraphicsPipelineLoader {
         let viewports: Vec<vk::Viewport>;
         let scissors: Vec<vk::Rect2D>;
         match pipeline.viewports {
-            ron_types::CountedDynamicState::Dynamic => {
+            pumicite_types::CountedDynamicState::Dynamic => {
                 dynamic_states.push(vk::DynamicState::VIEWPORT_WITH_COUNT);
             }
-            ron_types::CountedDynamicState::Count(count) => {
+            pumicite_types::CountedDynamicState::Count(count) => {
                 dynamic_states.push(vk::DynamicState::VIEWPORT);
                 viewport_state.viewport_count = count;
             }
-            ron_types::CountedDynamicState::Static(items) => {
+            pumicite_types::CountedDynamicState::Static(items) => {
                 viewports = items.iter().map(|view| view.clone().into()).collect();
                 viewport_state = viewport_state.viewports(&viewports);
             }
         }
         match pipeline.scissors {
-            ron_types::CountedDynamicState::Dynamic => {
+            pumicite_types::CountedDynamicState::Dynamic => {
                 dynamic_states.push(vk::DynamicState::SCISSOR_WITH_COUNT);
             }
-            ron_types::CountedDynamicState::Count(count) => {
+            pumicite_types::CountedDynamicState::Count(count) => {
                 dynamic_states.push(vk::DynamicState::SCISSOR);
                 viewport_state.scissor_count = count;
             }
-            ron_types::CountedDynamicState::Static(items) => {
+            pumicite_types::CountedDynamicState::Static(items) => {
                 scissors = items.iter().map(|view| view.clone().into()).collect();
                 viewport_state = viewport_state.scissors(&scissors);
             }
@@ -446,18 +454,18 @@ impl AssetLoader for GraphicsPipelineLoader {
                 .map(|attachment| {
                     let mut state = vk::PipelineColorBlendAttachmentState::default();
                     match attachment.blend_enable {
-                        ron_types::RequiredDynamicState::Dynamic => {
+                        pumicite_types::RequiredDynamicState::Dynamic => {
                             blend_enable_dynamic_count += 1;
                         }
-                        ron_types::RequiredDynamicState::Static(bool) => {
+                        pumicite_types::RequiredDynamicState::Static(bool) => {
                             state.blend_enable = bool.into();
                         }
                     }
                     match &attachment.blend_equation {
-                        ron_types::OptionalDynamicState::Dynamic => {
+                        pumicite_types::OptionalDynamicState::Dynamic => {
                             blend_equation_dynamic_count += 1
                         }
-                        ron_types::OptionalDynamicState::Static(equation) => {
+                        pumicite_types::OptionalDynamicState::Static(equation) => {
                             state.color_blend_op = equation.color.1.into();
                             state.src_color_blend_factor = equation.color.0.into();
                             state.dst_color_blend_factor = equation.color.2.into();
@@ -466,10 +474,10 @@ impl AssetLoader for GraphicsPipelineLoader {
                             state.src_alpha_blend_factor = equation.alpha.0.into();
                             state.dst_alpha_blend_factor = equation.alpha.2.into();
                         }
-                        ron_types::OptionalDynamicState::None => {
+                        pumicite_types::OptionalDynamicState::None => {
                             if matches!(
                                 attachment.blend_enable,
-                                ron_types::RequiredDynamicState::Static(true)
+                                pumicite_types::RequiredDynamicState::Static(true)
                             ) {
                                 return Err(PipelineLoaderError::PipelineError(
                                     "Blending enabled; blend equation required",
@@ -478,13 +486,13 @@ impl AssetLoader for GraphicsPipelineLoader {
                         }
                     }
                     match &attachment.color_write_mask {
-                        ron_types::OptionalDynamicState::None => {
+                        pumicite_types::OptionalDynamicState::None => {
                             state.color_write_mask = vk::ColorComponentFlags::RGBA;
                         }
-                        ron_types::OptionalDynamicState::Dynamic => {
+                        pumicite_types::OptionalDynamicState::Dynamic => {
                             color_write_mask_dynamic_count += 1
                         }
-                        ron_types::OptionalDynamicState::Static(mask) => {
+                        pumicite_types::OptionalDynamicState::Static(mask) => {
                             let mut flags = vk::ColorComponentFlags::empty();
                             for char in mask.chars() {
                                 match char {
@@ -624,6 +632,11 @@ impl AssetLoader for GraphicsPipelineLoader {
     }
 
     fn extensions(&self) -> &[&str] {
-        &["gfx.pipeline.ron"]
+        &[
+            #[cfg(feature = "ron")]
+            "gfx.pipeline.ron",
+            #[cfg(feature = "postcard")]
+            "gfx.pipeline.bin",
+        ]
     }
 }

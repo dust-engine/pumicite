@@ -26,10 +26,14 @@ impl Plugin for RtxPipelinePlugin {
     fn build(&self, app: &mut bevy_app::App) {
         app.add_systems(PostUpdate, build_rtx_pipeline_system);
         app.init_asset::<RayTracingPipeline>()
-            .init_asset::<RayTracingPipelineLibrary>()
-            .preregister_asset_loader::<crate::shader::RayTracingPipelineLoader>(&[
-                "rtx.pipeline.ron",
-            ]);
+            .init_asset::<RayTracingPipelineLibrary>();
+        #[cfg(any(feature = "ron", feature = "postcard"))]
+        app.preregister_asset_loader::<crate::shader::RayTracingPipelineLoader>(&[
+            #[cfg(feature = "ron")]
+            "rtx.pipeline.ron",
+            #[cfg(feature = "postcard")]
+            "rtx.pipeline.bin",
+        ]);
 
         app.add_device_extension::<pumicite::ash::khr::acceleration_structure::Meta>()
             .unwrap();
@@ -54,8 +58,9 @@ impl Plugin for RtxPipelinePlugin {
         .unwrap();
     }
     fn cleanup(&self, app: &mut bevy_app::App) {
-        app.init_resource::<RtxPipelineManager>()
-            .init_asset_loader::<crate::shader::RayTracingPipelineLoader>();
+        app.init_resource::<RtxPipelineManager>();
+        #[cfg(any(feature = "ron", feature = "postcard"))]
+        app.init_asset_loader::<crate::shader::RayTracingPipelineLoader>();
     }
 }
 

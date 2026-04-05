@@ -9,7 +9,7 @@ use crate::image::{ImageLike, ImageViewLike};
 use crate::physical_device::PhysicalDevice;
 use crate::tracking::ResourceState;
 use crate::{Device, Surface, utils::SharingMode};
-use crate::{HasDevice, Queue, sync::GPUMutex, utils::format::ColorSpace};
+use crate::{HasDevice, Queue, sync::GPUMutex, types::format::ColorSpace};
 use crate::{sync::SharedSemaphore, utils::AsVkHandle};
 use ash::khr::swapchain::Meta as KhrSwapchain;
 use ash::{VkResult, vk};
@@ -60,7 +60,7 @@ impl SwapchainInner {
             return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
         }
 
-        let format: crate::utils::format::Format = info.image_format.into();
+        let format: pumicite_types::format::Format = info.image_format.into();
         let srgb_format = format.to_srgb_format();
         let linear_format = format.to_linear_format();
         let possible_formats: [vk::Format; 2] = [
@@ -593,7 +593,7 @@ impl SwapchainImageInner {
     /// An image view of the swapchain image in sRGB format.
     ///
     /// May be null if the swapchain format doesn't have a corresponding srgb format.
-    /// See [to_srgb_format](`crate::utils::format::Format::to_srgb_format`)
+    /// See [to_srgb_format](`pumicite_types::format::Format::to_srgb_format`)
     pub fn srgb_view(&self) -> Option<&SwapchainImageView> {
         if self.srgb_view.0.is_null() {
             None
@@ -670,7 +670,7 @@ pub fn get_surface_preferred_format(
             .find(|f| supported_formats.contains(f))
     }
 
-    const SDR_CANDIDATES: &'static [vk::SurfaceFormatKHR] = &[
+    const SDR_CANDIDATES: &[vk::SurfaceFormatKHR] = &[
         vk::SurfaceFormatKHR {
             format: vk::Format::A2B10G10R10_UNORM_PACK32,
             color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
@@ -681,7 +681,7 @@ pub fn get_surface_preferred_format(
         },
     ];
 
-    const SCRGB_CANDIDATES: &'static [vk::SurfaceFormatKHR] = &[
+    const SCRGB_CANDIDATES: &[vk::SurfaceFormatKHR] = &[
         vk::SurfaceFormatKHR {
             format: vk::Format::R16G16B16A16_SFLOAT,
             color_space: vk::ColorSpaceKHR::DISPLAY_NATIVE_AMD,

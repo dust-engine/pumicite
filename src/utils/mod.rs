@@ -1,4 +1,3 @@
-pub mod format;
 pub mod future;
 mod idalloc;
 use ash::vk::{self, TaggedStructure};

@@ -1,6 +1,7 @@
-use pumicite::ash::vk;
+use ash::vk;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+pub mod format;
 
 #[derive(Serialize, Deserialize)]
 pub struct ComputePipeline {
@@ -189,10 +190,10 @@ pub struct GraphicsPipeline {
     pub attachments: Vec<Attachment>,
 
     #[serde(default)]
-    pub depth_format: pumicite::utils::format::Format,
+    pub depth_format: format::Format,
 
     #[serde(default)]
-    pub stencil_format: pumicite::utils::format::Format,
+    pub stencil_format: format::Format,
 
     #[serde(default)]
     pub blend_constants:
@@ -223,13 +224,13 @@ pub struct GraphicsPipelineVariant {
     pub shaders: BTreeMap<ShaderStage, BTreeMap<u32, SpecializationConstantType>>,
 
     #[serde(default)]
-    pub depth_format: Option<pumicite::utils::format::Format>,
+    pub depth_format: Option<format::Format>,
 
     #[serde(default)]
-    pub stencil_format: Option<pumicite::utils::format::Format>,
+    pub stencil_format: Option<format::Format>,
 
     #[serde(default)]
-    pub color_formats: BTreeMap<u32, pumicite::utils::format::Format>,
+    pub color_formats: BTreeMap<u32, format::Format>,
 }
 impl GraphicsPipelineVariant {
     pub fn apply_on(&self, pipeline: &mut GraphicsPipeline) {
@@ -267,7 +268,7 @@ pub struct Attachment {
     pub color_write_mask:
         OptionalDynamicState<String, { vk::DynamicState::COLOR_WRITE_MASK_EXT.as_raw() }>,
 
-    pub format: pumicite::utils::format::Format,
+    pub format: format::Format,
 }
 #[derive(Serialize, Deserialize)]
 pub struct BlendEquation {
@@ -480,7 +481,7 @@ pub struct VertexInputBinding {
 }
 #[derive(Serialize, Deserialize, Clone)]
 pub struct VertexInputAttributes {
-    pub format: pumicite::utils::format::Format,
+    pub format: format::Format,
     pub offset: u32,
 }
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -655,7 +656,7 @@ pub enum DescriptorType {
     AccelerationStructure,
     Mutable,
 }
-impl From<DescriptorType> for pumicite::ash::vk::DescriptorType {
+impl From<DescriptorType> for ash::vk::DescriptorType {
     fn from(value: DescriptorType) -> Self {
         match value {
             DescriptorType::Sampler => vk::DescriptorType::SAMPLER,
@@ -695,7 +696,7 @@ pub enum ShaderStage {
     Task,
     Mesh,
 }
-impl From<ShaderStage> for pumicite::ash::vk::ShaderStageFlags {
+impl From<ShaderStage> for vk::ShaderStageFlags {
     fn from(value: ShaderStage) -> Self {
         match value {
             ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,
@@ -839,13 +840,70 @@ pub enum RayTracingPipelineShaderStage {
         param_size: u32,
     },
 }
-#[derive(Serialize, Deserialize, Default)]
-#[serde(untagged)]
+#[derive(Default)]
 pub enum HitgroupShader {
     Reused(String),
     Singleton(Shader),
     #[default]
     None,
+}
+
+impl Serialize for HitgroupShader {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            // Untagged: serialize the inner value directly (ergonomic for RON).
+            match self {
+                Self::Reused(s) => s.serialize(serializer),
+                Self::Singleton(shader) => shader.serialize(serializer),
+                Self::None => serializer.serialize_unit(),
+            }
+        } else {
+            // Tagged: standard enum encoding (postcard-compatible).
+            match self {
+                Self::Reused(s) => {
+                    serializer.serialize_newtype_variant("HitgroupShader", 0, "Reused", s)
+                }
+                Self::Singleton(shader) => {
+                    serializer.serialize_newtype_variant("HitgroupShader", 1, "Singleton", shader)
+                }
+                Self::None => serializer.serialize_unit_variant("HitgroupShader", 2, "None"),
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for HitgroupShader {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if deserializer.is_human_readable() {
+            // Untagged: let serde try each variant in order (needs deserialize_any,
+            // which is fine for self-describing formats like RON).
+            #[derive(Deserialize)]
+            #[serde(untagged)]
+            enum HitgroupShader {
+                Reused(String),
+                Singleton(Shader),
+                None,
+            }
+            match HitgroupShader::deserialize(deserializer)? {
+                HitgroupShader::Reused(s) => Ok(Self::Reused(s)),
+                HitgroupShader::Singleton(s) => Ok(Self::Singleton(s)),
+                HitgroupShader::None => Ok(Self::None),
+            }
+        } else {
+            // Tagged: read variant index then payload (postcard-compatible).
+            #[derive(Deserialize)]
+            enum HitgroupShader {
+                Reused(String),
+                Singleton(Shader),
+                None,
+            }
+            match HitgroupShader::deserialize(deserializer)? {
+                HitgroupShader::Reused(s) => Ok(Self::Reused(s)),
+                HitgroupShader::Singleton(s) => Ok(Self::Singleton(s)),
+                HitgroupShader::None => Ok(Self::None),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -859,32 +917,64 @@ mod tests {
                     path: \"aaa.spv\",
                     entry_point: \"main\",
                 ),
-                layout: \"mylayout.playout.ron\"
+                layout: Path(\"mylayout.playout.ron\"),
             )
         ";
         let _pipeline: ComputePipeline = ron::de::from_str(ron).unwrap();
 
+        // HitgroupShader uses untagged deserialization for human-readable formats,
+        // so bare strings and Shader structs work without variant wrappers.
         let ron = "
             RayTracingPipeline(
-                layout: \"mylayout.playout.ron\",
+                layout: Path(\"mylayout.playout.ron\"),
                 max_ray_payload_size: 0,
                 max_hit_attribute_size: 0,
 
-                shaders: [
-                    RayGen((
-                        path: \"aaa.spv\",
-                        entry_point: \"main\",
-                    )),
+                stages: [
+                    RayGen(
+                        shader: Shader(
+                            path: \"aaa.spv\",
+                            entry_point: \"main\",
+                        ),
+                    ),
                     HitGroup(
-                        closest_hit: Shader(
+                        closest_hit: (
                             path: \"aaa.spv\",
                             entry_point: \"main\",
                         ),
                         any_hit: \"MyShader\",
-                    )
+                    ),
                 ]
             )
         ";
         let _pipeline: RayTracingPipeline = ron::de::from_str(ron).unwrap();
+    }
+
+    #[test]
+    fn test_hitgroup_shader_postcard_roundtrip() {
+        let values = [
+            HitgroupShader::Reused("MyShader".to_string()),
+            HitgroupShader::Singleton(Shader {
+                path: "test.spv".to_string(),
+                entry_point: "main".to_string(),
+                specialization_constants: Default::default(),
+                allow_varying_subgroup: Default::default(),
+                require_full_subgroups: Default::default(),
+            }),
+            HitgroupShader::None,
+        ];
+        for val in &values {
+            let bytes = postcard::to_allocvec(val).unwrap();
+            let decoded: HitgroupShader = postcard::from_bytes(&bytes).unwrap();
+            match (val, &decoded) {
+                (HitgroupShader::Reused(a), HitgroupShader::Reused(b)) => assert_eq!(a, b),
+                (HitgroupShader::Singleton(a), HitgroupShader::Singleton(b)) => {
+                    assert_eq!(a.path, b.path);
+                    assert_eq!(a.entry_point, b.entry_point);
+                }
+                (HitgroupShader::None, HitgroupShader::None) => {}
+                _ => panic!("variant mismatch"),
+            }
+        }
     }
 }
