@@ -3995,7 +3995,7 @@ dependencies = [
 [[package]]
 name = "shader-slang"
 version = "0.1.0"
-source = "git+https://github.com/0xbeefd1ed/slang-rs.git#5204f27cbab4eb58ecca6bde12e118070fb8f24c"
+source = "git+https://github.com/0xbeefd1ed/slang-rs.git?rev=ae22fbc0ffb1c17560c9132d4675757d3287f284#ae22fbc0ffb1c17560c9132d4675757d3287f284"
 dependencies = [
  "shader-slang-sys",
 ]
@@ -4003,7 +4003,7 @@ dependencies = [
 [[package]]
 name = "shader-slang-sys"
 version = "0.1.0"
-source = "git+https://github.com/0xbeefd1ed/slang-rs.git#5204f27cbab4eb58ecca6bde12e118070fb8f24c"
+source = "git+https://github.com/0xbeefd1ed/slang-rs.git?rev=ae22fbc0ffb1c17560c9132d4675757d3287f284#ae22fbc0ffb1c17560c9132d4675757d3287f284"
 
 [[package]]
 name = "sharded-slab"

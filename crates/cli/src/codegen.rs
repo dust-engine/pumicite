@@ -105,15 +105,21 @@ fn vk_descriptor_type_tokens(dt: DescriptorType) -> proc_macro2::TokenStream {
         DescriptorType::StorageTexelBuffer => {
             quote! { pumicite::ash::vk::DescriptorType::STORAGE_TEXEL_BUFFER }
         }
-        DescriptorType::UniformBuffer => quote! { pumicite::ash::vk::DescriptorType::UNIFORM_BUFFER },
-        DescriptorType::StorageBuffer => quote! { pumicite::ash::vk::DescriptorType::STORAGE_BUFFER },
+        DescriptorType::UniformBuffer => {
+            quote! { pumicite::ash::vk::DescriptorType::UNIFORM_BUFFER }
+        }
+        DescriptorType::StorageBuffer => {
+            quote! { pumicite::ash::vk::DescriptorType::STORAGE_BUFFER }
+        }
         DescriptorType::UniformBufferDynamic => {
             quote! { pumicite::ash::vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC }
         }
         DescriptorType::StorageBufferDynamic => {
             quote! { pumicite::ash::vk::DescriptorType::STORAGE_BUFFER_DYNAMIC }
         }
-        DescriptorType::InputAttachment => quote! { pumicite::ash::vk::DescriptorType::INPUT_ATTACHMENT },
+        DescriptorType::InputAttachment => {
+            quote! { pumicite::ash::vk::DescriptorType::INPUT_ATTACHMENT }
+        }
         DescriptorType::AccelerationStructure => {
             quote! { pumicite::ash::vk::DescriptorType::ACCELERATION_STRUCTURE_KHR }
         }
