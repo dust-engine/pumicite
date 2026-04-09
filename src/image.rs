@@ -303,9 +303,8 @@ impl<T: ImageLike + HasDevice> ImageViewLike for FullImageView<T> {
 /// [`linear_view`](Self::linear_view).
 pub struct SrgbImageView<T: HasDevice + ImageLike> {
     image: T,
-    linear_view: vk::ImageView,
-    srgb_view: vk::ImageView,
-    ty: vk::ImageViewType,
+    linear_view: SrgbImageViewItem,
+    srgb_view: SrgbImageViewItem,
 }
 
 impl<T: HasDevice + ImageLike> HasDevice for SrgbImageView<T> {
@@ -319,21 +318,15 @@ impl<T: HasDevice + ImageLike> SrgbImageView<T> {
     ///
     /// Sampling through this view applies the sRGB transfer function, converting
     /// stored sRGB values to linear values on read.
-    pub fn srgb_view(&self) -> SrgbImageViewItem<'_, T> {
-        SrgbImageViewItem {
-            src: self,
-            view: self.srgb_view,
-        }
+    pub fn srgb_view(&self) -> &SrgbImageViewItem {
+        &self.srgb_view
     }
     /// Returns a borrowing handle to the linear-format view of the image.
     ///
     /// Sampling through this view returns raw texel values without any
     /// transfer function applied.
-    pub fn linear_view(&self) -> SrgbImageViewItem<'_, T> {
-        SrgbImageViewItem {
-            src: self,
-            view: self.linear_view,
-        }
+    pub fn linear_view(&self) -> &SrgbImageViewItem {
+        &self.linear_view
     }
     /// Returns a reference to the underlying image.
     pub fn image(&self) -> &T {
@@ -345,8 +338,10 @@ impl<T: ImageLike + HasDevice> Drop for SrgbImageView<T> {
         unsafe {
             self.image
                 .device()
-                .destroy_image_view(self.linear_view, None);
-            self.image.device().destroy_image_view(self.srgb_view, None);
+                .destroy_image_view(self.linear_view.view, None);
+            self.image
+                .device()
+                .destroy_image_view(self.srgb_view.view, None);
         }
     }
 }
@@ -354,27 +349,29 @@ impl<T: ImageLike + HasDevice> Drop for SrgbImageView<T> {
 ///
 /// Implements [`ImageViewLike`] and [`AsVkHandle`] so it can be used directly
 /// with descriptor writes and rendering commands.
-pub struct SrgbImageViewItem<'a, T: HasDevice + ImageLike> {
-    src: &'a SrgbImageView<T>,
+pub struct SrgbImageViewItem {
+    ty: vk::ImageViewType,
+    array_layer_count: u32,
+    mip_level_count: u32,
     view: vk::ImageView,
 }
-impl<T: HasDevice + ImageLike> AsVkHandle for SrgbImageViewItem<'_, T> {
+impl AsVkHandle for SrgbImageViewItem {
     type Handle = vk::ImageView;
     fn vk_handle(&self) -> Self::Handle {
         self.view
     }
 }
-impl<T: HasDevice + ImageLike + 'static> ImageViewLike for SrgbImageViewItem<'_, T> {
+impl ImageViewLike for SrgbImageViewItem {
     fn ty(&self) -> vk::ImageViewType {
-        self.src.ty
+        self.ty
     }
 
     fn array_layer_count(&self) -> u32 {
-        self.src.image.array_layer_count()
+        self.array_layer_count
     }
 
     fn mip_level_count(&self) -> u32 {
-        self.src.image.mip_level_count()
+        self.mip_level_count
     }
 }
 
@@ -487,10 +484,19 @@ pub trait ImageExt: ImageLike {
                 None,
             )?;
             Ok(SrgbImageView {
+                linear_view: SrgbImageViewItem {
+                    ty: view_type,
+                    array_layer_count: self.array_layer_count(),
+                    mip_level_count: self.mip_level_count(),
+                    view: linear_view,
+                },
+                srgb_view: SrgbImageViewItem {
+                    ty: view_type,
+                    array_layer_count: self.array_layer_count(),
+                    mip_level_count: self.mip_level_count(),
+                    view: srgb_view,
+                },
                 image: self,
-                linear_view,
-                srgb_view,
-                ty: view_type,
             })
         }
     }
