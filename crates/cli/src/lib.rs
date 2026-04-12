@@ -106,11 +106,30 @@ pub fn build_pipeline_layout(reflection: &slang::reflection::Shader) -> Pipeline
         .global_params_type_layout()
         .expect("no global params type layout");
 
-    // Descriptor sets from global parameters.
     let mut sets: Vec<DescriptorSetLayout> = Vec::new();
+
+    // Descriptor sets from global parameters.
     for set_idx in 0..global_type_layout.descriptor_set_count() {
         if let Some(set) = build_descriptor_set_layout(global_type_layout, set_idx, &stages) {
             sets.push(set);
+        }
+    }
+
+    // Descriptor sets from ParameterBlock parameters.
+    for param in reflection.parameters() {
+        let Some(tl) = param.type_layout() else {
+            continue;
+        };
+        if tl.kind() != slang::TypeKind::ParameterBlock {
+            continue;
+        }
+        let Some(element_tl) = tl.element_type_layout() else {
+            continue;
+        };
+        for set_idx in 0..element_tl.descriptor_set_count() {
+            if let Some(set) = build_descriptor_set_layout(element_tl, set_idx, &stages) {
+                sets.push(set);
+            }
         }
     }
 
