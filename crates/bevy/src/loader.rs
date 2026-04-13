@@ -6,28 +6,30 @@ use std::ops::Deref;
 use bevy_asset::{Asset, AssetLoader, AsyncReadExt, io::AsyncSeekForwardExt};
 use bevy_ecs::world::FromWorld;
 use bevy_reflect::TypePath;
-use pumicite::{ash::VkResult, bindless::ResourceHeap, prelude::*};
+use pumicite::{ash::VkResult, bindless::ResourceHeap, image::FullImageView, prelude::*};
 use serde::{Deserialize, Serialize};
 
 use crate::{DescriptorHeap, staging::AsyncTransfer};
+use ash::ext::debug_utils::Meta as DebugUtilsExt;
 
 /// A readonly texture asset loaded once and never written to.
 #[derive(Asset, TypePath)]
 pub struct TextureAsset {
     heap: Option<ResourceHeap>,
-    image: Image,
+    image: FullImageView<Image>,
     handle: u32,
 }
 impl Deref for TextureAsset {
-    type Target = Image;
+    type Target = FullImageView<Image>;
     fn deref(&self) -> &Self::Target {
         &self.image
     }
 }
 impl TextureAsset {
     pub fn new(image: Image, heap: Option<ResourceHeap>) -> VkResult<Self> {
+        let image = image.create_full_view()?;
         let handle = if let Some(heap) = heap.as_ref() {
-            heap.add_image(&image, pumicite::bindless::ImageAccessMode::Sampled)?
+            heap.add_image(image.image(), pumicite::bindless::ImageAccessMode::Sampled)?
         } else {
             u32::MAX
         };
@@ -56,6 +58,8 @@ pub use img_loader::*;
 
 #[cfg(feature = "image")]
 mod img_loader {
+    use std::ffi::CString;
+
     use super::*;
 
     use image::ColorType;
@@ -160,6 +164,22 @@ mod img_loader {
                         ..Default::default()
                     },
                 )?;
+                if self
+                    .allocator
+                    .device()
+                    .get_extension::<DebugUtilsExt>()
+                    .is_ok()
+                {
+                    let name: String = load_context
+                        .asset_path()
+                        .path()
+                        .as_os_str()
+                        .to_string_lossy()
+                        .to_string();
+                    if let Ok(name) = CString::new(name) {
+                        texture.set_name(name.as_c_str());
+                    }
+                }
                 let allocation_info = texture.allocation_info();
                 tracing::info!(
                     "Loading image ({}x{}) sized {:.2} MB{} with format {:?}, mapped to Vulkan format {:?}",
@@ -554,12 +574,24 @@ mod dds_loader {
                         initial_layout: vk::ImageLayout::UNDEFINED,
                         ..Default::default()
                     },
-                )?
-                .with_name(
-                    CString::new(load_context.asset_path().to_string())
-                        .unwrap()
-                        .as_c_str(),
-                );
+                )?;
+                
+                if self
+                    .allocator
+                    .device()
+                    .get_extension::<DebugUtilsExt>()
+                    .is_ok()
+                {
+                    let name: String = load_context
+                        .asset_path()
+                        .path()
+                        .as_os_str()
+                        .to_string_lossy()
+                        .to_string();
+                    if let Ok(name) = CString::new(name) {
+                        image.set_name(name.as_c_str());
+                    }
+                }
 
                 let mut allocator = self.allocator.clone();
                 let mut batch = self.transfer.batch().await?;

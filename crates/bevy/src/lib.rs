@@ -77,7 +77,6 @@
 //! }
 //!
 //! ```
-#![feature(maybe_uninit_array_assume_init)]
 
 mod debug;
 pub mod loader;
