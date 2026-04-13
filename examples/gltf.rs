@@ -35,6 +35,10 @@ fn main() {
     app.world_mut().entity_mut(primary_window).insert((
         SwapchainConfig {
             image_usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            image_format: Some(vk::SurfaceFormatKHR {
+                format: vk::Format::B8G8R8A8_SRGB,
+                color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
+            }),
             ..Default::default()
         },
         GBuffer::default(),

@@ -365,9 +365,11 @@ impl Plugin for PumicitePlugin {
         #[cfg(feature = "dds")]
         app.preregister_asset_loader::<crate::loader::DdsLoader>(&["dds"]);
         #[cfg(feature = "image")]
-        app.preregister_asset_loader::<crate::loader::ImageLoader>(&["jpg", "png"]);
+        app.preregister_asset_loader::<crate::loader::ImageLoader>(&["jpg"]);
         #[cfg(feature = "ktx2")]
         app.preregister_asset_loader::<crate::loader::KtxLoader>(&["ktx"]);
+        #[cfg(feature = "png")]
+        app.preregister_asset_loader::<crate::loader::PngLoader>(&["png"]);
 
         //app.register_type::<bevy::image::Image>()
         //    .init_asset::<bevy::image::Image>()
@@ -419,6 +421,8 @@ impl Plugin for PumicitePlugin {
         app.init_asset_loader::<crate::loader::DdsLoader>();
         #[cfg(feature = "image")]
         app.init_asset_loader::<crate::loader::ImageLoader>();
+        #[cfg(feature = "png")]
+        app.init_asset_loader::<crate::loader::PngLoader>();
     }
 }
 

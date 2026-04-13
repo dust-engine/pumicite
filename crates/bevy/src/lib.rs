@@ -95,7 +95,8 @@ mod heap;
 pub use debug::DebugUtilsPlugin;
 pub use heap::DescriptorHeap;
 pub use plugin::{
-    DefaultComputeSet, DefaultRenderSet, DefaultTransferSet, PumiciteApp, PumicitePlugin,
+    DefaultComputeSet, DefaultRenderSet, DefaultTransferSet, PhysicalDeviceSearchStrategy,
+    PumiciteApp, PumicitePlugin,
 };
 pub use queue::Queue;
 pub use surface::SurfacePlugin;

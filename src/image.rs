@@ -385,7 +385,9 @@ pub trait ImageExt: ImageLike {
         Self: HasDevice + Sized,
     {
         let view_type = match self.ty() {
+            vk::ImageType::TYPE_1D if self.array_layer_count() > 1 => vk::ImageViewType::TYPE_1D_ARRAY,
             vk::ImageType::TYPE_1D => vk::ImageViewType::TYPE_1D,
+            vk::ImageType::TYPE_2D if self.array_layer_count() > 1 => vk::ImageViewType::TYPE_2D_ARRAY,
             vk::ImageType::TYPE_2D => vk::ImageViewType::TYPE_2D,
             vk::ImageType::TYPE_3D => vk::ImageViewType::TYPE_3D,
             _ => unreachable!(),
