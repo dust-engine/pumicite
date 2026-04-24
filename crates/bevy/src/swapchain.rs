@@ -119,15 +119,19 @@ impl Plugin for SwapchainPlugin {
         app.add_device_extension::<KhrSurfaceMaintenance1>().ok();
         app.add_device_extension::<ExtSwapchainMutableFormat>()
             .unwrap();
-        if !(app
+
+        let has_swapchain_maintenance1 = if app
             .add_device_extension::<KhrSwapchainMaintenance1>()
             .is_ok()
-            && app
-                .enable_feature::<vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR>(|x| {
-                    &mut x.swapchain_maintenance1
-                })
-                .is_ok())
         {
+            app.enable_feature::<vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR>(|x| {
+                &mut x.swapchain_maintenance1
+            })
+            .is_ok()
+        } else {
+            false
+        };
+        if !has_swapchain_maintenance1 {
             // Without VK_KHR_swapchain_maintenance1, dropping a swapchain is techncially UB because
             // there's no way to ensure that the vkQueuePresentKHR has finished before we're allowed
             // to drop the semaphore used for that presentation.

@@ -722,8 +722,8 @@ impl_feature_for_ext!(
     ext::extended_dynamic_state3::Meta
 );
 impl_feature_for_ext!(
-    vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT<'static>,
-    ext::swapchain_maintenance1::Meta
+    vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR<'static>,
+    khr::swapchain_maintenance1::Meta
 );
 impl_feature_for_ext!(
     vk::PhysicalDeviceDescriptorIndexingFeatures<'static>,

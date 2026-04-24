@@ -45,7 +45,10 @@
 //! - `VK_EXT_mutable_descriptor_type` or `VK_VALVE_mutable_descriptor_type`
 //! - `VK_EXT_descriptor_indexing` (Vulkan 1.2 core)
 
-use std::{ffi::CString, sync::{Arc, Mutex}};
+use std::{
+    ffi::CString,
+    sync::{Arc, Mutex},
+};
 
 use ash::{
     VkResult,
@@ -174,10 +177,20 @@ impl ResourceHeap {
             ));
             guard.handles[handle as usize] = ResourceDescriptorKind::ImageView(image_view);
             drop(guard);
-            if self.0.pool.device().get_extension::<ash::ext::debug_utils::Meta>().is_ok() {
+            if self
+                .0
+                .pool
+                .device()
+                .get_extension::<ash::ext::debug_utils::Meta>()
+                .is_ok()
+            {
                 let name = format!("Bindless ImageView {}", handle);
                 if let Ok(name) = CString::new(name) {
-                    self.0.pool.device().set_debug_name(image_view, name.as_c_str()).ok();
+                    self.0
+                        .pool
+                        .device()
+                        .set_debug_name(image_view, name.as_c_str())
+                        .ok();
                 }
             }
 
