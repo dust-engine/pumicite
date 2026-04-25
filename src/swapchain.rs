@@ -39,7 +39,7 @@ struct SwapchainInner {
     inner: vk::SwapchainKHR,
     format: vk::Format,
 
-    color_space: ColorSpace,
+    color_space: vk::ColorSpaceKHR,
     extent: UVec2,
     layer_count: u32,
     command_pool: vk::CommandPool,
@@ -135,7 +135,7 @@ impl SwapchainInner {
             extent: info.image_extent,
             layer_count: info.image_array_layers,
             format: info.image_format,
-            color_space: info.image_color_space.into(),
+            color_space: info.image_color_space,
             command_pool,
         };
         let inner = Arc::new(inner);
@@ -496,8 +496,8 @@ pub struct SwapchainImageInner {
 }
 
 impl SwapchainImageInner {
-    pub fn color_space(&self) -> ColorSpace {
-        self.swapchain.color_space.clone()
+    pub fn color_space(&self) -> vk::ColorSpaceKHR {
+        self.swapchain.color_space
     }
 }
 
