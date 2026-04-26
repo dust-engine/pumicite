@@ -644,7 +644,7 @@ impl Format {
             Format::ASTC_4x4_UNORM_BLOCK => FormatProperties { block_extent: UVec2 { x: 4, y: 4 }, block_size: 16, r: 0, g: 0, b: 0, a: 0, ty: FormatType::UNorm, permutation: Permutation::ASTC { x: 4, y: 4 } },
             Format::ASTC_4x4_SRGB_BLOCK => FormatProperties { block_extent: UVec2 { x: 4, y: 4 }, block_size: 16, r: 0, g: 0, b: 0, a: 0, ty: FormatType::sRGB, permutation: Permutation::ASTC { x: 4, y: 4 } },
             Format::ASTC_5x4_UNORM_BLOCK => FormatProperties { block_extent: UVec2 { x: 5, y: 4 }, block_size: 16, r: 0, g: 0, b: 0, a: 0, ty: FormatType::UNorm, permutation: Permutation::ASTC { x: 5, y: 4 } },
-            Format::ASTC_5x4_SRGB_BLOCK => FormatProperties { block_extent: UVec2 { x: 5, y: 5 }, block_size: 16, r: 0, g: 0, b: 0, a: 0, ty: FormatType::sRGB, permutation: Permutation::ASTC { x: 5, y: 4 } },
+            Format::ASTC_5x4_SRGB_BLOCK => FormatProperties { block_extent: UVec2 { x: 5, y: 4 }, block_size: 16, r: 0, g: 0, b: 0, a: 0, ty: FormatType::sRGB, permutation: Permutation::ASTC { x: 5, y: 4 } },
             Format::ASTC_5x5_UNORM_BLOCK => FormatProperties { block_extent: UVec2 { x: 5, y: 5 }, block_size: 16, r: 0, g: 0, b: 0, a: 0, ty: FormatType::UNorm, permutation: Permutation::ASTC { x: 5, y: 5 } },
             Format::ASTC_5x5_SRGB_BLOCK => FormatProperties { block_extent: UVec2 { x: 5, y: 5 }, block_size: 16, r: 0, g: 0, b: 0, a: 0, ty: FormatType::sRGB, permutation: Permutation::ASTC { x: 5, y: 5 } },
             Format::ASTC_6x5_UNORM_BLOCK => FormatProperties { block_extent: UVec2 { x: 6, y: 5 }, block_size: 16, r: 0, g: 0, b: 0, a: 0, ty: FormatType::UNorm, permutation: Permutation::ASTC { x: 6, y: 5 } },
@@ -824,7 +824,7 @@ impl ColorSpacePrimaries {
     /// Primaries for [CIE 1931 XYZ](https://en.wikipedia.org/wiki/CIE_1931_color_space) colorspace.
     ///
     /// Commonly used as a bridge color space between other color spaces.
-    pub const XYZ: Self = ColorSpacePrimaries {
+    const XYZ: Self = ColorSpacePrimaries {
         r: Vec2::new(1.0, 0.0),
         g: Vec2::new(0.0, 1.0),
         b: Vec2::new(0.0, 0.0),
