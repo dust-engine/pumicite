@@ -64,7 +64,7 @@ fn main() {
     app.add_plugins(pumicite_egui::EguiPlugin::<With<PrimaryWindow>>::default());
 
     // Systems
-    app.add_systems(Startup, setup);
+    app.add_systems(Startup, setup.after(bevy_pumicite::CreateDevice));
     app.add_systems(Update, (handle_input, update_camera));
     app.add_systems(EguiPrimaryContextPass, egui_ui);
     app.add_systems(

@@ -32,23 +32,25 @@ use std::{
 };
 
 use async_lock::Mutex;
-use bevy_app::Plugin;
+use bevy_app::{Plugin, Startup};
 use bevy_ecs::{
     resource::Resource,
+    schedule::IntoScheduleConfigs,
     system::{ResMut, SystemParam},
-    world::FromWorld,
+    world::{FromWorld, World},
 };
 
 use pumicite::{
     ash::{self, VkResult, vk},
     buffer::{RingBuffer, RingBufferSuballocation},
     command::{CommandEncoderGuard, CommandEncoderRenderPassState, CommandPool},
+    device::DeviceBuilder,
     prelude::*,
     sync::Timeline,
 };
 
 use crate::{
-    PumiciteApp,
+    CreateDevice,
     queue::{QueueWorldExt, SharedQueue, TransferQueue},
 };
 
@@ -85,25 +87,38 @@ impl Default for StagingBeltPlugin {
 }
 impl Plugin for StagingBeltPlugin {
     fn build(&self, app: &mut bevy_app::App) {
-        // Needed for the Uploader which requests buffer device address automatically.
-        app.enable_feature::<vk::PhysicalDeviceBufferDeviceAddressFeatures>(|x| {
-            &mut x.buffer_device_address
-        })
-        .unwrap();
-    }
-    fn finish(&self, app: &mut bevy_app::App) {
-        let device = app.world().resource::<Device>().clone();
-
-        let device_local_ring_buffer =
-            DeviceLocalRingBuffer::new(device.clone(), self.device_local_chunk_size).unwrap();
-        let host_visible_ring_buffer =
-            HostVisibleRingBuffer::new(device.clone(), self.host_visible_chunk_size).unwrap();
-        let uniform_ring_buffer =
-            UniformRingBuffer::new(device.clone(), self.uniform_chunk_size).unwrap();
-        app.world_mut().insert_resource(device_local_ring_buffer);
-        app.world_mut().insert_resource(host_visible_ring_buffer);
-        app.world_mut().insert_resource(uniform_ring_buffer);
-        app.world_mut().init_resource::<AsyncTransfer>();
+        let device_local_chunk_size = self.device_local_chunk_size;
+        let uniform_chunk_size = self.uniform_chunk_size;
+        let host_visible_chunk_size = self.host_visible_chunk_size;
+        app.add_systems(
+            Startup,
+            (
+                // Needed for the Uploader which requests buffer device address automatically.
+                (|mut device_builder: ResMut<DeviceBuilder>| {
+                    device_builder
+                        .enable_feature::<vk::PhysicalDeviceBufferDeviceAddressFeatures>(|x| {
+                            &mut x.buffer_device_address
+                        })
+                        .unwrap();
+                })
+                .before(CreateDevice),
+                (move |world: &mut World| {
+                    let device = world.resource::<Device>().clone();
+                    world.insert_resource(
+                        DeviceLocalRingBuffer::new(device.clone(), device_local_chunk_size)
+                            .unwrap(),
+                    );
+                    world.insert_resource(
+                        HostVisibleRingBuffer::new(device.clone(), host_visible_chunk_size)
+                            .unwrap(),
+                    );
+                    world.insert_resource(
+                        UniformRingBuffer::new(device, uniform_chunk_size).unwrap(),
+                    );
+                })
+                .after(CreateDevice),
+            ),
+        );
     }
 }
 

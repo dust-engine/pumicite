@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use bevy_app::{Plugin, PostUpdate};
+use bevy_app::{Plugin, PostUpdate, Startup};
 use bevy_asset::{
     Asset, AssetApp, AssetEvent, AssetHandleProvider, AssetId, AssetServer, Assets, Handle,
 };
@@ -13,11 +13,12 @@ use bevy_reflect::TypePath;
 use pumicite::{
     ash::vk,
     bevy::PipelineCache,
+    device::DeviceBuilder,
     pipeline::Pipeline,
     rtx::{RayTracingPipelineLibraryCreateInfo, SbtLayout, ShaderBindingTable},
 };
 
-use crate::{PumiciteApp, shader::RayTracingPipelineLibrary};
+use crate::{CreateDevice, shader::RayTracingPipelineLibrary};
 pub mod blas;
 pub mod tlas;
 
@@ -35,32 +36,54 @@ impl Plugin for RtxPipelinePlugin {
             "rtx.pipeline.bin",
         ]);
 
-        app.add_device_extension::<pumicite::ash::khr::acceleration_structure::Meta>()
-            .unwrap();
-        app.add_device_extension::<pumicite::ash::khr::ray_tracing_pipeline::Meta>()
-            .unwrap();
-        app.add_device_extension::<pumicite::ash::khr::ray_tracing_maintenance1::Meta>()
-            .ok();
-        app.add_device_extension::<pumicite::ash::khr::pipeline_library::Meta>()
-            .ok();
-
-        app.enable_feature(
-            |rtx_features: &mut vk::PhysicalDeviceAccelerationStructureFeaturesKHR| {
-                &mut rtx_features.acceleration_structure
-            },
-        )
-        .unwrap();
-        app.enable_feature(
-            |rtx_features: &mut vk::PhysicalDeviceRayTracingPipelineFeaturesKHR| {
-                &mut rtx_features.ray_tracing_pipeline
-            },
-        )
-        .unwrap();
-    }
-    fn cleanup(&self, app: &mut bevy_app::App) {
-        app.init_resource::<RtxPipelineManager>();
-        #[cfg(any(feature = "ron", feature = "postcard"))]
-        app.init_asset_loader::<crate::shader::RayTracingPipelineLoader>();
+        app.add_systems(
+            Startup,
+            (
+                (|mut device_builder: ResMut<DeviceBuilder>| {
+                    device_builder
+                        .enable_extension::<pumicite::ash::khr::acceleration_structure::Meta>()
+                        .unwrap();
+                    device_builder
+                        .enable_extension::<pumicite::ash::khr::ray_tracing_pipeline::Meta>()
+                        .unwrap();
+                    device_builder
+                        .enable_extension::<pumicite::ash::khr::ray_tracing_maintenance1::Meta>()
+                        .ok();
+                    device_builder
+                        .enable_extension::<pumicite::ash::khr::pipeline_library::Meta>()
+                        .ok();
+                    device_builder
+                        .enable_feature(
+                            |rtx_features: &mut vk::PhysicalDeviceAccelerationStructureFeaturesKHR| {
+                                &mut rtx_features.acceleration_structure
+                            },
+                        )
+                        .unwrap();
+                    device_builder
+                        .enable_feature(
+                            |rtx_features: &mut vk::PhysicalDeviceRayTracingPipelineFeaturesKHR| {
+                                &mut rtx_features.ray_tracing_pipeline
+                            },
+                        )
+                        .unwrap();
+                })
+                .before(CreateDevice),
+                (|world: &mut World| {
+                    world.init_resource::<RtxPipelineManager>();
+                    #[cfg(any(feature = "ron", feature = "postcard"))]
+                    {
+                        let asset_server = world
+                            .remove_resource::<AssetServer>()
+                            .expect("Requires asset server");
+                        asset_server.register_loader(
+                            crate::shader::RayTracingPipelineLoader::from_world(world),
+                        );
+                        world.insert_resource(asset_server);
+                    }
+                })
+                .after(CreateDevice),
+            ),
+        );
     }
 }
 

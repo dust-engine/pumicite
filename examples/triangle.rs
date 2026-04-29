@@ -12,7 +12,7 @@ fn main() {
         .unwrap();
     app.add_systems(PostUpdate, triangle_rendering.in_set(DefaultRenderSet));
 
-    app.add_systems(Startup, setup);
+    app.add_systems(Startup, setup.after(bevy_pumicite::CreateDevice));
     app.run();
 }
 
@@ -124,5 +124,6 @@ fn triangle_rendering(
             pass.bind_vertex_buffers(0, [buffer].into_iter());
             pass.draw(0..3, 0..1);
         }
+        pass.end();
     });
 }

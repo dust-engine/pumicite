@@ -1,4 +1,4 @@
-use bevy_app::{App, Plugin, PostUpdate, PreUpdate};
+use bevy_app::{App, Plugin, PostUpdate, PreUpdate, Startup};
 use bevy_asset::{Assets, Handle};
 use bevy_ecs::prelude::*;
 use bevy_ecs::query::QueryFilter;
@@ -6,11 +6,12 @@ use bevy_egui::egui::TextureId;
 pub use bevy_egui::*;
 use bevy_pumicite::staging::{BufferInitializer, HostVisibleRingBuffer};
 use bevy_pumicite::{
-    DefaultTransferSet, PumiciteApp, SubmissionState, shader::graphics::GraphicsPipeline,
+    CreateDevice, DefaultTransferSet, SubmissionState, shader::graphics::GraphicsPipeline,
 };
 use bevy_window::PrimaryWindow;
 use glam::Vec2;
 use pumicite::buffer::BufferLike;
+use pumicite::device::DeviceBuilder;
 use pumicite::image::{FullImageView, ImageExt, ImageLike};
 use pumicite::tracking::{Access, ResourceState};
 use pumicite::{
@@ -92,14 +93,24 @@ impl<Filter: QueryFilter + Send + Sync + 'static> Plugin for EguiPlugin<Filter> 
             )
                 .after(EguiPostUpdateSet::ProcessOutput),
         );
-        app.add_device_extension::<ash::khr::dynamic_rendering::Meta>()
-            .unwrap();
-        app.enable_feature::<vk::PhysicalDeviceDynamicRenderingFeatures>(|x| {
-            &mut x.dynamic_rendering
-        })
-        .unwrap();
-        app.add_device_extension::<ash::khr::push_descriptor::Meta>()
-            .unwrap();
+
+        app.add_systems(
+            Startup,
+            (|mut device_builder: ResMut<DeviceBuilder>| {
+                device_builder
+                    .enable_extension::<ash::khr::dynamic_rendering::Meta>()
+                    .unwrap();
+                device_builder
+                    .enable_feature::<vk::PhysicalDeviceDynamicRenderingFeatures>(|x| {
+                        &mut x.dynamic_rendering
+                    })
+                    .unwrap();
+                device_builder
+                    .enable_extension::<ash::khr::push_descriptor::Meta>()
+                    .unwrap();
+            })
+            .before(CreateDevice),
+        );
 
         let window = app
             .world_mut()
@@ -124,27 +135,34 @@ impl<Filter: QueryFilter + Send + Sync + 'static> Plugin for EguiPlugin<Filter> 
         window_to_egui_context_map
             .context_to_window
             .insert(window, window);
-    }
 
-    fn finish(&self, app: &mut App) {
-        use bevy_asset::load_embedded_asset;
-        use pumicite::types::*;
-        let patch = GraphicsPipelineVariant {
-            color_formats: BTreeMap::from_iter([(0, self.framebuffer_format)]),
-            shaders: BTreeMap::from_iter([(
-                ShaderStage::Fragment,
-                BTreeMap::from_iter([(
-                    0,
-                    SpecializationConstantType::Bool(self.linear_colorspace),
-                )]),
-            )]),
-            ..Default::default()
-        };
-        let pipeline = load_embedded_asset!(app, "shaders/egui.gfx.pipeline.ron", move |x| {
-            *x = patch.clone();
-        });
-        let resource: EguiResources<Filter> = EguiResources::new(pipeline);
-        app.insert_resource(resource);
+        let framebuffer_format = self.framebuffer_format;
+        let linear_colorspace = self.linear_colorspace;
+        app.add_systems(
+            Startup,
+            (move |world: &mut World| {
+                use bevy_asset::load_embedded_asset;
+                use pumicite::types::*;
+                let patch = GraphicsPipelineVariant {
+                    color_formats: BTreeMap::from_iter([(0, framebuffer_format)]),
+                    shaders: BTreeMap::from_iter([(
+                        ShaderStage::Fragment,
+                        BTreeMap::from_iter([(
+                            0,
+                            SpecializationConstantType::Bool(linear_colorspace),
+                        )]),
+                    )]),
+                    ..Default::default()
+                };
+                let pipeline =
+                    load_embedded_asset!(world, "shaders/egui.gfx.pipeline.ron", move |x| {
+                        *x = patch.clone();
+                    });
+                let resource: EguiResources<Filter> = EguiResources::new(pipeline);
+                world.insert_resource(resource);
+            })
+            .after(CreateDevice),
+        );
     }
 }
 

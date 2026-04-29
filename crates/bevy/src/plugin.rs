@@ -1,5 +1,5 @@
 use bevy_app::prelude::*;
-use bevy_asset::AssetApp;
+use bevy_asset::{AssetApp, AssetServer};
 use bevy_ecs::prelude::*;
 use glam::Vec4;
 use pumicite::{
@@ -26,6 +26,23 @@ use pumicite::{
     instance::{InstanceBuilder, LayerProperties},
     physical_device::Feature,
 };
+
+/// System set containing the [`create_device`] startup system.
+///
+/// `create_device` consumes the [`DeviceBuilder`] resource and creates the
+/// [`Device`](pumicite::Device), [`Allocator`](pumicite::Allocator),
+/// [`PipelineCache`](crate::bevy::PipelineCache), and the device-bound asset loaders
+/// registered by [`PumicitePlugin`].
+///
+/// # Ordering
+///
+/// - Add [`Startup`] systems with `.before(CreateDevice)` to add device extensions
+///   or enable physical device features. From such a system you can add device extensions by
+///   calling [`DeviceBuilder::enable_extension`] directly on a `ResMut<DeviceBuilder>`.
+/// - Add [`Startup`] systems with `.after(CreateDevice)` if they need access to
+///   the created [`Device`](pumicite::Device).
+#[derive(Debug, SystemSet, Hash, PartialEq, Eq, Clone, Copy)]
+pub struct CreateDevice;
 
 /// The default submission set for rendering operations.
 ///
@@ -114,14 +131,16 @@ pub enum PhysicalDeviceSearchStrategy {
 ///
 /// # Plugin Ordering
 ///
-/// **Critical**: Plugin ordering matters!
-///
 /// - **Instance plugins** must be added **before** `PumicitePlugin`. These plugins
 ///   configure the Vulkan instance (e.g., [`SurfacePlugin`](crate::SurfacePlugin),
-///   [`DebugUtilsPlugin`](crate::DebugUtilsPlugin)).
+///   [`DebugUtilsPlugin`](crate::DebugUtilsPlugin)) by calling [`PumiciteApp::add_instance_extension`]
+///   from their `build` method.
 ///
-/// - **Device plugins** must be added **after** `PumicitePlugin`. These plugins
-///   configure the Vulkan device (e.g., RTX plugins, custom extensions).
+/// - **Device plugins** can be added in any order relative to `PumicitePlugin`. They
+///   configure the Vulkan device by scheduling [`Startup`] systems ordered around
+///   [`CreateDevice`] - before `CreateDevice` to add device extensions / enable
+///   physical device features, after `CreateDevice` for any device-dependent
+///   initialization.
 ///
 /// # Default Queues
 ///
@@ -135,12 +154,16 @@ pub enum PhysicalDeviceSearchStrategy {
 ///
 /// # Resources Created
 ///
-/// After `finish`, the following resources are available:
+/// After [`Plugin::build`] returns:
 /// - [`Instance`](pumicite::Instance) - Vulkan instance
 /// - [`PhysicalDevice`](pumicite::physical_device::PhysicalDevice) - Selected GPU
+/// - [`DeviceBuilder`] - still mutable until [`CreateDevice`] runs in [`Startup`]
+///
+/// After the [`CreateDevice`] startup system runs:
 /// - [`Device`](pumicite::Device) - Logical device
 /// - [`Allocator`](pumicite::Allocator) - GPU memory allocator
 /// - [`PipelineCache`](pumicite::bevy::PipelineCache) - Pipeline caching
+/// - [`DeviceBuilder`] is removed.
 pub struct PumicitePlugin {
     /// Strategy for selecting which physical device (GPU) to use.
     pub physical_device: PhysicalDeviceSearchStrategy,
@@ -371,58 +394,58 @@ impl Plugin for PumicitePlugin {
         #[cfg(feature = "png")]
         app.preregister_asset_loader::<crate::loader::PngLoader>(&["png"]);
 
-        //app.register_type::<bevy::image::Image>()
-        //    .init_asset::<bevy::image::Image>()
-        //    .register_asset_reflect::<bevy::image::Image>();
-    }
-    fn finish(&self, app: &mut App) {
-        let device_builder = app.world_mut().remove_resource::<DeviceBuilder>().unwrap();
-        let bindless_enabled = device_builder.bindless_enabled();
-        let device = device_builder.build().unwrap();
-        app.world_mut().insert_resource(device.clone());
-        QueueConfiguration::init_queues(app.world_mut());
+        let resource_heap_size = self.resource_heap_size;
+        let sampler_heap_size = self.sampler_heap_size;
+        app.add_systems(
+            Startup,
+            (move |world: &mut World| {
+                let device_builder = world.remove_resource::<DeviceBuilder>().unwrap();
+                let bindless_enabled = device_builder.bindless_enabled();
+                let device = device_builder.build().unwrap();
+                world.insert_resource(device.clone());
+                QueueConfiguration::init_queues(world);
 
-        if bindless_enabled {
-            let heap = DescriptorHeap::new(
-                device.clone(),
-                self.resource_heap_size,
-                self.sampler_heap_size,
-            )
-            .unwrap();
-            app.world_mut().insert_resource(heap);
-        }
+                if bindless_enabled {
+                    let heap =
+                        DescriptorHeap::new(device.clone(), resource_heap_size, sampler_heap_size)
+                            .unwrap();
+                    world.insert_resource(heap);
+                }
 
-        app.world_mut()
-            .insert_resource(pumicite::Allocator::new(device).unwrap());
-        app.init_resource::<PipelineCache>();
+                world.insert_resource(pumicite::Allocator::new(device).unwrap());
+                world.init_resource::<PipelineCache>();
+                world.init_resource::<AsyncTransfer>();
 
-        app.init_resource::<AsyncTransfer>();
-
-        //app.world_mut()
-        //    .init_resource::<crate::task::AsyncTaskPool>();
-        //app.world_mut()
-        //    .init_resource::<crate::DeferredOperationTaskPool>();
-        //app.init_asset_loader::<crate::shader::loader::SpirvLoader>();
-    }
-
-    fn cleanup(&self, app: &mut App) {
-        // Initialize pipeline loaders in cleanup to ensure that the bindless plugin is available
-        app.init_asset_loader::<crate::shader::ShaderLoader>();
-        #[cfg(any(feature = "ron", feature = "postcard"))]
-        {
-            app.init_asset_loader::<crate::shader::PipelineLayoutLoader>()
-                .init_asset_loader::<crate::shader::DescriptorSetLayoutLoader>()
-                .init_asset_loader::<crate::shader::compute::ComputePipelineLoader>()
-                .init_asset_loader::<crate::shader::graphics::GraphicsPipelineLoader>();
-        }
-        #[cfg(feature = "ktx2")]
-        app.init_asset_loader::<crate::loader::KtxLoader>();
-        #[cfg(feature = "dds")]
-        app.init_asset_loader::<crate::loader::DdsLoader>();
-        #[cfg(feature = "image")]
-        app.init_asset_loader::<crate::loader::ImageLoader>();
-        #[cfg(feature = "png")]
-        app.init_asset_loader::<crate::loader::PngLoader>();
+                let asset_server = world
+                    .remove_resource::<AssetServer>()
+                    .expect("Requires asset server");
+                asset_server.register_loader(crate::shader::ShaderLoader::from_world(world));
+                #[cfg(any(feature = "ron", feature = "postcard"))]
+                {
+                    asset_server
+                        .register_loader(crate::shader::PipelineLayoutLoader::from_world(world));
+                    asset_server.register_loader(
+                        crate::shader::DescriptorSetLayoutLoader::from_world(world),
+                    );
+                    asset_server.register_loader(
+                        crate::shader::compute::ComputePipelineLoader::from_world(world),
+                    );
+                    asset_server.register_loader(
+                        crate::shader::graphics::GraphicsPipelineLoader::from_world(world),
+                    );
+                }
+                #[cfg(feature = "ktx2")]
+                asset_server.register_loader(crate::loader::KtxLoader::from_world(world));
+                #[cfg(feature = "dds")]
+                asset_server.register_loader(crate::loader::DdsLoader::from_world(world));
+                #[cfg(feature = "image")]
+                asset_server.register_loader(crate::loader::ImageLoader::from_world(world));
+                #[cfg(feature = "png")]
+                asset_server.register_loader(crate::loader::PngLoader::from_world(world));
+                world.insert_resource(asset_server);
+            })
+            .in_set(CreateDevice),
+        );
     }
 }
 
@@ -454,7 +477,10 @@ pub trait PumiciteApp {
 
     /// Adds a Vulkan device extension.
     ///
-    /// Must be called in [`Plugin::build`] in a plugin inserted **after** [`PumicitePlugin`].
+    /// Must be called from [`Plugin::build`] in a plugin inserted **after** [`PumicitePlugin`].
+    /// To configure device extensions without an ordering constraint on the plugin,
+    /// schedule a [`Startup`] system before [`CreateDevice`] and call
+    /// [`DeviceBuilder::enable_extension`] on a `ResMut<DeviceBuilder>` from that system.
     ///
     /// # Errors
     ///
@@ -490,8 +516,10 @@ pub trait PumiciteApp {
 
     /// Adds a Vulkan device extension by name.
     ///
-    /// Must be called in [`Plugin::build`] in a plugin inserted **after** [`PumicitePlugin`].
-    /// [`PumicitePlugin`].
+    /// Must be called from [`Plugin::build`] in a plugin inserted **after** [`PumicitePlugin`].
+    /// To configure device extensions without an ordering constraint on the plugin,
+    /// schedule a [`Startup`] system before [`CreateDevice`] and call
+    /// [`DeviceBuilder::enable_extension_named`] on a `ResMut<DeviceBuilder>` from that system.
     ///
     /// # Errors
     ///
@@ -527,7 +555,10 @@ pub trait PumiciteApp {
     /// The `selector` closure receives the feature struct and returns a mutable
     /// reference to the specific feature flag to enable.
     ///
-    /// Must be called in [`Plugin::build`] in a plugin inserted **after** [`PumicitePlugin`].
+    /// Must be called from [`Plugin::build`] in a plugin inserted **after** [`PumicitePlugin`].
+    /// To enable features without an ordering constraint on the plugin, schedule a
+    /// [`Startup`] system before [`CreateDevice`] and call [`DeviceBuilder::enable_feature`]
+    /// on a `ResMut<DeviceBuilder>` from that system.
     ///
     /// # Errors
     ///

@@ -62,11 +62,12 @@ App::new().add_systems(PostUpdate, my_render_system.in_set(SwapchainSet));
 
 use std::collections::BTreeSet;
 
-use bevy_app::{App, Plugin};
+use bevy_app::{App, Plugin, Startup};
 use bevy_ecs::{prelude::*, query::QueryFilter};
 use bevy_window::{PrimaryWindow, Window};
 use glam::{UVec2, Vec4};
 use pumicite::ash::vk;
+use pumicite::device::DeviceBuilder;
 use pumicite::{
     ash::khr::surface_maintenance1::Meta as KhrSurfaceMaintenance1,
     ash::khr::swapchain_maintenance1::Meta as KhrSwapchainMaintenance1,
@@ -74,9 +75,10 @@ use pumicite::{
 };
 use pumicite::{ash::khr::swapchain::Meta as KhrSwapchain, swapchain::SwapchainColorMode};
 
+use crate::CreateDevice;
 use crate::queue::RenderQueue;
 
-use super::{PumiciteApp, queue::Queue};
+use super::queue::Queue;
 use pumicite::{
     Device, HasDevice, Surface,
     physical_device::PhysicalDevice,
@@ -108,38 +110,43 @@ pub struct SwapchainSet;
 
 /// Plugin that manages swapchain creation and presentation.
 ///
-/// This is a **device plugin** and should be added **after** [`PumicitePlugin`](crate::PumicitePlugin).
-///
 /// # Included in [`DefaultPlugins`](crate::DefaultPlugins)
 pub struct SwapchainPlugin;
 impl Plugin for SwapchainPlugin {
     fn build(&self, app: &mut App) {
-        app.add_device_extension::<KhrSwapchain>().unwrap();
+        app.add_systems(
+            Startup,
+            (|mut device_builder: ResMut<DeviceBuilder>| {
+                device_builder.enable_extension::<KhrSwapchain>().unwrap();
+                device_builder.enable_extension::<KhrSurfaceMaintenance1>().ok();
+                device_builder
+                    .enable_extension::<ExtSwapchainMutableFormat>()
+                    .unwrap();
 
-        app.add_device_extension::<KhrSurfaceMaintenance1>().ok();
-        app.add_device_extension::<ExtSwapchainMutableFormat>()
-            .unwrap();
-
-        let has_swapchain_maintenance1 = if app
-            .add_device_extension::<KhrSwapchainMaintenance1>()
-            .is_ok()
-        {
-            app.enable_feature::<vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR>(|x| {
-                &mut x.swapchain_maintenance1
+                let has_swapchain_maintenance1 = if device_builder
+                    .enable_extension::<KhrSwapchainMaintenance1>()
+                    .is_ok()
+                {
+                    device_builder
+                        .enable_feature::<vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR>(
+                            |x| &mut x.swapchain_maintenance1,
+                        )
+                        .is_ok()
+                } else {
+                    false
+                };
+                if !has_swapchain_maintenance1 {
+                    // Without VK_KHR_swapchain_maintenance1, dropping a swapchain is techncially UB because
+                    // there's no way to ensure that the vkQueuePresentKHR has finished before we're allowed
+                    // to drop the semaphore used for that presentation.
+                    // As a workaround, if we need to drop the present semaphore, we call vkWaitQueueIdle.
+                    tracing::warn!(
+                        "VK_KHR_swapchain_maintenance1 is missing from this Vulkan implementation. Without this extension, dropping a swapchain is technically undefined behavior."
+                    )
+                }
             })
-            .is_ok()
-        } else {
-            false
-        };
-        if !has_swapchain_maintenance1 {
-            // Without VK_KHR_swapchain_maintenance1, dropping a swapchain is techncially UB because
-            // there's no way to ensure that the vkQueuePresentKHR has finished before we're allowed
-            // to drop the semaphore used for that presentation.
-            // As a workaround, if we need to drop the present semaphore, we call vkWaitQueueIdle.
-            tracing::warn!(
-                "VK_KHR_swapchain_maintenance1 is missing from this Vulkan implementation. Without this extension, dropping a swapchain is technically undefined behavior."
-            )
-        }
+            .before(CreateDevice),
+        );
 
         app.add_systems(
             bevy_app::PostUpdate,
@@ -260,7 +267,7 @@ impl Default for SwapchainConfig {
             sharing_mode: SharingMode::Exclusive,
             pre_transform: vk::SurfaceTransformFlagsKHR::IDENTITY,
             clipped: true,
-            color_mode: SwapchainColorMode::SDR,
+            color_mode: SwapchainColorMode::SDR8Bit,
             queue_family_index: 0,
         }
     }

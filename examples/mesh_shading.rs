@@ -17,7 +17,7 @@ fn main() {
         .unwrap();
     app.add_systems(PostUpdate, mesh_shading.in_set(DefaultRenderSet));
 
-    app.add_systems(Startup, setup);
+    app.add_systems(Startup, setup.after(bevy_pumicite::CreateDevice));
     app.run();
 }
 
@@ -98,5 +98,6 @@ fn mesh_shading(
             // Dispatch mesh shading pipeline workgroups
             pass.draw_mesh_tasks(UVec3::new(1, 1, 1));
         }
+        pass.end();
     });
 }

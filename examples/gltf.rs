@@ -81,7 +81,7 @@ fn main() {
             draw_gltf_scene.in_set(MainRenderPass),
         ),
     );
-    app.add_systems(Startup, setup);
+    app.add_systems(Startup, setup.after(bevy_pumicite::CreateDevice));
     app.run();
 }
 

@@ -1,9 +1,9 @@
 use std::{collections::BTreeMap, sync::Arc, u32};
 
-use bevy_app::Plugin;
+use bevy_app::{Plugin, Startup};
 use bevy_asset::{
-    AssetApp, AssetLoader, Assets, AsyncReadExt, Handle, LoadContext, ParseAssetPathError,
-    io::AsyncSeekForwardExt,
+    AssetApp, AssetLoader, AssetServer, Assets, AsyncReadExt, Handle, LoadContext,
+    ParseAssetPathError, io::AsyncSeekForwardExt,
 };
 use bevy_ecs::{
     component::Component,
@@ -11,10 +11,11 @@ use bevy_ecs::{
     hierarchy::ChildOf,
     reflect::ReflectComponent,
     relationship::RelatedSpawner,
+    schedule::IntoScheduleConfigs,
     world::{EntityWorldMut, FromWorld, World},
 };
 use bevy_pumicite::{
-    DescriptorHeap,
+    CreateDevice, DescriptorHeap,
     loader::TextureAsset,
     pumicite::{
         ash::{VkResult, vk},
@@ -1052,8 +1053,17 @@ impl Plugin for GltfPlugin {
             .register_type::<bevy_transform::components::GlobalTransform>() // WTF??
             .register_type::<bevy_transform::components::TransformTreeChanged>()
             .register_type::<bevy_ecs::hierarchy::Children>(); // This is undue burden
-    }
-    fn finish(&self, app: &mut bevy_app::App) {
-        app.init_asset_loader::<GltfLoader>();
+
+        app.add_systems(
+            Startup,
+            (|world: &mut World| {
+                let asset_server = world
+                    .remove_resource::<AssetServer>()
+                    .expect("Requires asset server");
+                asset_server.register_loader(GltfLoader::from_world(world));
+                world.insert_resource(asset_server);
+            })
+            .after(CreateDevice),
+        );
     }
 }

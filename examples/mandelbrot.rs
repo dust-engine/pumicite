@@ -30,7 +30,7 @@ fn main() {
 
     app.add_systems(PostUpdate, mandelbrot_rendering.in_set(DefaultRenderSet));
 
-    app.add_systems(Startup, setup);
+    app.add_systems(Startup, setup.after(bevy_pumicite::CreateDevice));
     app.run();
 }
 

@@ -9,7 +9,7 @@ use crate::image::{ImageLike, ImageViewLike};
 use crate::physical_device::PhysicalDevice;
 use crate::tracking::ResourceState;
 use crate::{Device, Surface, utils::SharingMode};
-use crate::{HasDevice, Queue, sync::GPUMutex, types::format::ColorSpace};
+use crate::{HasDevice, Queue, sync::GPUMutex};
 use crate::{sync::SharedSemaphore, utils::AsVkHandle};
 use ash::khr::swapchain::Meta as KhrSwapchain;
 use ash::{VkResult, vk};
@@ -608,13 +608,26 @@ impl SwapchainImageInner {
 /// color space, and post-processing requirements.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum SwapchainColorMode {
-    /// Standard dynamic range output.
+    /// Standard dynamic range output with hardware sRGB encoding.
+    ///
+    /// Creates a swapchain with [`vk::ColorSpaceKHR::SRGB_NONLINEAR`] and an 8-bit-per-
+    /// channel format. The selected format always has a corresponding sRGB format,
+    /// so [`SwapchainImageInner::srgb_view`] is guaranteed to return `Some`, enabling
+    /// the implementation to perform sRGB encoding on writes.
+    SDR8Bit,
+
+    /// Standard dynamic range output, with potentially 10-bit color depth.
     ///
     /// Creates a swapchain with [`vk::ColorSpaceKHR::SRGB_NONLINEAR`].
-    /// Prefers [`vk::Format::A2B10G10R10_UNORM_PACK32`] when available
-    /// for reduced banding, falling back to [`vk::Format::B8G8R8A8_UNORM`]
-    /// or [`vk::Format::R8G8B8A8_UNORM`].
-    SDR,
+    /// Prefers [`vk::Format::A2B10G10R10_UNORM_PACK32`] when available for reduced
+    /// banding, falling back to [`vk::Format::B8G8R8A8_UNORM`].
+    ///
+    /// **Caveat**: 10-bit packed formats have no hardware sRGB counterpart, so
+    /// [`SwapchainImageInner::srgb_view`] returns `None` when this format is selected;
+    /// the application must perform its own sRGB encoding in shader. If you want
+    /// hardware sRGB encoding via [`SwapchainImageInner::srgb_view`], use
+    /// [`SwapchainColorMode::SDR8Bit`] instead.
+    SDR10Bit,
 
     /// HDR via scRGB linear float16. Easiest HDR migration path.
     ///
@@ -670,13 +683,30 @@ pub fn get_surface_preferred_format(
             .find(|f| supported_formats.contains(f))
     }
 
-    const SDR_CANDIDATES: &[vk::SurfaceFormatKHR] = &[
+    const SDR_10BIT_CANDIDATES: &[vk::SurfaceFormatKHR] = &[
         vk::SurfaceFormatKHR {
             format: vk::Format::A2B10G10R10_UNORM_PACK32,
             color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
         },
         vk::SurfaceFormatKHR {
             format: vk::Format::B8G8R8A8_UNORM,
+            color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
+        },
+        vk::SurfaceFormatKHR {
+            format: vk::Format::R8G8B8A8_UNORM,
+            color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
+        },
+    ];
+
+    /// 8-bit-only candidates. Each format has a corresponding sRGB format, so
+    /// [`SwapchainImageInner::srgb_view`] is guaranteed to be available.
+    const SDR_8BIT_CANDIDATES: &[vk::SurfaceFormatKHR] = &[
+        vk::SurfaceFormatKHR {
+            format: vk::Format::B8G8R8A8_UNORM,
+            color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
+        },
+        vk::SurfaceFormatKHR {
+            format: vk::Format::R8G8B8A8_UNORM,
             color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
         },
     ];
@@ -704,9 +734,12 @@ pub fn get_surface_preferred_format(
     ];
 
     match color_mode {
-        SwapchainColorMode::SDR => find(SDR_CANDIDATES.iter().copied(), supported_formats),
+        SwapchainColorMode::SDR10Bit => {
+            find(SDR_10BIT_CANDIDATES.iter().copied(), supported_formats)
+        }
+        SwapchainColorMode::SDR8Bit => find(SDR_8BIT_CANDIDATES.iter().copied(), supported_formats),
         SwapchainColorMode::ScRgbLinear => find(
-            SCRGB_CANDIDATES.iter().chain(SDR_CANDIDATES).copied(),
+            SCRGB_CANDIDATES.iter().chain(SDR_8BIT_CANDIDATES).copied(),
             supported_formats,
         ),
         SwapchainColorMode::HDR => DEFAULT_HDR_COLOR_SPACES
@@ -720,7 +753,7 @@ pub fn get_surface_preferred_format(
             })
             .or_else(|| {
                 find(
-                    SCRGB_CANDIDATES.iter().chain(SDR_CANDIDATES).copied(),
+                    SCRGB_CANDIDATES.iter().chain(SDR_10BIT_CANDIDATES).copied(),
                     supported_formats,
                 )
             }),

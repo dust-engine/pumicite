@@ -26,7 +26,7 @@ fn main() {
         });
 
     app.add_systems(PostUpdate, clear.in_set(DefaultRenderSet));
-    app.add_systems(Startup, setup);
+    app.add_systems(Startup, setup.after(bevy_pumicite::CreateDevice));
     app.init_asset::<MyBindlessImageAsset>();
     app.enable_bindless().expect("Bindless not supported!");
     app.run();

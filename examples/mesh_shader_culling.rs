@@ -6,6 +6,9 @@ use pumicite_egui::{EguiContexts, EguiPrimaryContextPass, EguiRenderSet, egui};
 
 const DENSITY_LEVEL: u32 = 2;
 
+#[derive(SystemSet, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone, Copy)]
+pub struct MainRenderPass;
+
 fn main() {
     let mut app = bevy::app::App::new();
     app.add_plugins(bevy_pumicite::DefaultPlugins);
@@ -25,14 +28,18 @@ fn main() {
     // Add egui plugin
     app.add_plugins(pumicite_egui::EguiPlugin::<With<PrimaryWindow>>::default());
 
-    app.add_systems(Startup, setup);
+    app.add_systems(Startup, setup.after(bevy_pumicite::CreateDevice));
     app.add_systems(EguiPrimaryContextPass, egui_ui);
     app.add_systems(
         PostUpdate,
         mesh_shader_culling
-            .in_set(DefaultRenderSet)
+            .in_set(MainRenderPass)
             .before(EguiRenderSet),
     );
+
+    app.add_render_set(MainRenderPass, start_main_render_pass);
+    app.configure_sets(PostUpdate, MainRenderPass.in_set(DefaultRenderSet));
+    app.configure_sets(PostUpdate, EguiRenderSet.in_set(MainRenderPass));
 
     app.run();
 }
@@ -59,16 +66,14 @@ struct PushConstants {
     cull_radius: f32,
 }
 
-fn mesh_shader_culling(
-    mut swapchain_image: Single<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
-    mut state: SubmissionState,
-    pipeline: Res<MeshShadingPipeline>,
-    graphics_pipelines: Res<Assets<GraphicsPipeline>>,
-    push_constants: Res<PushConstants>,
+fn start_main_render_pass(
+    mut ctx: SubmissionState,
+    mut swapchain_image: Query<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
 ) {
-    let pipeline = graphics_pipelines.get(&pipeline.draw);
-
-    state.record(|encoder| {
+    let Ok(mut swapchain_image) = swapchain_image.single_mut() else {
+        return;
+    };
+    ctx.record(|encoder| {
         let Some(current_swapchain_image) = swapchain_image.current_image() else {
             return;
         };
@@ -87,7 +92,7 @@ fn mesh_shader_culling(
         );
         encoder.emit_barriers();
 
-        let mut pass = encoder
+        encoder
             .begin_rendering()
             .render_area(IVec2::ZERO, current_swapchain_image.extent().xy())
             .color_attachment(0, |mut x| {
@@ -97,48 +102,52 @@ fn mesh_shader_culling(
                     .view(current_swapchain_image.srgb_view().unwrap());
             })
             .begin();
+    });
+}
 
-        if let Some(pipeline) = pipeline {
-            let pipeline = pass.retain(pipeline.clone().into_inner());
-            pass.bind_pipeline(pipeline);
-            pass.set_viewport(
-                0,
-                &[vk::Viewport {
-                    x: 0.0,
-                    y: 0.0,
-                    width: current_swapchain_image.extent().x as f32,
-                    height: current_swapchain_image.extent().y as f32,
-                    min_depth: 0.0,
-                    max_depth: 1.0,
-                }],
-            );
-            pass.set_scissor(
-                0,
-                &[vk::Rect2D {
-                    offset: vk::Offset2D::default(),
-                    extent: vk::Extent2D {
-                        width: current_swapchain_image.extent().x,
-                        height: current_swapchain_image.extent().y,
-                    },
-                }],
-            );
+fn mesh_shader_culling(
+    mut state: SubmissionState,
+    pipeline: Res<MeshShadingPipeline>,
+    graphics_pipelines: Res<Assets<GraphicsPipeline>>,
+    push_constants: Res<PushConstants>,
+) {
+    let Some(pipeline) = graphics_pipelines.get(&pipeline.draw) else {
+        return;
+    };
+    let pipeline = pipeline.clone();
 
-            pass.push_constants(
-                pipeline.layout(),
-                vk::ShaderStageFlags::TASK_EXT,
-                0,
-                &bytemuck::bytes_of(&*push_constants),
-            );
+    state.render(move |mut pass| {
+        let render_area = pass.render_area();
+        let pipeline = pass.retain(pipeline.into_inner());
+        pass.bind_pipeline(pipeline);
+        pass.set_viewport(
+            0,
+            &[vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: render_area.extent.width as f32,
+                height: render_area.extent.height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            }],
+        );
+        pass.set_scissor(0, &[render_area]);
 
-            // Dispatch mesh shading pipeline workgroups
-            let n = match DENSITY_LEVEL {
-                2 => 8,
-                1 => 6,
-                0 => 4,
-                _ => 2,
-            };
-            pass.draw_mesh_tasks(UVec3::new(n, n, 1));
-        }
+        pass.push_constants(
+            pipeline.layout(),
+            vk::ShaderStageFlags::TASK_EXT,
+            0,
+            bytemuck::bytes_of(&*push_constants),
+        );
+
+        // Dispatch mesh shading pipeline workgroups
+        let n = match DENSITY_LEVEL {
+            2 => 8,
+            1 => 6,
+            0 => 4,
+            _ => 2,
+        };
+        pass.draw_mesh_tasks(UVec3::new(n, n, 1));
     });
 }
 
