@@ -348,7 +348,7 @@ impl InstanceBuilder {
         name: &'static CStr,
     ) -> Result<(), MissingFeatureError> {
         if let Some(_v) = self.available_extensions.get(name) {
-            self.enabled_extensions.insert(name, None);
+            self.enabled_extensions.entry(name).or_insert(None);
             Ok(())
         } else {
             Err(MissingFeatureError::Extension(name))

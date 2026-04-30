@@ -35,6 +35,7 @@ impl Plugin for RtxPipelinePlugin {
             #[cfg(feature = "postcard")]
             "rtx.pipeline.bin",
         ]);
+        app.init_resource::<RtxPipelineManager>();
 
         app.add_systems(
             Startup,
@@ -68,18 +69,14 @@ impl Plugin for RtxPipelinePlugin {
                         .unwrap();
                 })
                 .before(CreateDevice),
+                #[cfg(any(feature = "ron", feature = "postcard"))]
                 (|world: &mut World| {
-                    world.init_resource::<RtxPipelineManager>();
-                    #[cfg(any(feature = "ron", feature = "postcard"))]
-                    {
-                        let asset_server = world
-                            .remove_resource::<AssetServer>()
-                            .expect("Requires asset server");
-                        asset_server.register_loader(
-                            crate::shader::RayTracingPipelineLoader::from_world(world),
-                        );
-                        world.insert_resource(asset_server);
-                    }
+                    let asset_server = world
+                        .remove_resource::<AssetServer>()
+                        .expect("Requires asset server");
+                    asset_server
+                        .register_loader(crate::shader::RayTracingPipelineLoader::from_world(world));
+                    world.insert_resource(asset_server);
                 })
                 .after(CreateDevice),
             ),

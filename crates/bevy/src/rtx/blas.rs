@@ -1,16 +1,19 @@
 use std::{collections::BTreeSet, ffi::CString, marker::PhantomData, ops::Deref, sync::Arc};
 
-use bevy_app::{App, Plugin, PostUpdate};
+use bevy_app::{App, Plugin, PostUpdate, Startup};
 use bevy_ecs::{
     component::Component,
     entity::Entity,
     query::{ArchetypeFilter, QueryFilter, QueryItem, ReadOnlyQueryData, Without},
     resource::Resource,
+    schedule::IntoScheduleConfigs,
     system::{
         Commands, Local, Query, Res, ResMut, StaticSystemParam, SystemParam, SystemParamItem,
     },
-    world::FromWorld,
+    world::{FromWorld, World},
 };
+
+use crate::CreateDevice;
 use pumicite::{
     ash::khr::acceleration_structure::Meta as AccelerationStructureKhr, prelude::*,
     rtx::AccelStruct, sync::Timeline,
@@ -405,11 +408,14 @@ impl<T: BLASBuilder> Default for BLASBuilderPlugin<T> {
 impl<T: BLASBuilder> Plugin for BLASBuilderPlugin<T> {
     fn build(&self, app: &mut App) {
         app.add_systems(PostUpdate, build_blas_system::<T>);
-    }
-
-    fn finish(&self, app: &mut App) {
-        app.init_resource::<ASBuildCommandPool>();
-        app.init_resource::<T>();
+        app.add_systems(
+            Startup,
+            (|world: &mut World| {
+                world.init_resource::<ASBuildCommandPool>();
+                world.init_resource::<T>();
+            })
+            .after(CreateDevice),
+        );
     }
 }
 
