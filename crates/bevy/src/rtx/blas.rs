@@ -1,15 +1,13 @@
-use std::{collections::BTreeSet, ffi::CString, marker::PhantomData, ops::Deref, sync::Arc};
+use std::{collections::VecDeque, ffi::CString, marker::PhantomData, ops::Deref, sync::Arc};
 
 use bevy_app::{App, Plugin, PostUpdate, Startup};
 use bevy_ecs::{
     component::Component,
     entity::Entity,
-    query::{ArchetypeFilter, QueryFilter, QueryItem, ReadOnlyQueryData, Without},
+    query::{QueryFilter, QueryItem, ReadOnlyQueryData, Without},
     resource::Resource,
     schedule::IntoScheduleConfigs,
-    system::{
-        Commands, Local, Query, Res, ResMut, StaticSystemParam, SystemParam, SystemParamItem,
-    },
+    system::{Commands, Query, Res, ResMut, StaticSystemParam, SystemParam, SystemParamItem},
     world::{FromWorld, World},
 };
 
@@ -21,10 +19,13 @@ use pumicite::{
 use smallvec::SmallVec;
 
 use crate::queue::AsyncComputeQueue;
+/// Component holding a built bottom-level acceleration structure for an entity.
+///
+/// Inserted by the [`BLASBuilder`] pipeline once the GPU build command buffer
+/// for the entity has signalled completion. The inner [`AccelStruct`] is wrapped
+/// in an [`Arc`] so it can be retained by a TLAS while a newer BLAS replaces it.
 #[derive(Component)]
 pub struct BLAS {
-    // problem is, this needs to be retained by the TLAS. Really should be Arc<T>.
-    // It has multiple states.
     accel_struct: Arc<AccelStruct>,
 }
 impl Deref for BLAS {
@@ -34,17 +35,58 @@ impl Deref for BLAS {
     }
 }
 
-/// The BLASBuilder look at all entities with QueryData and QueryFilter, and insert the BLAS component.
+/// Defines a source of bottom-level acceleration structure builds.
+///
+/// Each implementation describes which entities to build BLASes for ([`QueryData`](Self::QueryData) /
+/// [`QueryFilter`](Self::QueryFilter)) and how to produce their geometry data ([`geometries`](Self::geometries)).
+/// Register a builder by adding [`BLASBuilderPlugin<T>`] to the app. Implicitly, each implementation
+/// covers a unique set of entities and there should be no overlap between entities covered by each
+/// implementation.
+///
+/// # Build pipeline
+///
+/// Each frame, in [`PostUpdate`]:
+/// 1. [`drain_built_blas_system`] inspects in-flight builds and, for any that have
+///    completed on the GPU, inserts a [`BLAS`] component on the corresponding entity
+///    and removes the [`BLASBuildPending`] marker.
+/// 2. The per-builder build system queries up to [`batch_size`](Self::batch_size)
+///    matching entities that do **not** have [`BLASBuildPending`], records their
+///    geometry uploads and `vkCmdBuildAccelerationStructuresKHR` calls into a single
+///    command buffer, submits it on the async-compute queue, and tags those
+///    entities with [`BLASBuildPending`] so they are not resubmitted while in flight.
+///
+/// Multiple batches may be in flight concurrently — submission is fire-and-forget,
+/// gated only by [`is_ready`](Self::is_ready).
+///
+/// # Avoiding redundant rebuilds
+///
+/// The system only filters out entities with an in-flight build. It does **not**
+/// filter out entities that already have a [`BLAS`]. If you want each matching
+/// entity to be built exactly once, add `Without<BLAS>` to your
+/// [`QueryFilter`](Self::QueryFilter); otherwise every batch will resubmit
+/// already-built entities.
 pub trait BLASBuilder: Resource + FromWorld {
-    /// Associated entities to be passed.
+    /// Per-entity data fetched from the ECS and forwarded to [`build_flags`](Self::build_flags)
+    /// and [`geometries`](Self::geometries).
     type QueryData: ReadOnlyQueryData;
 
-    /// Note: If the BLAS will never be updated, you may add Without<BLAS> here
-    /// to exclude all entities with BLAS already built.
-    type QueryFilter: QueryFilter + ArchetypeFilter;
-    /// Additional system entities to be passed.
+    /// Filter applied on top of the system's own `Without<BLASBuildPending>` filter.
+    ///
+    /// Use this to scope which entities this builder is responsible for. If the
+    /// BLAS for a matching entity should only ever be built once, include
+    /// `Without<BLAS>` here — the system does not exclude already-built entities
+    /// on its own.
+    type QueryFilter: QueryFilter;
+
+    /// Extra [`SystemParam`]s threaded through to the trait methods (e.g. asset
+    /// storages or staging buffers needed to materialise geometry).
     type Params: SystemParam;
 
+    /// Per-entity Vulkan build flags. Called once per entity per submitted batch.
+    ///
+    /// Defaults to `PREFER_FAST_TRACE | ALLOW_COMPACTION`. Entities built with
+    /// `ALLOW_COMPACTION` automatically receive the [`BLASNeedsCompaction`] marker
+    /// once their build completes.
     #[allow(unused_variables)]
     fn build_flags(
         &mut self,
@@ -55,9 +97,17 @@ pub trait BLASBuilder: Resource + FromWorld {
             | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION
     }
 
+    /// Buffer type backing the geometry data returned by [`geometries`](Self::geometries).
     type BufferType: BufferLike;
-    /// The geometries to be built. The implementation shall write directly into the dst buffer.
-    /// The iterator returned shall contain offset values into the dst buffer.
+
+    /// Records geometry uploads for one entity and returns the resulting
+    /// [`BLASBuildGeometry`] descriptors.
+    ///
+    /// The future is awaited inside the build system's command-recording context,
+    /// so implementations may issue transfer commands on `recorder` (e.g. staging
+    /// vertex/index data into device-local buffers). The returned descriptors must
+    /// reference buffers that will remain valid until the submitted build command
+    /// buffer signals completion; use `recorder.retain(...)` to extend their lifetime.
     fn geometries<'w, 's, 't, 't2, 'b, 'bb>(
         &mut self,
         params: &mut SystemParamItem<'w, 's, Self::Params>,
@@ -66,8 +116,24 @@ pub trait BLASBuilder: Resource + FromWorld {
     ) -> impl Future<Output = SmallVec<[BLASBuildGeometry<'b, Self::BufferType>; 1]>>
     + use<'w, 's, 't, 't2, 'b, 'bb, Self>;
 
+    /// Gates submission of new batches.
+    ///
+    /// Returning `false` skips submission for the current frame without affecting
+    /// in-flight builds — the drain step still runs. Use this to delay builds
+    /// until external prerequisites (e.g. asset loads) are ready, or as a
+    /// backpressure hook against the in-flight queue.
     fn is_ready(&self, _params: &mut SystemParamItem<'_, '_, Self::Params>) -> bool {
         true
+    }
+
+    /// Maximum number of entities to include in a single submitted command buffer.
+    ///
+    /// Entities beyond this cap remain in the query and are picked up by
+    /// subsequent frames. Larger batches amortise submission overhead and scratch
+    /// allocation; smaller batches reduce per-submit GPU latency and peak scratch
+    /// memory. Defaults to 32.
+    fn batch_size(&self, _params: &mut SystemParamItem<'_, '_, Self::Params>) -> usize {
+        32
     }
 }
 
@@ -93,10 +159,18 @@ pub enum BLASBuildGeometry<'a, A: BufferLike> {
     },
 }
 
+/// Shared command pool, timeline, and in-flight-build queue used by every
+/// [`BLASBuilder`] in the app.
+///
+/// Initialised once on [`Startup`] (via the first registered [`BLASBuilderPlugin`])
+/// on the async-compute queue family. `queued_builds` holds command buffers that
+/// have been submitted but not yet known to be complete; [`drain_built_blas_system`]
+/// is responsible for popping completed entries and freeing their command buffers.
 #[derive(Resource)]
 pub struct ASBuildCommandPool {
     pool: pumicite::command::CommandPool,
     timeline: Timeline,
+    queued_builds: VecDeque<(CommandBuffer, Vec<(Entity, AccelStruct)>)>,
 }
 impl FromWorld for ASBuildCommandPool {
     fn from_world(world: &mut bevy_ecs::world::World) -> Self {
@@ -110,82 +184,77 @@ impl FromWorld for ASBuildCommandPool {
         let pool = pumicite::command::CommandPool::new(device.clone(), async_compute_family_index)
             .unwrap();
         let timeline = Timeline::new(device).unwrap();
-        Self { pool, timeline }
+        Self {
+            pool,
+            timeline,
+            queued_builds: VecDeque::new(),
+        }
+    }
+}
+
+/// Look at all queued builds in [`ASBuildCommandPool`], dequeue the ones that are already finished, and insert [`BLAS`] components to their entities.
+fn drain_built_blas_system(mut commands: Commands, mut cmd_pool: ResMut<ASBuildCommandPool>) {
+    while let Some((completed_cb, built_accel_structs)) = cmd_pool
+        .queued_builds
+        .pop_front_if(|(cb, _)| cb.try_complete())
+    {
+        cmd_pool.pool.free(completed_cb);
+        tracing::info!(
+            "BLAS build completed for {} entities",
+            built_accel_structs.len()
+        );
+        for (entity, mut accel_struct) in built_accel_structs.into_iter() {
+            let mut target = commands.entity(entity);
+
+            accel_struct.set_name(
+                CString::new(format!("BLAS {:?}", target.id()))
+                    .unwrap()
+                    .as_c_str(),
+            );
+
+            if accel_struct
+                .flags()
+                .contains(vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION)
+            {
+                target.insert(BLASNeedsCompaction {
+                    compacted_size: 0,
+                });
+            }
+            target.insert(BLAS {
+                accel_struct: Arc::new(accel_struct),
+            });
+            target.remove::<BLASBuildPending>();
+        }
     }
 }
 
 fn build_blas_system<T: BLASBuilder>(
+    mut commands: Commands,
     builder: ResMut<T>,
     device: Res<Device>,
     allocator: Res<Allocator>,
-    mut cmd_pool: ResMut<ASBuildCommandPool>,
-    mut commands: Commands,
-
-    entities: Query<(Entity, T::QueryData), (T::QueryFilter, Without<BLAS>)>,
+    cmd_pool: ResMut<ASBuildCommandPool>,
+    entities: Query<(Entity, T::QueryData), (T::QueryFilter, Without<BLASBuildPending>)>,
     params: StaticSystemParam<T::Params>,
     mut queue: crate::Queue<AsyncComputeQueue>,
-
-    mut pending_command_buffer: Local<Option<(CommandBuffer, Vec<(Entity, AccelStruct)>)>>,
 ) {
-    let builder = builder.into_inner();
-    let mut pending_accel_structs = Vec::new();
-    let mut accel_structs_just_completed = BTreeSet::new();
-    if let Some((pending_cb, _)) = pending_command_buffer.as_mut() {
-        if pending_cb.try_complete() {
-            let (completed_cb, mut built_accel_structs) = pending_command_buffer.take().unwrap();
-            cmd_pool.pool.free(completed_cb);
-            tracing::info!(
-                "BLAS build completed for {} entities",
-                built_accel_structs.len()
-            );
-            for (entity, mut accel_struct) in built_accel_structs.drain(..) {
-                let mut target = commands.entity(entity);
-
-                accel_struct.set_name(
-                    CString::new(format!("BLAS {:?}", target.id()))
-                        .unwrap()
-                        .as_c_str(),
-                );
-
-                if accel_struct
-                    .flags()
-                    .contains(vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION)
-                {
-                    target.insert(BLASNeedsCompaction);
-                }
-                target.insert(BLAS {
-                    accel_struct: Arc::new(accel_struct),
-                });
-
-                accel_structs_just_completed.insert(entity);
-            }
-            pending_accel_structs = built_accel_structs; // Reuse memory.
-        } else {
-            return;
-        }
-    }
     if entities.is_empty() {
         return;
     }
     let mut params = params.into_inner();
+    let builder = builder.into_inner();
     if !T::is_ready(builder, &mut params) {
         return;
     }
-    if entities
-        .iter()
-        .filter(|(entity, _)| !accel_structs_just_completed.contains(entity))
-        .count()
-        == 0
-    {
-        return;
-    }
+    let batch_size = T::batch_size(builder, &mut params);
+    let mut pending_accel_structs = Vec::new();
 
     let mut geometry_infos = Vec::<vk::AccelerationStructureGeometryKHR>::new();
     let mut geometry_infos_primitive_counts: Vec<u32> = Vec::new();
     let mut build_range_infos = Vec::<vk::AccelerationStructureBuildRangeInfoKHR>::new();
     let mut infos = Vec::<vk::AccelerationStructureBuildGeometryInfoKHR>::new();
     let future = async |recorder: &mut CommandEncoder| {
-        let geometry_transfer_futures = entities.iter().map(|(_, query)| {
+        let geometry_transfer_futures = entities.iter().take(batch_size).map(|(_, query)| {
             T::geometries(builder, &mut params, query, unsafe {
                 // Unsafely reborrow the recorder.
                 // We should be able to get rid of this after coroutine.
@@ -193,7 +262,6 @@ fn build_blas_system<T: BLASBuilder>(
             })
         });
         let geometry_transfers = pumicite::utils::future::zip_many(geometry_transfer_futures).await;
-        tracing::info!("Building {} BLAS", geometry_transfers.len());
         recorder.memory_barrier(
             Access::ALL_COMMANDS,
             Access::ACCELERATION_STRUCTURE_BUILD_READ,
@@ -207,10 +275,11 @@ fn build_blas_system<T: BLASBuilder>(
             .get::<vk::PhysicalDeviceAccelerationStructurePropertiesKHR>()
             .min_acceleration_structure_scratch_offset_alignment;
 
-        for ((entity, query), geometries) in entities.iter().zip(geometry_transfers.into_iter()) {
-            if accel_structs_just_completed.contains(&entity) {
-                continue;
-            }
+        for ((entity, query), geometries) in entities
+            .iter()
+            .take(batch_size)
+            .zip(geometry_transfers.into_iter())
+        {
             geometry_infos_primitive_counts.clear();
             geometry_infos_primitive_counts.extend(geometries.iter().map(
                 |geometry| match geometry {
@@ -290,9 +359,10 @@ fn build_blas_system<T: BLASBuilder>(
                 },
             }));
 
+            let build_flags = T::build_flags(builder, &mut params, &query);
             let mut info = vk::AccelerationStructureBuildGeometryInfoKHR {
                 ty: vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-                flags: T::build_flags(builder, &mut params, &query),
+                flags: build_flags,
                 mode: vk::BuildAccelerationStructureModeKHR::BUILD,
                 geometry_count: num_geometries,
                 p_geometries: unsafe {
@@ -325,6 +395,7 @@ fn build_blas_system<T: BLASBuilder>(
                 allocator.clone(),
                 build_sizes.acceleration_structure_size,
                 vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
+                build_flags
             )
             .unwrap();
             info.dst_acceleration_structure = blas.vk_handle();
@@ -391,9 +462,29 @@ fn build_blas_system<T: BLASBuilder>(
         pending_accel_structs.len()
     );
 
-    *pending_command_buffer = Some((cmd_buf, pending_accel_structs));
+    let pending_entities = pending_accel_structs
+        .iter()
+        .map(|(entity, _)| *entity)
+        .collect::<Vec<_>>();
+    commands.insert_batch(
+        pending_entities
+            .into_iter()
+            .map(|entity| (entity, BLASBuildPending)),
+        );
+    cmd_pool
+        .queued_builds
+        .push_back((cmd_buf, pending_accel_structs));
 }
 
+/// Plugin that wires a single [`BLASBuilder`] implementation into the app.
+///
+/// On [`Startup`] (after [`CreateDevice`]) it initialises the builder resource and
+/// the shared [`ASBuildCommandPool`]. On every [`PostUpdate`] it runs
+/// `build_blas_system::<T>` after [`drain_built_blas_system`].
+///
+/// The drain system is registered exactly once across all [`BLASBuilderPlugin<T>`]
+/// instances via an internal [`BLASPlugin`] guarded by [`App::is_plugin_added`].
+/// Adding `BLASBuilderPlugin<T>` for multiple `T` is supported.
 pub struct BLASBuilderPlugin<T: BLASBuilder> {
     _marker: PhantomData<T>,
 }
@@ -405,9 +496,22 @@ impl<T: BLASBuilder> Default for BLASBuilderPlugin<T> {
     }
 }
 
+struct BLASPlugin;
+impl Plugin for BLASPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(PostUpdate, drain_built_blas_system);
+    }
+}
+
 impl<T: BLASBuilder> Plugin for BLASBuilderPlugin<T> {
     fn build(&self, app: &mut App) {
-        app.add_systems(PostUpdate, build_blas_system::<T>);
+        if !app.is_plugin_added::<BLASPlugin>() {
+            app.add_plugins(BLASPlugin);
+        }
+        app.add_systems(
+            PostUpdate,
+            build_blas_system::<T>.after(drain_built_blas_system),
+        );
         app.add_systems(
             Startup,
             (|world: &mut World| {
@@ -419,147 +523,22 @@ impl<T: BLASBuilder> Plugin for BLASBuilderPlugin<T> {
     }
 }
 
+/// Marker inserted on entities whose just-built [`BLAS`] was created with
+/// `ALLOW_COMPACTION` and is therefore eligible to be replaced by a compacted copy.
+///
+/// The compaction pass is responsible for removing this marker once it has acted.
 #[derive(Component)]
-pub struct BLASNeedsCompaction;
+pub struct BLASNeedsCompaction {
+    pub compacted_size: vk::DeviceSize,
+}
 
-/* Compaction
-
-
+/// Marker inserted by `build_blas_system` while a build for this entity is in
+/// flight on the GPU, and removed by [`drain_built_blas_system`] once the build
+/// completes (at the same time [`BLAS`] is inserted).
+///
+/// The build system queries entities with `Without<BLASBuildPending>`, so this
+/// marker prevents the same entity from being submitted again before its
+/// previous build finishes. Implementors of [`BLASBuilder`] should not insert
+/// or remove this component themselves.
 #[derive(Component)]
-pub struct BLASProperties {
-    compacted_size: vk::DeviceSize,
-}
-
-#[derive(Resource, Default)]
-pub(crate) struct BLASCompactionTask {
-    /// Array of (Entity, original_size) pairs
-    queried_entities: Vec<(Entity, u64)>,
-    query_pool: Option<RenderObject<QueryPool>>,
-    compacted_entities: Vec<(Entity, AccelStruct)>,
-    task: Option<AsyncComputeTask<()>>,
-}
-pub(crate) fn blas_compaction_system(
-    mut commands: Commands,
-    mut task_pool: ResMut<AsyncTaskPool>,
-    mut pending_query_task: ResMut<BLASCompactionTask>,
-    mut existing_blas: Query<&mut BLAS>,
-    // mut render_commands: RenderCommands<'c'>,
-) {
-    if let Some(pending_task) = pending_query_task.task.as_ref() {
-        // Has pending task
-        if !pending_task.is_finished() {
-            return;
-        }
-        // Pending task finished
-        let pending_task = pending_query_task.task.take().unwrap();
-        task_pool.wait_blocked(pending_task);
-
-        // Insert all compacted BLAS
-        for (entity, accel_struct) in pending_query_task.compacted_entities.drain(..) {
-            commands.entity(entity).insert(BLASCompacted);
-            let old_blas = std::mem::replace(
-                &mut existing_blas.get_mut(entity).unwrap().accel_struct,
-                accel_struct,
-            );
-            //RenderObject::new(old_blas).use_on(&mut render_commands); // Defer dropping the BLAS until after the current frame finishes
-        }
-
-        // If did query, get query results
-        if let Some(pool) = pending_query_task.query_pool.take() {
-            assert!(!pending_query_task.queried_entities.is_empty());
-            let mut results = vec![0_u64; pending_query_task.queried_entities.len()];
-            pool.get().get_results_u64(0, &mut results).unwrap();
-            for ((entity, original_size), compacted_size) in
-                pending_query_task.queried_entities.drain(..).zip(results)
-            {
-                commands
-                    .entity(entity)
-                    .insert(BLASProperties { compacted_size });
-            }
-        }
-    }
-}
-
-pub(crate) fn blas_compaction_system_schedule(
-    mut commands: Commands,
-    query_candidates: Query<(Entity, &BLAS), Without<BLASProperties>>,
-    copy_candidates: Query<(Entity, &BLAS, &BLASProperties), Without<BLASCompacted>>,
-    mut task_pool: ResMut<AsyncTaskPool>,
-    device: Res<Device>,
-    allocator: Res<Allocator>,
-    mut pending_query_task: ResMut<BLASCompactionTask>,
-) {
-    if pending_query_task.task.is_some() {
-        return;
-    }
-    if query_candidates.is_empty() && copy_candidates.is_empty() {
-        return;
-    }
-    let mut task = task_pool.spawn_compute();
-
-    let query_accel_structs = query_candidates
-        .iter()
-        .map(|x| x.1.accel_struct.raw)
-        .collect::<Vec<_>>();
-    let query_pool = if !query_accel_structs.is_empty() {
-        let pool = QueryPool::new(
-            device.clone(),
-            vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
-            query_accel_structs.len() as u32,
-        )
-        .unwrap();
-        let mut pool = RenderObject::new(pool);
-        task.reset_query_pool(&mut pool, ..);
-        task.write_acceleration_structures_properties(&query_accel_structs, &mut pool, 0);
-        Some(pool)
-    } else {
-        None
-    };
-
-    assert!(pending_query_task.compacted_entities.is_empty());
-
-    pending_query_task.compacted_entities = copy_candidates
-        .iter()
-        .filter_map(|(entity, blas, blas_properties)| {
-            if blas.size() * 9 / 10 <= blas_properties.compacted_size {
-                tracing::debug!(
-                    "Skipped BLAS compaction for {:?}: {} -> {}",
-                    entity,
-                    blas.size(),
-                    blas_properties.compacted_size
-                );
-                commands.entity(entity).insert(BLASCompacted);
-                return None;
-            }
-            let compacted_blas = AccelStruct::new(
-                allocator.clone(),
-                blas_properties.compacted_size,
-                vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-            )
-            .unwrap();
-            task.copy_acceleration_structure(&vk::CopyAccelerationStructureInfoKHR {
-                src: blas.raw,
-                dst: compacted_blas.raw,
-                mode: vk::CopyAccelerationStructureModeKHR::COMPACT,
-                ..Default::default()
-            });
-            tracing::debug!(
-                "Compacted BLAS for {:?}: {} -> {}",
-                entity,
-                blas.size(),
-                compacted_blas.size()
-            );
-            Some((entity, compacted_blas))
-        })
-        .collect();
-
-    pending_query_task
-        .task
-        .replace(task.finish((), vk::PipelineStageFlags2::empty()));
-    pending_query_task.query_pool = query_pool;
-    pending_query_task.queried_entities = query_candidates
-        .iter()
-        .map(|(entity, blas)| (entity, blas.size()))
-        .collect();
-}
-*/
+pub struct BLASBuildPending;

@@ -902,6 +902,7 @@ impl<T: BufferLike> AccelStruct<T> {
         device: Device,
         buffer: T,
         ty: vk::AccelerationStructureTypeKHR,
+        build_flags: vk::BuildAccelerationStructureFlagsKHR,
     ) -> VkResult<Self> {
         unsafe {
             let raw = device
@@ -929,7 +930,7 @@ impl<T: BufferLike> AccelStruct<T> {
                 device,
                 buffer,
                 raw,
-                flags: vk::BuildAccelerationStructureFlagsKHR::empty(),
+                flags: build_flags,
                 device_address,
             })
         }
@@ -945,6 +946,7 @@ impl AccelStruct {
         allocator: Allocator,
         size: vk::DeviceSize,
         ty: vk::AccelerationStructureTypeKHR,
+        build_flags: vk::BuildAccelerationStructureFlagsKHR,
     ) -> VkResult<Self> {
         let mut buffer = Buffer::new_private(
             allocator,
@@ -960,6 +962,6 @@ impl AccelStruct {
             c"TLAS backing buffer"
         };
         buffer.set_name(name);
-        Self::create_on_buffer(buffer.device().clone(), buffer, ty)
+        Self::create_on_buffer(buffer.device().clone(), buffer, ty, build_flags)
     }
 }
