@@ -7,14 +7,16 @@ use bevy_ecs::{
     query::{QueryFilter, QueryItem, ReadOnlyQueryData, Without},
     resource::Resource,
     schedule::IntoScheduleConfigs,
-    system::{Commands, Query, Res, ResMut, StaticSystemParam, SystemParam, SystemParamItem},
+    system::{
+        Commands, Local, Query, Res, ResMut, StaticSystemParam, SystemParam, SystemParamItem,
+    },
     world::{FromWorld, World},
 };
 
 use crate::CreateDevice;
 use pumicite::{
     ash::khr::acceleration_structure::Meta as AccelerationStructureKhr, prelude::*,
-    rtx::AccelStruct, sync::Timeline,
+    query::QueryPool, rtx::AccelStruct, sync::Timeline,
 };
 use smallvec::SmallVec;
 
@@ -159,6 +161,12 @@ pub enum BLASBuildGeometry<'a, A: BufferLike> {
     },
 }
 
+struct QueuedBuild {
+    command_buffer: CommandBuffer,
+    accel_structs: Vec<(Entity, AccelStruct)>,
+    query_pool: Option<QueryPool>,
+}
+
 /// Shared command pool, timeline, and in-flight-build queue used by every
 /// [`BLASBuilder`] in the app.
 ///
@@ -170,7 +178,7 @@ pub enum BLASBuildGeometry<'a, A: BufferLike> {
 pub struct ASBuildCommandPool {
     pool: pumicite::command::CommandPool,
     timeline: Timeline,
-    queued_builds: VecDeque<(CommandBuffer, Vec<(Entity, AccelStruct)>)>,
+    queued_builds: VecDeque<QueuedBuild>,
 }
 impl FromWorld for ASBuildCommandPool {
     fn from_world(world: &mut bevy_ecs::world::World) -> Self {
@@ -194,16 +202,26 @@ impl FromWorld for ASBuildCommandPool {
 
 /// Look at all queued builds in [`ASBuildCommandPool`], dequeue the ones that are already finished, and insert [`BLAS`] components to their entities.
 fn drain_built_blas_system(mut commands: Commands, mut cmd_pool: ResMut<ASBuildCommandPool>) {
-    while let Some((completed_cb, built_accel_structs)) = cmd_pool
+    while let Some(build) = cmd_pool
         .queued_builds
-        .pop_front_if(|(cb, _)| cb.try_complete())
+        .pop_front_if(|build| build.command_buffer.try_complete())
     {
-        cmd_pool.pool.free(completed_cb);
+        cmd_pool.pool.free(build.command_buffer);
         tracing::info!(
             "BLAS build completed for {} entities",
-            built_accel_structs.len()
+            build.accel_structs.len()
         );
-        for (entity, mut accel_struct) in built_accel_structs.into_iter() {
+        let compacted_sizes = if let Some(query_pool) = build.query_pool {
+            let mut sizes = vec![0; query_pool.len() as usize];
+            query_pool
+                .get_results::<u64>(0, &mut sizes, vk::QueryResultFlags::TYPE_64)
+                .unwrap();
+            sizes
+        } else {
+            Vec::new()
+        };
+        let mut compacted_i = 0;
+        for (entity, mut accel_struct) in build.accel_structs.into_iter() {
             let mut target = commands.entity(entity);
 
             accel_struct.set_name(
@@ -217,8 +235,9 @@ fn drain_built_blas_system(mut commands: Commands, mut cmd_pool: ResMut<ASBuildC
                 .contains(vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION)
             {
                 target.insert(BLASNeedsCompaction {
-                    compacted_size: 0,
+                    compacted_size: compacted_sizes[compacted_i],
                 });
+                compacted_i += 1;
             }
             target.insert(BLAS {
                 accel_struct: Arc::new(accel_struct),
@@ -248,6 +267,8 @@ fn build_blas_system<T: BLASBuilder>(
     }
     let batch_size = T::batch_size(builder, &mut params);
     let mut pending_accel_structs = Vec::new();
+    let mut accel_structs_to_query_compaction_sizes = Vec::new();
+    let mut query_pool: Option<QueryPool> = None;
 
     let mut geometry_infos = Vec::<vk::AccelerationStructureGeometryKHR>::new();
     let mut geometry_infos_primitive_counts: Vec<u32> = Vec::new();
@@ -359,10 +380,9 @@ fn build_blas_system<T: BLASBuilder>(
                 },
             }));
 
-            let build_flags = T::build_flags(builder, &mut params, &query);
             let mut info = vk::AccelerationStructureBuildGeometryInfoKHR {
                 ty: vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-                flags: build_flags,
+                flags: T::build_flags(builder, &mut params, &query),
                 mode: vk::BuildAccelerationStructureModeKHR::BUILD,
                 geometry_count: num_geometries,
                 p_geometries: unsafe {
@@ -395,9 +415,15 @@ fn build_blas_system<T: BLASBuilder>(
                 allocator.clone(),
                 build_sizes.acceleration_structure_size,
                 vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-                build_flags
+                info.flags,
             )
             .unwrap();
+            if info
+                .flags
+                .contains(vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION)
+            {
+                accel_structs_to_query_compaction_sizes.push(blas.vk_handle());
+            }
             info.dst_acceleration_structure = blas.vk_handle();
             pending_accel_structs.push((entity, blas));
 
@@ -442,6 +468,34 @@ fn build_blas_system<T: BLASBuilder>(
                 ptrs.as_ptr(),
             );
         }
+        if !accel_structs_to_query_compaction_sizes.is_empty() {
+            let pool = QueryPool::new(
+                device.clone(),
+                vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+                accel_structs_to_query_compaction_sizes.len() as u32,
+            )
+            .unwrap();
+            pool.host_reset(0..pool.len());
+            // The build above writes the AS; the property query below reads it.
+            // No automatic dependency exists within the same command buffer.
+            recorder.memory_barrier(
+                Access {
+                    stage: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
+                    access: vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+                },
+                Access {
+                    stage: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
+                    access: vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
+                },
+            );
+            recorder.emit_barriers();
+            recorder.write_acceleration_structures_properties(
+                &accel_structs_to_query_compaction_sizes,
+                &pool,
+                0,
+            );
+            query_pool = Some(pool);
+        }
     };
 
     let cmd_pool = cmd_pool.into_inner();
@@ -470,10 +524,12 @@ fn build_blas_system<T: BLASBuilder>(
         pending_entities
             .into_iter()
             .map(|entity| (entity, BLASBuildPending)),
-        );
-    cmd_pool
-        .queued_builds
-        .push_back((cmd_buf, pending_accel_structs));
+    );
+    cmd_pool.queued_builds.push_back(QueuedBuild {
+        command_buffer: cmd_buf,
+        accel_structs: pending_accel_structs,
+        query_pool,
+    });
 }
 
 /// Plugin that wires a single [`BLASBuilder`] implementation into the app.
@@ -499,8 +555,136 @@ impl<T: BLASBuilder> Default for BLASBuilderPlugin<T> {
 struct BLASPlugin;
 impl Plugin for BLASPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PostUpdate, drain_built_blas_system);
+        app.add_systems(
+            PostUpdate,
+            (drain_built_blas_system, compact_blas_system).chain(),
+        );
     }
+}
+
+/// One in-flight compaction submission: a recorded copy command buffer plus the
+/// per-entity book-keeping needed to publish the compacted AS once the GPU
+/// finishes.
+///
+/// `entries` holds, for each entity:
+/// 1. the freshly-allocated compacted [`AccelStruct`] (owned, becomes the new
+///    [`BLAS`] when the copy completes);
+/// 2. an [`Arc`] of the source AS, kept alive until the GPU has finished
+///    reading it.
+struct PendingCompaction {
+    command_buffer: CommandBuffer,
+    entries: Vec<(Entity, AccelStruct, Arc<AccelStruct>)>,
+}
+
+/// Compacts BLASes whose builds reported a smaller post-compaction size.
+///
+/// On every [`PostUpdate`]:
+/// 1. Pops any in-flight compaction command buffers from `pending` whose GPU
+///    work has finished, frees their command buffer, and replaces each
+///    entity's [`BLAS`] with the compacted copy.
+/// 2. For every entity that has [`BLASNeedsCompaction`] (and is not currently
+///    being rebuilt), allocates a destination [`AccelStruct`] sized to
+///    `compacted_size`, records `vkCmdCopyAccelerationStructureKHR` in
+///    `MODE_COMPACT`, removes the [`BLASNeedsCompaction`] marker, and submits
+///    on the async-compute queue. The submission is appended to `pending`
+///    for a later frame to drain.
+///
+/// The shared [`ASBuildCommandPool`] timeline serialises this submission after
+/// any outstanding builds, so the source AS is guaranteed to be readable. The
+/// source [`Arc`] is retained inside `pending` for the GPU lifetime; replacing
+/// the entity's [`BLAS`] only happens after `try_complete()` has confirmed the
+/// copy is done.
+fn compact_blas_system(
+    mut commands: Commands,
+    cmd_pool: ResMut<ASBuildCommandPool>,
+    allocator: Res<Allocator>,
+    device: Res<Device>,
+    needs_compaction: Query<(Entity, &BLAS, &BLASNeedsCompaction), Without<BLASBuildPending>>,
+    mut queue: crate::Queue<AsyncComputeQueue>,
+    mut pending: Local<VecDeque<PendingCompaction>>,
+) {
+    let cmd_pool = cmd_pool.into_inner();
+
+    // 1. Drain completed compactions.
+    while let Some(done) = pending.pop_front_if(|p| p.command_buffer.try_complete()) {
+        cmd_pool.pool.free(done.command_buffer);
+        tracing::info!(
+            "BLAS compaction completed for {} entities",
+            done.entries.len()
+        );
+        for (entity, mut compacted, _retain_src) in done.entries.into_iter() {
+            compacted.set_name(
+                CString::new(format!("BLAS {:?} (compacted)", entity))
+                    .unwrap()
+                    .as_c_str(),
+            );
+            commands.entity(entity).insert(BLAS {
+                accel_struct: Arc::new(compacted),
+            });
+        }
+    }
+
+    // 2. Submit new compactions.
+    if needs_compaction.is_empty() {
+        return;
+    }
+    let mut entries: Vec<(Entity, AccelStruct, Arc<AccelStruct>)> = Vec::new();
+    let mut copy_infos: Vec<vk::CopyAccelerationStructureInfoKHR> = Vec::new();
+    for (entity, blas, needs) in needs_compaction.iter() {
+        let compacted = AccelStruct::new(
+            allocator.clone(),
+            needs.compacted_size,
+            vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
+            blas.flags(),
+        )
+        .unwrap();
+        copy_infos.push(vk::CopyAccelerationStructureInfoKHR {
+            src: blas.vk_handle(),
+            dst: compacted.vk_handle(),
+            mode: vk::CopyAccelerationStructureModeKHR::COMPACT,
+            ..Default::default()
+        });
+        entries.push((entity, compacted, blas.accel_struct.clone()));
+        commands.entity(entity).remove::<BLASNeedsCompaction>();
+    }
+
+    let mut cmd_buf = cmd_pool
+        .pool
+        .alloc()
+        .unwrap()
+        .with_name(c"BLAS Compaction Command Buffer");
+    cmd_pool.timeline.schedule(&mut cmd_buf);
+    cmd_pool.pool.begin(&mut cmd_buf).unwrap();
+    cmd_pool.pool.record(&mut cmd_buf, |encoder| {
+        for info in &copy_infos {
+            unsafe {
+                device
+                    .extension::<AccelerationStructureKhr>()
+                    .cmd_copy_acceleration_structure(encoder.buffer().vk_handle(), info);
+            }
+        }
+    });
+    cmd_pool.pool.finish(&mut cmd_buf).unwrap();
+    queue.submit(&mut cmd_buf).unwrap();
+
+    let total_before: u64 = entries.iter().map(|(_, _, src)| src.size()).sum();
+    let total_after: u64 = entries.iter().map(|(_, dst, _)| dst.size()).sum();
+    let saved_pct = if total_before == 0 {
+        0.0
+    } else {
+        (total_before - total_after) as f64 / total_before as f64 * 100.0
+    };
+    tracing::info!(
+        "Scheduled BLAS compaction for {} entities: {} -> {} bytes ({:.1}% saved)",
+        entries.len(),
+        total_before,
+        total_after,
+        saved_pct,
+    );
+    pending.push_back(PendingCompaction {
+        command_buffer: cmd_buf,
+        entries,
+    });
 }
 
 impl<T: BLASBuilder> Plugin for BLASBuilderPlugin<T> {

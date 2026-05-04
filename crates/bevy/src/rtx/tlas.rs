@@ -289,6 +289,7 @@ pub fn tlas_build_system<T: Send + Sync + 'static>(
         device.clone(),
         tlas_backing_buffer,
         vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+        info.flags,
     )
     .unwrap();
     let scratch_offset_alignment: u64 = device

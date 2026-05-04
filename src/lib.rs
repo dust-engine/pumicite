@@ -135,6 +135,7 @@ pub mod swapchain;
 pub mod sync;
 pub mod tracking;
 pub mod utils;
+pub mod query;
 
 pub use alloc::Allocator;
 pub use device::{Device, HasDevice};
