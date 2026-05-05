@@ -757,7 +757,10 @@ impl_feature_for_ext!(
     vk::PhysicalDeviceShaderAtomicInt64Features<'static>,
     khr::shader_atomic_int64::Meta
 );
-
+impl_feature_for_ext!(
+    vk::PhysicalDeviceMultiviewFeaturesKHR<'static>,
+    khr::multiview::Meta
+);
 
 #[cfg(test)]
 mod tests {

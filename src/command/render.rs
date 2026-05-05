@@ -163,8 +163,8 @@ impl<'encoder, 'a> RenderPassBuilder<'encoder, 'a> {
         self
     }
     /// Set a bitfield of view indices describing which views are active during rendering, when it is not 0.
-    pub fn view_mask(mut self, layer_count: u32) -> Self {
-        self.info.layer_count = layer_count;
+    pub fn view_mask(mut self, view_mask: u32) -> Self {
+        self.info.view_mask = view_mask;
         self
     }
 
