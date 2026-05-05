@@ -751,8 +751,13 @@ impl_feature_for_ext!(
 );
 impl_feature_for_ext!(
     vk::PhysicalDeviceHostQueryResetFeatures<'static>,
-    ext::mesh_shader::Meta
+    ext::host_query_reset::Meta
 );
+impl_feature_for_ext!(
+    vk::PhysicalDeviceShaderAtomicInt64Features<'static>,
+    khr::shader_atomic_int64::Meta
+);
+
 
 #[cfg(test)]
 mod tests {
