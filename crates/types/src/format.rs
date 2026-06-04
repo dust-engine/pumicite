@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub enum Format {
     #[default]
     UNDEFINED = 0,

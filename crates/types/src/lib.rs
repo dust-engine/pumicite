@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 pub mod format;
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ComputePipeline {
     /// The compute shader used for compiling the compute pipeline
     pub shader: Shader,
@@ -68,6 +69,7 @@ impl<T, const DYNAMIC_STATE: i32> RequiredDynamicState<T, DYNAMIC_STATE> {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum CountedDynamicState<T> {
     Dynamic,
     Count(u32),
@@ -75,6 +77,7 @@ pub enum CountedDynamicState<T> {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GraphicsPipeline {
     pub shaders: BTreeMap<ShaderStage, Shader>,
 
@@ -219,6 +222,7 @@ pub struct GraphicsPipeline {
 /// your use case. If you're confident that this is something you absolutely need, open a PR
 /// and present your use case so that we can keep those use cases well-documented.
 #[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct GraphicsPipelineVariant {
     #[serde(default)]
     pub shaders: BTreeMap<ShaderStage, BTreeMap<u32, SpecializationConstantType>>,
@@ -254,6 +258,7 @@ impl GraphicsPipelineVariant {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Attachment {
     pub blend_enable:
         RequiredDynamicState<bool, { vk::DynamicState::COLOR_BLEND_ENABLE_EXT.as_raw() }>,
@@ -271,12 +276,14 @@ pub struct Attachment {
     pub format: format::Format,
 }
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BlendEquation {
     pub color: (BlendFactor, BlendOp, BlendFactor),
     pub alpha: (BlendFactor, BlendOp, BlendFactor),
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(deny_unknown_fields)]
 pub enum BlendFactor {
     Zero = 0,
     One = 1,
@@ -305,6 +312,7 @@ impl From<BlendFactor> for vk::BlendFactor {
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(deny_unknown_fields)]
 pub enum BlendOp {
     Add = 0,
     Subtract = 1,
@@ -319,6 +327,7 @@ impl From<BlendOp> for vk::BlendOp {
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(deny_unknown_fields)]
 pub enum StencilOp {
     Keep = 0,
     Zero = 1,
@@ -336,6 +345,7 @@ impl From<StencilOp> for vk::StencilOp {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StencilState {
     pub ops: RequiredDynamicState<StencilStateOps, { vk::DynamicState::STENCIL_OP.as_raw() }>,
     pub compare_mask:
@@ -344,6 +354,7 @@ pub struct StencilState {
     pub reference: RequiredDynamicState<u32, { vk::DynamicState::STENCIL_REFERENCE.as_raw() }>,
 }
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StencilStateOps {
     pub fail: StencilOp,
     pub pass: StencilOp,
@@ -352,6 +363,7 @@ pub struct StencilStateOps {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DepthBias {
     pub constant_factor: f32,
     pub clamp: f32,
@@ -359,6 +371,7 @@ pub struct DepthBias {
 }
 
 #[derive(Default, Serialize, Deserialize, Clone, Copy)]
+#[serde(deny_unknown_fields)]
 pub enum PolygonMode {
     #[default]
     Fill = 0,
@@ -372,6 +385,7 @@ impl From<PolygonMode> for vk::PolygonMode {
 }
 
 #[derive(Default, Serialize, Deserialize, Clone, Copy)]
+#[serde(deny_unknown_fields)]
 pub enum CullMode {
     #[default]
     None,
@@ -394,6 +408,7 @@ impl From<CullMode> for vk::CullModeFlags {
 }
 
 #[derive(Default, Serialize, Deserialize, Clone, Copy)]
+#[serde(deny_unknown_fields)]
 pub enum FrontFace {
     #[default]
     CounterClockwise,
@@ -409,6 +424,7 @@ impl From<FrontFace> for vk::FrontFace {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Viewport {
     pub x: f32,
     pub y: f32,
@@ -432,6 +448,7 @@ impl From<Viewport> for vk::Viewport {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Rect2D {
     pub offset: (i32, i32),
     pub extent: (u32, u32),
@@ -452,6 +469,7 @@ impl From<Rect2D> for vk::Rect2D {
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Copy)]
+#[serde(deny_unknown_fields)]
 pub enum PrimitiveTopology {
     PointList = 0,
     LineList = 1,
@@ -473,6 +491,7 @@ impl From<PrimitiveTopology> for vk::PrimitiveTopology {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VertexInputBinding {
     pub stride:
         RequiredDynamicState<u32, { vk::DynamicState::VERTEX_INPUT_BINDING_STRIDE.as_raw() }>,
@@ -480,11 +499,13 @@ pub struct VertexInputBinding {
     pub attributes: BTreeMap<u32, VertexInputAttributes>,
 }
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct VertexInputAttributes {
     pub format: format::Format,
     pub offset: u32,
 }
 #[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(deny_unknown_fields)]
 pub enum VertexInputRate {
     Vertex,
     Instance,
@@ -499,6 +520,7 @@ impl From<VertexInputRate> for vk::VertexInputRate {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Shader {
     /// Path to the shader asset
     pub path: String,
@@ -531,6 +553,7 @@ impl Shader {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineLayout {
     #[serde(default)]
     pub sets: Vec<DescriptorSetLayoutRef>,
@@ -547,6 +570,7 @@ pub struct PipelineLayout {
 }
 
 #[derive(Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub enum PipelineLayoutRef {
     Inline(PipelineLayout),
     Path(String),
@@ -555,6 +579,7 @@ pub enum PipelineLayoutRef {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum DescriptorSetLayoutRef {
     Inline(DescriptorSetLayout),
     Path(String),
@@ -580,6 +605,7 @@ fn line_width_default() -> RequiredDynamicState<f32, { vk::DynamicState::LINE_WI
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Binding {
     /// The type of resource descriptors that are used for this binding.
     pub ty: DescriptorType,
@@ -621,6 +647,7 @@ pub struct Binding {
     pub variable_descriptor_count: bool,
 }
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DescriptorSetLayout {
     /// Specifies that descriptor sets must not be allocated using this layout, and descriptors are instead pushed by vkCmdPushDescriptorSet.
     #[serde(default)]
@@ -640,6 +667,7 @@ pub struct DescriptorSetLayout {
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[serde(deny_unknown_fields)]
 pub enum DescriptorType {
     Sampler,
     CombinedImageSampler,
@@ -678,6 +706,7 @@ impl From<DescriptorType> for ash::vk::DescriptorType {
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[serde(deny_unknown_fields)]
 pub enum ShaderStage {
     Vertex,
     TessellationControl,
@@ -718,6 +747,7 @@ impl From<ShaderStage> for vk::ShaderStageFlags {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub enum SpecializationConstantType {
     UInt32(u32),
     UInt16(u16),
@@ -772,6 +802,7 @@ fn default_max_ray_recursion_depth() -> u32 {
     1
 }
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RayTracingPipeline {
     /// The compute shader used for compiling the compute pipeline
     pub stages: Vec<RayTracingPipelineShaderStage>,
@@ -804,6 +835,7 @@ pub struct RayTracingPipeline {
 }
 
 #[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum RayTracingPipelineShaderHitGroupType {
     #[default]
     Triangles,
@@ -811,6 +843,7 @@ pub enum RayTracingPipelineShaderHitGroupType {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum RayTracingPipelineShaderStage {
     RayGen {
         shader: Shader,

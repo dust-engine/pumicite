@@ -319,6 +319,7 @@ mod settings_serde {
 
 #[cfg(feature = "ktx2")]
 #[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KtxLoaderSettings {
     #[serde(
         serialize_with = "settings_serde::serde_usage",
@@ -468,6 +469,7 @@ impl AssetLoader for KtxLoader {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TextureLoadPreferences {
     is_srgb: bool,
     register_bindless: bool,
