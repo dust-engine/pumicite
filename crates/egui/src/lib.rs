@@ -288,8 +288,6 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
         };
         let (texture, mut texture_state) = if let Some((existing_img, _)) =
             device_buffers.textures.get_mut(&texture_id)
-            && existing_img.image().extent().x == image_delta.image.size()[0] as u32
-            && existing_img.image().extent().y == image_delta.image.size()[1] as u32
         {
             let texture_state = ResourceState::new_with_image_layout(
                 Access::FRAGMENT_SAMPLED_READ,

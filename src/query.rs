@@ -29,11 +29,7 @@ use std::{fmt::Debug, ops::Range};
 
 use ash::{VkResult, vk};
 
-use crate::{
-    Device, HasDevice,
-    command::CommandEncoder,
-    utils::AsVkHandle,
-};
+use crate::{Device, HasDevice, command::CommandEncoder, utils::AsVkHandle};
 
 /// A pool of GPU queries.
 ///
@@ -183,12 +179,8 @@ impl<'a> CommandEncoder<'a> {
             "write_timestamp requires a TIMESTAMP query pool",
         );
         unsafe {
-            self.device().cmd_write_timestamp2(
-                self.buffer().buffer,
-                stage,
-                pool.handle,
-                query,
-            );
+            self.device()
+                .cmd_write_timestamp2(self.buffer().buffer, stage, pool.handle, query);
         }
     }
 

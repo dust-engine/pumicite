@@ -127,6 +127,7 @@ pub mod image;
 pub mod instance;
 pub mod physical_device;
 pub mod pipeline;
+pub mod query;
 mod queue;
 pub mod rtx;
 mod sampler;
@@ -135,7 +136,6 @@ pub mod swapchain;
 pub mod sync;
 pub mod tracking;
 pub mod utils;
-pub mod query;
 
 pub use alloc::Allocator;
 pub use device::{Device, HasDevice};
