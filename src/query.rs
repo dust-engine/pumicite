@@ -159,6 +159,39 @@ impl<'a> CommandEncoder<'a> {
         }
     }
 
+    /// Records a GPU timestamp into slot `query` of `pool` once all previously
+    /// submitted commands have reached `stage`.
+    ///
+    /// The pool must have been created with [`vk::QueryType::TIMESTAMP`], and
+    /// the slot must have been reset (via [`CommandEncoder::reset_query_pool`])
+    /// since it was last written. Timestamps may only be recorded on a queue
+    /// whose family reports a non-zero `timestampValidBits`.
+    ///
+    /// Two timestamps bracketing a sequence of commands give the elapsed device
+    /// time as `(end - start) * VkPhysicalDeviceLimits::timestampPeriod`
+    /// nanoseconds, provided no counter overflow occurs.
+    pub fn write_timestamp(
+        &mut self,
+        pool: &QueryPool,
+        stage: vk::PipelineStageFlags2,
+        query: u32,
+    ) {
+        assert!(query < pool.len, "query index out of bounds");
+        debug_assert_eq!(
+            pool.ty,
+            vk::QueryType::TIMESTAMP,
+            "write_timestamp requires a TIMESTAMP query pool",
+        );
+        unsafe {
+            self.device().cmd_write_timestamp2(
+                self.buffer().buffer,
+                stage,
+                pool.handle,
+                query,
+            );
+        }
+    }
+
     /// Writes properties of `acceleration_structures` into consecutive query
     /// slots starting at `first_query`. The pool's query type selects which
     /// property is written (e.g.
