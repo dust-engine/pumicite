@@ -285,226 +285,251 @@ fn discover_parameter_blocks(reflection: &slang::reflection::Shader) -> Vec<Para
 
 fn generate_struct(info: &ParameterBlockInfo) -> proc_macro2::TokenStream {
     let struct_name = format_ident!("{}", info.struct_name);
-    let num_writes = info.groups.len();
 
-    // Collect struct fields, field defaults, new() descriptor_type assignments,
-    // setter methods, and as_slice() pointer wiring.
+    // Worst case one WriteDescriptorSet per descriptor element (alternating
+    // dirty/clean pattern); sized at codegen time so as_slice() never allocates.
+    let max_writes: usize = info.groups.iter().map(|g| g.total_count() as usize).sum();
+    let max_writes_lit = proc_macro2::Literal::usize_unsuffixed(max_writes);
+
     let mut struct_fields = Vec::new();
     let mut field_defaults = Vec::new();
-    let mut new_assignments = Vec::new();
     let mut setter_methods = Vec::new();
-    let mut as_slice_stmts = Vec::new();
-
-    // Track cumulative offsets within each backing array for setters
-    // in groups that have multiple entries.
+    let mut as_slice_blocks = Vec::new();
 
     for (gi, group) in info.groups.iter().enumerate() {
-        let gi_lit = proc_macro2::Literal::usize_unsuffixed(gi);
         let total = group.total_count() as usize;
+        assert!(
+            total <= 64,
+            "parameter block `{}`: write group at binding {} has {} descriptors, \
+             but dirty tracking supports at most 64 per group",
+            info.struct_name,
+            group.first_binding,
+            total
+        );
+
+        let backing_field = format_ident!("writes_{}", gi);
+        let dirty_field = format_ident!("dirty_{}", gi);
         let dt_tokens = vk_descriptor_type_tokens(group.descriptor_type);
         let first_binding_lit = proc_macro2::Literal::u32_unsuffixed(group.first_binding);
         let total_lit = proc_macro2::Literal::usize_unsuffixed(total);
 
-        // new() assignment: set descriptor_type
-        new_assignments.push(quote! {
-            this.writes[#gi_lit].descriptor_type = #dt_tokens;
-            this.writes[#gi_lit].dst_binding = #first_binding_lit;
-            this.writes[#gi_lit].descriptor_count = #total_lit;
+        // A group is either consecutive single-descriptor bindings (a dirty run
+        // offsets the binding index) or one arrayed binding (a dirty run offsets
+        // the array element); collapse_bindings never mixes the two.
+        let is_arrayed = group.entries.len() == 1 && group.entries[0].count > 1;
+        let dst_tokens = if is_arrayed {
+            quote! {
+                dst_binding: #first_binding_lit,
+                dst_array_element: start,
+            }
+        } else {
+            quote! {
+                dst_binding: #first_binding_lit + start,
+            }
+        };
+
+        let info_ty = match group.category {
+            InfoCategory::Buffer => quote! { pumicite::ash::vk::DescriptorBufferInfo },
+            InfoCategory::Image => quote! { pumicite::ash::vk::DescriptorImageInfo },
+            InfoCategory::TexelBufferView => quote! { pumicite::ash::vk::BufferView },
+            InfoCategory::AccelerationStructure => {
+                quote! { pumicite::ash::vk::AccelerationStructureKHR }
+            }
+        };
+
+        struct_fields.push(quote! {
+            #backing_field: [#info_ty; #total_lit],
+            #dirty_field: u64
+        });
+        field_defaults.push(quote! {
+            #backing_field: [#info_ty::default(); #total_lit],
+            #dirty_field: 0
         });
 
-        match group.category {
+        let (run_prelude, run_body) = match group.category {
             InfoCategory::AccelerationStructure => {
                 let as_field = format_ident!("writes_as_{}", gi);
-                let backing_field = format_ident!("writes_{}", gi);
-
                 struct_fields.push(quote! {
-                    #as_field: pumicite::ash::vk::WriteDescriptorSetAccelerationStructureKHR<'static>,
-                    #backing_field: [pumicite::ash::vk::AccelerationStructureKHR; #total_lit]
+                    #as_field: [pumicite::ash::vk::WriteDescriptorSetAccelerationStructureKHR<'static>; #total_lit]
                 });
                 field_defaults.push(quote! {
-                    #as_field: Default::default(),
-                    #backing_field: Default::default()
+                    #as_field: [pumicite::ash::vk::WriteDescriptorSetAccelerationStructureKHR::default(); #total_lit]
                 });
+                (
+                    quote! { let mut r: usize = 0; },
+                    quote! {
+                        self.#as_field[r] = pumicite::ash::vk::WriteDescriptorSetAccelerationStructureKHR {
+                            acceleration_structure_count: len,
+                            p_acceleration_structures: &self.#backing_field[start as usize],
+                            ..Default::default()
+                        };
+                        self.writes[n] = pumicite::ash::vk::WriteDescriptorSet {
+                            #dst_tokens
+                            descriptor_count: len,
+                            descriptor_type: #dt_tokens,
+                            p_next: &self.#as_field[r] as *const _ as *const core::ffi::c_void,
+                            ..Default::default()
+                        };
+                        r += 1;
+                    },
+                )
+            }
+            _ => {
+                let info_assign = match group.category {
+                    InfoCategory::Buffer => {
+                        quote! { p_buffer_info: &self.#backing_field[start as usize], }
+                    }
+                    InfoCategory::Image => {
+                        quote! { p_image_info: &self.#backing_field[start as usize], }
+                    }
+                    InfoCategory::TexelBufferView => {
+                        quote! { p_texel_buffer_view: &self.#backing_field[start as usize], }
+                    }
+                    InfoCategory::AccelerationStructure => unreachable!(),
+                };
+                (
+                    quote! {},
+                    quote! {
+                        self.writes[n] = pumicite::ash::vk::WriteDescriptorSet {
+                            #dst_tokens
+                            descriptor_count: len,
+                            descriptor_type: #dt_tokens,
+                            #info_assign
+                            ..Default::default()
+                        };
+                    },
+                )
+            }
+        };
 
-                as_slice_stmts.push(quote! {
-                    self.writes[#gi_lit].p_next =
-                        &self.#as_field as *const _ as *const core::ffi::c_void;
-                    self.#as_field.acceleration_structure_count =
-                        self.writes[#gi_lit].descriptor_count;
-                    self.#as_field.p_acceleration_structures = self.#backing_field.as_ptr();
-                });
-
-                // Setter methods for each entry
-                let mut write_i: u32 = 0;
-                for entry in &group.entries {
-                    let method = format_ident!("{}", entry.setter_name);
-                    let write_i_lit = proc_macro2::Literal::usize_unsuffixed(write_i as usize);
-                    setter_methods.push(quote! {
-                        pub fn #method(
-                            &mut self,
-                            accel: &impl pumicite::utils::AsVkHandle<Handle = pumicite::ash::vk::AccelerationStructureKHR>,
-                        ) -> &mut Self {
-                            self.#backing_field[#write_i_lit as usize] =
-                                pumicite::utils::AsVkHandle::vk_handle(accel);
-                            self
-                        }
-                    });
-                    write_i += entry.count;
+        as_slice_blocks.push(quote! {
+            {
+                #run_prelude
+                let mut mask = self.#dirty_field;
+                self.#dirty_field = 0;
+                while mask != 0 {
+                    let start = mask.trailing_zeros();
+                    let len = (!(mask >> start)).trailing_zeros();
+                    mask &= !((u64::MAX >> (64 - len)) << start);
+                    #run_body
+                    n += 1;
                 }
             }
-            InfoCategory::Buffer => {
-                let backing_field = format_ident!("writes_{}", gi);
-                let total_lit = proc_macro2::Literal::usize_unsuffixed(total);
+        });
 
-                struct_fields.push(quote! {
-                    #backing_field: [pumicite::ash::vk::DescriptorBufferInfo; #total_lit]
-                });
-                field_defaults.push(quote! {
-                    #backing_field: Default::default()
-                });
+        let mut write_i: u32 = 0;
+        for entry in &group.entries {
+            let method = format_ident!("{}", entry.setter_name);
 
-                as_slice_stmts.push(quote! {
-                    self.writes[#gi_lit].p_buffer_info = self.#backing_field.as_ptr();
-                });
+            // Arrayed bindings take a runtime element index; single bindings
+            // address their fixed slot within the group's backing array.
+            let (index_param, slot_tokens, bit_tokens, guard_tokens) = if entry.count > 1 {
+                let count_lit = proc_macro2::Literal::u32_unsuffixed(entry.count);
+                (
+                    quote! { index: u32, },
+                    quote! { index as usize },
+                    quote! { index },
+                    quote! { debug_assert!(index < #count_lit); },
+                )
+            } else {
+                let slot_lit = proc_macro2::Literal::usize_unsuffixed(write_i as usize);
+                let bit_lit = proc_macro2::Literal::u32_unsuffixed(write_i);
+                (
+                    quote! {},
+                    quote! { #slot_lit },
+                    quote! { #bit_lit },
+                    quote! {},
+                )
+            };
 
-                let mut write_i: u32 = 0;
-                for entry in &group.entries {
-                    let method = format_ident!("{}", entry.setter_name);
-                    let write_i_lit = proc_macro2::Literal::usize_unsuffixed(write_i as usize);
-                    setter_methods.push(quote! {
-                        pub fn #method(
-                            &mut self,
-                            buffer: &(impl pumicite::buffer::BufferLike + ?Sized),
-                        ) -> &mut Self {
-                            self.#backing_field[#write_i_lit] =
-                                pumicite::ash::vk::DescriptorBufferInfo {
-                                    buffer: pumicite::utils::AsVkHandle::vk_handle(buffer),
-                                    offset: buffer.offset(),
-                                    range: buffer.size(),
-                                };
-                            self
+            let (value_param, value_expr) = match group.category {
+                InfoCategory::AccelerationStructure => (
+                    quote! { accel: &impl pumicite::utils::AsVkHandle<Handle = pumicite::ash::vk::AccelerationStructureKHR> },
+                    quote! { pumicite::utils::AsVkHandle::vk_handle(accel) },
+                ),
+                InfoCategory::Buffer => (
+                    quote! { buffer: &(impl pumicite::buffer::BufferLike + ?Sized) },
+                    quote! {
+                        pumicite::ash::vk::DescriptorBufferInfo {
+                            buffer: pumicite::utils::AsVkHandle::vk_handle(buffer),
+                            offset: buffer.offset(),
+                            range: buffer.size(),
                         }
-                    });
-                    write_i += entry.count;
-                }
-            }
-            InfoCategory::Image => {
-                let backing_field = format_ident!("writes_{}", gi);
-                let total_lit = proc_macro2::Literal::usize_unsuffixed(total);
-
-                struct_fields.push(quote! {
-                    #backing_field: [pumicite::ash::vk::DescriptorImageInfo; #total_lit]
-                });
-                field_defaults.push(quote! {
-                    #backing_field: Default::default()
-                });
-
-                as_slice_stmts.push(quote! {
-                    self.writes[#gi_lit].p_image_info = self.#backing_field.as_ptr();
-                });
-
-                let mut write_i: u32 = 0;
-                for entry in &group.entries {
-                    let method = format_ident!("{}", entry.setter_name);
-                    let write_i_lit = proc_macro2::Literal::usize_unsuffixed(write_i as usize);
-
+                    },
+                ),
+                InfoCategory::Image => {
                     if entry.descriptor_type == DescriptorType::Sampler {
-                        setter_methods.push(quote! {
-                            pub fn #method(
-                                &mut self,
-                                sampler: &impl pumicite::utils::AsVkHandle<Handle = pumicite::ash::vk::Sampler>,
-                            ) -> &mut Self {
-                                self.#backing_field[#write_i_lit] =
-                                    pumicite::ash::vk::DescriptorImageInfo {
-                                        sampler: pumicite::utils::AsVkHandle::vk_handle(sampler),
-                                        ..Default::default()
-                                    };
-                                self
-                            }
-                        });
+                        (
+                            quote! { sampler: &impl pumicite::utils::AsVkHandle<Handle = pumicite::ash::vk::Sampler> },
+                            quote! {
+                                pumicite::ash::vk::DescriptorImageInfo {
+                                    sampler: pumicite::utils::AsVkHandle::vk_handle(sampler),
+                                    ..Default::default()
+                                }
+                            },
+                        )
                     } else {
                         let layout = if is_storage_image(entry.descriptor_type) {
                             quote! { pumicite::ash::vk::ImageLayout::GENERAL }
                         } else {
                             quote! { pumicite::ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL }
                         };
-
-                        setter_methods.push(quote! {
-                            pub fn #method(
-                                &mut self,
-                                image: &(impl pumicite::image::ImageViewLike + ?Sized),
-                            ) -> &mut Self {
-                                self.#backing_field[#write_i_lit] =
-                                    pumicite::ash::vk::DescriptorImageInfo {
-                                        image_view: pumicite::utils::AsVkHandle::vk_handle(image),
-                                        image_layout: #layout,
-                                        sampler: pumicite::ash::vk::Sampler::null(),
-                                    };
-                                self
-                            }
-                        });
+                        (
+                            quote! { image: &(impl pumicite::image::ImageViewLike + ?Sized) },
+                            quote! {
+                                pumicite::ash::vk::DescriptorImageInfo {
+                                    image_view: pumicite::utils::AsVkHandle::vk_handle(image),
+                                    image_layout: #layout,
+                                    sampler: pumicite::ash::vk::Sampler::null(),
+                                }
+                            },
+                        )
                     }
-                    write_i += entry.count;
                 }
-            }
-            InfoCategory::TexelBufferView => {
-                let backing_field = format_ident!("writes_{}", gi);
-                let total_lit = proc_macro2::Literal::usize_unsuffixed(total);
+                InfoCategory::TexelBufferView => (
+                    quote! { view: pumicite::ash::vk::BufferView },
+                    quote! { view },
+                ),
+            };
 
-                struct_fields.push(quote! {
-                    #backing_field: [pumicite::ash::vk::BufferView; #total_lit]
-                });
-                field_defaults.push(quote! {
-                    #backing_field: Default::default()
-                });
-
-                as_slice_stmts.push(quote! {
-                    self.writes[#gi_lit].p_texel_buffer_view = self.#backing_field.as_ptr();
-                });
-
-                let mut write_i: u32 = 0;
-                for entry in &group.entries {
-                    let method = format_ident!("{}", entry.setter_name);
-                    let write_i_lit = proc_macro2::Literal::usize_unsuffixed(write_i as usize);
-                    setter_methods.push(quote! {
-                        pub fn #method(
-                            &mut self,
-                            view: pumicite::ash::vk::BufferView,
-                        ) -> &mut Self {
-                            self.#backing_field[#write_i_lit] = view;
-                            self
-                        }
-                    });
-                    write_i += entry.count;
+            setter_methods.push(quote! {
+                pub fn #method(&mut self, #index_param #value_param) -> &mut Self {
+                    #guard_tokens
+                    self.#backing_field[#slot_tokens] = #value_expr;
+                    self.#dirty_field |= 1u64 << #bit_tokens;
+                    self
                 }
-            }
+            });
+
+            write_i += entry.count;
         }
     }
-
-    let num_writes_lit = proc_macro2::Literal::usize_unsuffixed(num_writes);
 
     quote! {
         #[derive(Clone)]
         pub struct #struct_name {
-            writes: [pumicite::ash::vk::WriteDescriptorSet<'static>; #num_writes_lit],
+            writes: [pumicite::ash::vk::WriteDescriptorSet<'static>; #max_writes_lit],
             #(#struct_fields),*
         }
 
         impl #struct_name {
             pub fn new() -> Self {
-                let mut this = Self {
-                    writes: Default::default(),
+                Self {
+                    writes: [pumicite::ash::vk::WriteDescriptorSet::default(); #max_writes_lit],
                     #(#field_defaults),*
-                };
-                #(#new_assignments)*
-                this
+                }
             }
 
             #(#setter_methods)*
 
-            pub fn as_slice(&mut self) -> &[pumicite::ash::vk::WriteDescriptorSet] {
-                #(#as_slice_stmts)*
-                &self.writes
+            /// Returns descriptor writes covering only the bindings modified since
+            /// the last call, coalesced into contiguous runs. Consumes the
+            /// modified flags: a subsequent call returns an empty slice until a
+            /// setter is called again.
+            pub fn as_slice(&mut self) -> &[pumicite::ash::vk::WriteDescriptorSet<'_>] {
+                let mut n: usize = 0;
+                #(#as_slice_blocks)*
+                &self.writes[..n]
             }
         }
     }
@@ -521,4 +546,57 @@ pub fn generate(reflection: &slang::reflection::Shader) -> String {
         tokens.extend(generate_struct(block));
     }
     tokens.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn binding(name: &str, dt: DescriptorType, count: u32) -> FlatBinding {
+        FlatBinding {
+            setter_name: name.to_string(),
+            descriptor_type: dt,
+            category: info_category(dt),
+            count,
+        }
+    }
+
+    // The output of this test is the source for the behavioral snapshot test in
+    // //tests/codegen_generated.rs (pumicite root crate). Regenerate with
+    // `cargo test -p pumicite_cli -- --nocapture` after changing codegen.
+    #[test]
+    fn generate_synthetic_block() {
+        let flat = vec![
+            binding("uniforms", DescriptorType::UniformBuffer, 1),
+            binding("nodes", DescriptorType::StorageBuffer, 1),
+            binding("leaves", DescriptorType::StorageBuffer, 1),
+            binding("albedo", DescriptorType::SampledImage, 1),
+            binding("normal", DescriptorType::SampledImage, 1),
+            binding("depth", DescriptorType::StorageImage, 1),
+            binding("linear_sampler", DescriptorType::Sampler, 1),
+            binding("cascades", DescriptorType::SampledImage, 4),
+            binding("scene_bvh", DescriptorType::AccelerationStructure, 1),
+        ];
+        let groups = collapse_bindings(flat);
+
+        // uniform | storage x2 | sampled x2 | storage image | sampler |
+        // sampled[4] | acceleration structure
+        assert_eq!(groups.len(), 7);
+        assert_eq!(groups[1].first_binding, 1);
+        assert_eq!(groups[1].entries.len(), 2);
+        assert_eq!(groups[2].first_binding, 3);
+        assert_eq!(groups[5].first_binding, 7);
+        assert_eq!(groups[6].first_binding, 11);
+
+        let info = ParameterBlockInfo {
+            struct_name: "TestParams".to_string(),
+            groups,
+        };
+        let code = generate_struct(&info).to_string();
+        println!("{code}");
+
+        // Arrayed binding generates an indexed setter and array-element runs.
+        assert!(code.contains("dst_array_element"));
+        assert!(code.contains("index : u32"));
+    }
 }
