@@ -20,6 +20,13 @@ struct FlatBinding {
     descriptor_type: DescriptorType,
     category: InfoCategory,
     count: u32,
+    /// Shader-stage bitmask from the binding's mandatory `[Stages(<mask>)]`
+    /// attribute. Used only to gate coalescing: consecutive same-type bindings
+    /// merge into one `VkWriteDescriptorSet` only when their stages also match,
+    /// keeping every coalesced write stage-uniform
+    /// (VUID-VkWriteDescriptorSet-descriptorCount-10776). The bit values are
+    /// opaque here — we only compare them for equality.
+    stages: i32,
 }
 
 struct WriteGroup {
@@ -178,9 +185,10 @@ fn flatten_bindings(
             let count = parent_tl.binding_range_binding_count(ri).max(1) as u32;
             let category = info_category(descriptor_type);
 
+            let leaf_var = parent_tl.binding_range_leaf_variable(ri);
+
             // Use leaf variable name if available, otherwise use field name
-            let name = parent_tl
-                .binding_range_leaf_variable(ri)
+            let name = leaf_var
                 .and_then(|v| v.name())
                 .map(|n| {
                     if prefix.is_empty() {
@@ -191,11 +199,34 @@ fn flatten_bindings(
                 })
                 .unwrap_or_else(|| setter_name.clone());
 
+            // Every reflected ParameterBlock binding must declare its shader
+            // stages via `[Stages(<mask>)]`. `as_slice()` coalesces consecutive
+            // same-type bindings into a single VkWriteDescriptorSet, and Vulkan
+            // requires every binding in such a write to share stageFlags
+            // (VUID-VkWriteDescriptorSet-descriptorCount-10776). This builder is
+            // generated from reflection alone and has no other view of the
+            // layout's stages, so we read them here and split coalescing wherever
+            // they differ. Missing attribute → hard error.
+            let stages = leaf_var
+                .and_then(|v| {
+                    v.user_attributes()
+                        .find(|a| matches!(a.name(), Some("Stages") | Some("StagesAttribute")))
+                })
+                .and_then(|a| a.argument_value_int(0))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "ParameterBlock binding `{name}` is missing a valid `[Stages(<mask>)]` \
+                         attribute; every binding in a reflected ParameterBlock must declare its \
+                         shader stages so descriptor-write coalescing stays stage-uniform"
+                    )
+                });
+
             out.push(FlatBinding {
                 setter_name: name,
                 descriptor_type,
                 category,
                 count,
+                stages,
             });
         }
     }
@@ -210,6 +241,11 @@ fn collapse_bindings(bindings: Vec<FlatBinding>) -> Vec<WriteGroup> {
             last.descriptor_type == binding.descriptor_type
                 && binding.count == 1
                 && last.entries.iter().all(|e| e.count == 1)
+                // Only coalesce bindings that share stageFlags — a multi-binding
+                // write must be stage-uniform. All entries in a group already
+                // share stages (this invariant keeps them so), so compare the
+                // first.
+                && last.entries[0].stages == binding.stages
         } else {
             false
         };
@@ -553,11 +589,16 @@ mod tests {
     use super::*;
 
     fn binding(name: &str, dt: DescriptorType, count: u32) -> FlatBinding {
+        binding_staged(name, dt, count, 0)
+    }
+
+    fn binding_staged(name: &str, dt: DescriptorType, count: u32, stages: i32) -> FlatBinding {
         FlatBinding {
             setter_name: name.to_string(),
             descriptor_type: dt,
             category: info_category(dt),
             count,
+            stages,
         }
     }
 
@@ -598,5 +639,25 @@ mod tests {
         // Arrayed binding generates an indexed setter and array-element runs.
         assert!(code.contains("dst_array_element"));
         assert!(code.contains("index : u32"));
+    }
+
+    // Consecutive same-type bindings only coalesce when their `[Stages]` masks
+    // match; a differing mask forces a separate write so each coalesced
+    // VkWriteDescriptorSet stays stage-uniform.
+    #[test]
+    fn collapse_splits_on_stage_mismatch() {
+        let flat = vec![
+            binding_staged("a", DescriptorType::StorageBuffer, 1, 0x1),
+            binding_staged("b", DescriptorType::StorageBuffer, 1, 0x1), // same stages → merges with a
+            binding_staged("c", DescriptorType::StorageBuffer, 1, 0x2), // different stages → splits off
+            binding_staged("d", DescriptorType::StorageBuffer, 1, 0x2), // same as c → merges with c
+        ];
+        let groups = collapse_bindings(flat);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].entries.len(), 2); // a + b
+        assert_eq!(groups[0].first_binding, 0);
+        assert_eq!(groups[1].entries.len(), 2); // c + d
+        assert_eq!(groups[1].first_binding, 2);
     }
 }
