@@ -35,16 +35,17 @@
 //!
 //! # Shader Binding Table
 //!
-//! The [`ShaderBindingTable`] manages shader handles and per-shader data:
+//! The [`ShaderBindingTable`] manages shader handles and per-shader data. Each
+//! push identifies a shader group by its `(library_id, shader_id)` pair:
 //!
 //! ```ignore
-//! let mut sbt = ShaderBindingTable::new(&pipeline, layout);
-//! sbt.push_raygen(0, |_| {});
-//! sbt.push_miss(0, |_| {});
-//! sbt.push_hitgroup(0, |data: &mut [u8]| { /* write inline data */ });
+//! let mut sbt = ShaderBindingTable::new_with_mapper(&pipeline, layout, &remapper, None);
+//! sbt.push_raygen(0, 0, |_| {});
+//! sbt.push_miss(0, 1, |_| {});
+//! sbt.push_hitgroup(0, 2, |data: &mut [u8]| { /* write inline data */ });
 //! ```
 
-use std::{alloc::Layout, fmt::Debug, ops::Deref, sync::Arc};
+use std::{alloc::Layout, ops::Deref, sync::Arc};
 
 use crate::{
     Allocator, Device, HasDevice,
@@ -293,62 +294,10 @@ impl PipelineCache {
 pub struct SbtHandles {
     data: Box<[u8]>,
     handle_size: u32,
-    num_raygen: u8,
-    num_miss: u8,
-    num_callable: u8,
-    num_hitgroup: u8,
-}
-impl Debug for SbtHandles {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        struct HexStr<'a>(&'a [u8]);
-        impl<'a> Debug for HexStr<'a> {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("0x")?;
-                for item in self.0 {
-                    f.write_fmt(format_args!("{:x?}", item))?;
-                }
-                Ok(())
-            }
-        }
-        let mut f_struct = f.debug_struct("SbtHandles");
-        f_struct.field("handle_size", &self.handle_size);
-        f_struct.field(
-            "raygen",
-            &(0..self.num_raygen)
-                .map(|i| HexStr(self.rgen(i as u32)))
-                .collect::<Vec<_>>(),
-        );
-        f_struct.field(
-            "miss",
-            &(0..self.num_miss)
-                .map(|i| HexStr(self.rmiss(i as u32)))
-                .collect::<Vec<_>>(),
-        );
-        f_struct.field(
-            "callable",
-            &(0..self.num_callable)
-                .map(|i| HexStr(self.callable(i as u32)))
-                .collect::<Vec<_>>(),
-        );
-        f_struct.field(
-            "hitgroup",
-            &(0..self.num_hitgroup)
-                .map(|i| HexStr(self.hitgroup(i as u32)))
-                .collect::<Vec<_>>(),
-        );
-        Ok(())
-    }
+    total_num_groups: u16,
 }
 impl SbtHandles {
-    fn new(
-        pipeline: &Pipeline,
-        num_raygen: u8,
-        num_miss: u8,
-        num_callable: u8,
-        num_hitgroup: u8,
-    ) -> VkResult<SbtHandles> {
-        let total_num_groups =
-            num_hitgroup as u32 + num_miss as u32 + num_callable as u32 + num_raygen as u32;
+    fn new(pipeline: &Pipeline, total_num_groups: u16) -> VkResult<SbtHandles> {
         let handle_size = pipeline
             .device()
             .physical_device()
@@ -362,7 +311,7 @@ impl SbtHandles {
                 .get_ray_tracing_shader_group_handles(
                     pipeline.vk_handle(),
                     0,
-                    total_num_groups,
+                    total_num_groups as u32,
                     handle_size as usize * total_num_groups as usize,
                 )?
         }
@@ -370,46 +319,14 @@ impl SbtHandles {
         Ok(SbtHandles {
             data,
             handle_size,
-            num_raygen,
-            num_miss,
-            num_callable,
-            num_hitgroup,
+            total_num_groups,
         })
     }
 
-    /// Returns the handle bytes for a ray generation shader.
-    pub fn rgen(&self, index: u32) -> &[u8] {
-        assert!(index < self.num_raygen as u32);
-        // Note that
-        // VUID-vkGetRayTracingShaderGroupHandlesKHR-dataSize-02420
-        // dataSize must be at least VkPhysicalDeviceRayTracingPipelinePropertiesKHR::shaderGroupHandleSize × groupCount
-        // This implies all handles are tightly packed. No need to call `pad_to_align` here
-        let start = self.handle_size * index;
-        let end = start + self.handle_size;
-        &self.data[start as usize..end as usize]
-    }
-
-    /// Returns the handle bytes for a miss shader.
-    pub fn rmiss(&self, index: u32) -> &[u8] {
-        assert!(index < self.num_miss as u32);
-        let start = self.handle_size * (index + self.num_raygen as u32);
-        let end = start + self.handle_size;
-        &self.data[start as usize..end as usize]
-    }
-
-    /// Returns the handle bytes for a callable shader.
-    pub fn callable(&self, index: u32) -> &[u8] {
-        assert!(index < self.num_callable as u32);
-        let start = self.handle_size * (index + self.num_raygen as u32 + self.num_miss as u32);
-        let end = start + self.handle_size;
-        &self.data[start as usize..end as usize]
-    }
-
-    /// Returns the handle bytes for a hit group.
-    pub fn hitgroup(&self, index: u32) -> &[u8] {
-        assert!(index < self.num_hitgroup as u32);
-        let start = self.handle_size
-            * (index + self.num_miss as u32 + self.num_callable as u32 + self.num_raygen as u32);
+    /// Returns the handle bytes for the shader group at `index`.
+    pub fn handle(&self, index: u16) -> &[u8] {
+        assert!(index < self.total_num_groups);
+        let start = self.handle_size * index as u32;
         let end = start + self.handle_size;
         &self.data[start as usize..end as usize]
     }
@@ -514,142 +431,115 @@ pub struct SbtLayoutStage {
 /// Entries must be pushed in groups by type. Once you start pushing a new type,
 /// you cannot go back to push more entries of the previous type.
 pub struct ShaderBindingTable {
-    hitgroup_id_mapper: u64,
+    sbt_remapper: SbtRemapper,
     handles: SbtHandles,
     layout: SbtLayout,
 
     /// The raw data of the pipeline
-    buffer: Vec<u8>,
+    raygen: Vec<u8>,
+    miss: Vec<u8>,
+    hitgroup: Vec<u8>,
+    callable: Vec<u8>,
+    raygen_count: u16,
+    miss_count: u16,
+    callable_count: u16,
+    hitgroup_count: u32,
+}
 
-    raygen_index: ShaderBindingTableState,
-    miss_index: ShaderBindingTableState,
-    callable_index: ShaderBindingTableState,
-    hitgroup_index: ShaderBindingTableState,
-}
-enum ShaderBindingTableState {
-    NotSet,
-    Recording { base_offset: u64, index: u32 },
-    Recorded { base_offset: u64, index: u32 },
-}
-impl ShaderBindingTableState {
-    /// It'll save the base_offset for the first time this was called.
-    fn increment(&mut self, base_offset: u64) -> u32 {
-        match self {
-            Self::NotSet => {
-                *self = Self::Recording {
-                    index: 1,
-                    base_offset,
-                };
-                0
-            }
-            Self::Recording { index, .. } => {
-                let current = *index;
-                *index += 1;
-                current
-            }
-            Self::Recorded { .. } => {
-                panic!("Must record types of SBT entries consecutively!")
-            }
-        }
+/// Maps a `(library_id, shader_id)` pair to a flat index into the pipeline's
+/// shader group handle array.
+///
+/// `shader_id` is the group's index *within its library* (libraries lay their
+/// groups out in canonical RayGen → Miss → Callable → HitGroup order). The
+/// remapper stores the running total of group counts per library, so a lookup
+/// is just that library's base plus the local `shader_id`.
+#[derive(Default, Clone)]
+pub struct SbtRemapper(Vec<u16>);
+impl SbtRemapper {
+    pub fn group_index(&self, library_id: u16, shader_id: u16) -> u16 {
+        if library_id == 0 {
+            return shader_id;
+        };
+        self.0[library_id as usize - 1] + shader_id
     }
-    fn end(&mut self, buffer: &mut Vec<u8>, alignment: u32) {
-        if let Self::Recording { base_offset, index } = self {
-            buffer.resize(buffer.len().next_multiple_of(alignment as usize), 0);
-            *self = Self::Recorded {
-                base_offset: *base_offset,
-                index: *index,
-            };
-        }
-    }
-    fn index(&self) -> u32 {
-        match self {
-            Self::NotSet => 0,
-            Self::Recording { index, .. } | Self::Recorded { index, .. } => *index,
-        }
-    }
-    fn base_offset(&self) -> u64 {
-        match self {
-            Self::NotSet => 0,
-            Self::Recording { base_offset, .. } | Self::Recorded { base_offset, .. } => {
-                *base_offset
-            }
-        }
+    pub fn push_library(&mut self, num_groups: u16) {
+        let existing = self.0.last().cloned().unwrap_or(0);
+        self.0.push(existing + num_groups);
     }
 }
 
 impl ShaderBindingTable {
-    /// Creates a new shader binding table for the given pipeline and layout.
-    pub fn new(pipeline: &Pipeline, layout: SbtLayout) -> Self {
-        Self {
-            handles: SbtHandles::new(
-                pipeline,
-                layout.raygen.count,
-                layout.miss.count,
-                layout.callable.count,
-                layout.hitgroup.count,
-            )
-            .unwrap(),
-            hitgroup_index: ShaderBindingTableState::NotSet,
-            callable_index: ShaderBindingTableState::NotSet,
-            miss_index: ShaderBindingTableState::NotSet,
-            raygen_index: ShaderBindingTableState::NotSet,
-            buffer: Vec::new(),
-            layout,
-            hitgroup_id_mapper: u64::MAX,
-        }
-    }
     pub fn new_with_mapper(
         pipeline: &Pipeline,
         layout: SbtLayout,
-        mapper: u64,
+        mapper: &SbtRemapper,
         reusing_old_sbt: Option<Self>,
     ) -> Self {
         let handles = SbtHandles::new(
             pipeline,
-            layout.raygen.count,
-            layout.miss.count,
-            layout.callable.count,
-            layout.hitgroup.count,
+            layout.raygen.count as u16
+                + layout.miss.count as u16
+                + layout.callable.count as u16
+                + layout.hitgroup.count as u16,
         )
         .unwrap();
+
+        // Reuse the previous SBT's heap allocations when one is provided, but
+        // clear their contents so recording starts from an empty buffer.
+        let (mut raygen, mut miss, mut hitgroup, mut callable, mut sbt_remapper) = reusing_old_sbt
+            .map(|old| {
+                (
+                    old.raygen,
+                    old.miss,
+                    old.hitgroup,
+                    old.callable,
+                    old.sbt_remapper,
+                )
+            })
+            .unwrap_or_default();
+        raygen.clear();
+        miss.clear();
+        hitgroup.clear();
+        callable.clear();
+        sbt_remapper.0.clear();
+        sbt_remapper.0.extend_from_slice(&mapper.0);
+
         Self {
             handles,
-            hitgroup_index: ShaderBindingTableState::NotSet,
-            callable_index: ShaderBindingTableState::NotSet,
-            miss_index: ShaderBindingTableState::NotSet,
-            raygen_index: ShaderBindingTableState::NotSet,
-            buffer: reusing_old_sbt
-                .map(|mut x| {
-                    x.buffer.clear();
-                    x.buffer
-                })
-                .unwrap_or_default(),
+            raygen,
+            miss,
+            hitgroup,
+            callable,
             layout,
-            hitgroup_id_mapper: mapper,
+            sbt_remapper,
+            raygen_count: 0,
+            miss_count: 0,
+            callable_count: 0,
+            hitgroup_count: 0,
         }
     }
     fn push_impl(
         &mut self,
-        hitgroup_id: u32,
+        buffer: &mut Vec<u8>,
+        group_id: u16,
         write_inline_data: impl FnOnce(&mut [u8]),
-        handle: fn(&SbtHandles, u32) -> &[u8],
         entry_layout: Layout,
     ) {
         let reserved_size = entry_layout.pad_to_align().size();
-        let old_len = self.buffer.len();
-        self.buffer.resize(old_len + reserved_size, 0);
+        let old_len = buffer.len();
+        buffer.resize(old_len + reserved_size, 0);
 
         unsafe {
             // Copy handle
             std::ptr::copy_nonoverlapping(
-                (handle)(&self.handles, hitgroup_id).as_ptr(),
-                self.buffer.as_mut_ptr().add(old_len),
+                self.handles.handle(group_id).as_ptr(),
+                buffer.as_mut_ptr().add(old_len),
                 self.layout.handle_size as usize,
             );
             if (self.layout.handle_size as usize) < entry_layout.size() {
                 // Copy inline data
                 let slice = &mut std::slice::from_raw_parts_mut(
-                    self.buffer.as_mut_ptr().add(old_len),
+                    buffer.as_mut_ptr().add(old_len),
                     entry_layout.size(),
                 )[self.layout.handle_size as usize..entry_layout.size()];
                 write_inline_data(slice);
@@ -662,26 +552,23 @@ impl ShaderBindingTable {
     /// Returns the index of this entry within the hit group section.
     pub fn push_hitgroup(
         &mut self,
-        hitgroup_id: u32,
+        library_id: u16,
+        shader_id: u16,
         write_inline_data: impl FnOnce(&mut [u8]),
     ) -> u32 {
-        // Close any other shader types
-        self.raygen_index
-            .end(&mut self.buffer, self.layout.base_aligment);
-        self.miss_index
-            .end(&mut self.buffer, self.layout.base_aligment);
-        self.callable_index
-            .end(&mut self.buffer, self.layout.base_aligment);
-        let hitgroup_id = (self.hitgroup_id_mapper & ((1 << hitgroup_id) - 1)).count_ones();
+        let group_id = self.sbt_remapper.group_index(library_id, shader_id);
 
-        let base_offset = self.buffer.len() as u64;
+        let mut buffer = std::mem::take(&mut self.hitgroup);
         self.push_impl(
-            hitgroup_id,
+            &mut buffer,
+            group_id,
             write_inline_data,
-            SbtHandles::hitgroup,
             self.layout.hitgroup_layout(),
         );
-        self.hitgroup_index.increment(base_offset)
+        self.hitgroup = buffer;
+        let index = self.hitgroup_count;
+        self.hitgroup_count += 1;
+        index
     }
 
     /// Adds a ray generation shader entry to the SBT.
@@ -689,47 +576,47 @@ impl ShaderBindingTable {
     /// Returns the index of this entry within the raygen section.
     pub fn push_raygen(
         &mut self,
-        shader_id: u32,
+        library_id: u16,
+        shader_id: u16,
         write_inline_data: impl FnOnce(&mut [u8]),
-    ) -> u32 {
-        // Close any other shader types
-        self.hitgroup_index
-            .end(&mut self.buffer, self.layout.base_aligment);
-        self.miss_index
-            .end(&mut self.buffer, self.layout.base_aligment);
-        self.callable_index
-            .end(&mut self.buffer, self.layout.base_aligment);
+    ) -> u16 {
+        let group_id = self.sbt_remapper.group_index(library_id, shader_id);
 
-        let base_offset = self.buffer.len() as u64;
+        let mut buffer = std::mem::take(&mut self.raygen);
         self.push_impl(
-            shader_id,
+            &mut buffer,
+            group_id,
             write_inline_data,
-            SbtHandles::rgen,
             self.layout.raygen_layout(),
         );
-        self.raygen_index.increment(base_offset)
+        self.raygen = buffer;
+        let index = self.raygen_count;
+        self.raygen_count += 1;
+        index
     }
 
     /// Adds a miss shader entry to the SBT.
     ///
     /// Returns the index of this entry within the miss section.
-    pub fn push_miss(&mut self, shader_id: u32, write_inline_data: impl FnOnce(&mut [u8])) -> u32 {
-        // Close any other shader types
-        self.raygen_index
-            .end(&mut self.buffer, self.layout.base_aligment);
-        self.hitgroup_index
-            .end(&mut self.buffer, self.layout.base_aligment);
-        self.callable_index
-            .end(&mut self.buffer, self.layout.base_aligment);
+    pub fn push_miss(
+        &mut self,
+        library_id: u16,
+        shader_id: u16,
+        write_inline_data: impl FnOnce(&mut [u8]),
+    ) -> u16 {
+        let group_id = self.sbt_remapper.group_index(library_id, shader_id);
 
-        let base_offset = self.buffer.len() as u64;
+        let mut buffer = std::mem::take(&mut self.miss);
         self.push_impl(
-            shader_id,
+            &mut buffer,
+            group_id,
             write_inline_data,
-            SbtHandles::rmiss,
             self.layout.miss_layout(),
         );
-        self.miss_index.increment(base_offset)
+        self.miss = buffer;
+        let index = self.miss_count;
+        self.miss_count += 1;
+        index
     }
 
     /// Adds a callable shader entry to the SBT.
@@ -737,35 +624,74 @@ impl ShaderBindingTable {
     /// Returns the index of this entry within the callable section.
     pub fn push_callable(
         &mut self,
-        shader_id: u32,
+        library_id: u16,
+        shader_id: u16,
         write_inline_data: impl FnOnce(&mut [u8]),
-    ) -> u32 {
-        // Close any other shader types
-        self.raygen_index
-            .end(&mut self.buffer, self.layout.base_aligment);
-        self.miss_index
-            .end(&mut self.buffer, self.layout.base_aligment);
-        self.hitgroup_index
-            .end(&mut self.buffer, self.layout.base_aligment);
+    ) -> u16 {
+        let group_id = self.sbt_remapper.group_index(library_id, shader_id);
 
-        let base_offset = self.buffer.len() as u64;
+        let mut buffer = std::mem::take(&mut self.callable);
         self.push_impl(
-            shader_id,
+            &mut buffer,
+            group_id,
             write_inline_data,
-            SbtHandles::callable,
             self.layout.callable_layout(),
         );
-        self.callable_index.increment(base_offset)
+        self.callable = buffer;
+        let index = self.callable_count;
+        self.callable_count += 1;
+        index
     }
 
     /// Returns the raw SBT data to be uploaded to a GPU buffer.
-    pub fn buffer(&self) -> &[u8] {
-        &self.buffer
+    pub fn write_buffer(&self, slice: &mut [u8]) {
+        slice[0..self.raygen.len()].copy_from_slice(&self.raygen);
+        let slice = &mut slice[self
+            .raygen
+            .len()
+            .next_multiple_of(self.layout.base_aligment as usize)..];
+
+        slice[0..self.miss.len()].copy_from_slice(&self.miss);
+        let slice = &mut slice[self
+            .miss
+            .len()
+            .next_multiple_of(self.layout.base_aligment as usize)..];
+
+        slice[0..self.hitgroup.len()].copy_from_slice(&self.hitgroup);
+        let slice = &mut slice[self
+            .hitgroup
+            .len()
+            .next_multiple_of(self.layout.base_aligment as usize)..];
+
+        slice[0..self.callable.len()].copy_from_slice(&self.callable);
     }
 
     /// Returns the memory layout requirements for the SBT buffer.
     pub fn layout(&self) -> Layout {
-        Layout::from_size_align(self.buffer().len(), self.layout.base_aligment as usize).unwrap()
+        let mut layout =
+            Layout::from_size_align(self.raygen.len(), self.layout.base_aligment as usize).unwrap();
+        layout = layout
+            .extend(
+                Layout::from_size_align(self.miss.len(), self.layout.base_aligment as usize)
+                    .unwrap(),
+            )
+            .unwrap()
+            .0;
+        layout = layout
+            .extend(
+                Layout::from_size_align(self.hitgroup.len(), self.layout.base_aligment as usize)
+                    .unwrap(),
+            )
+            .unwrap()
+            .0;
+        layout = layout
+            .extend(
+                Layout::from_size_align(self.callable.len(), self.layout.base_aligment as usize)
+                    .unwrap(),
+            )
+            .unwrap()
+            .0;
+        layout
     }
 }
 
@@ -805,37 +731,46 @@ impl<'a> CommandEncoder<'a> {
             .callable_layout()
             .pad_to_align()
             .size() as u32;
+
+        // Each stage's section is laid out back-to-back in the buffer, each
+        // padded up to the base alignment (matching `write_buffer` and
+        // `ShaderBindingTable::layout`).
+        let base = buffer.device_address();
+        let align = shader_binding_table.layout.base_aligment as usize;
+        let raygen_offset = 0u64;
+        let miss_offset =
+            raygen_offset + shader_binding_table.raygen.len().next_multiple_of(align) as u64;
+        let hitgroup_offset =
+            miss_offset + shader_binding_table.miss.len().next_multiple_of(align) as u64;
+        let callable_offset =
+            hitgroup_offset + shader_binding_table.hitgroup.len().next_multiple_of(align) as u64;
+
         unsafe {
             self.device()
                 .extension::<ash::khr::ray_tracing_pipeline::Meta>()
                 .cmd_trace_rays(
                     self.buffer().buffer,
                     &vk::StridedDeviceAddressRegionKHR {
-                        device_address: buffer.device_address()
-                            + shader_binding_table.raygen_index.base_offset()
+                        device_address: base
+                            + raygen_offset
                             + (raygen_stride * raygen_shader) as u64,
                         stride: raygen_stride as u64,
                         size: raygen_stride as u64,
                     },
                     &vk::StridedDeviceAddressRegionKHR {
-                        device_address: buffer.device_address()
-                            + shader_binding_table.miss_index.base_offset(),
+                        device_address: base + miss_offset,
                         stride: miss_stride as u64,
-                        size: (shader_binding_table.miss_index.index() * miss_stride) as u64,
+                        size: shader_binding_table.miss.len() as u64,
                     },
                     &vk::StridedDeviceAddressRegionKHR {
-                        device_address: buffer.device_address()
-                            + shader_binding_table.hitgroup_index.base_offset(),
+                        device_address: base + hitgroup_offset,
                         stride: hitgroup_stride as u64,
-                        size: (shader_binding_table.hitgroup_index.index() * hitgroup_stride)
-                            as u64,
+                        size: shader_binding_table.hitgroup.len() as u64,
                     },
                     &vk::StridedDeviceAddressRegionKHR {
-                        device_address: buffer.device_address()
-                            + shader_binding_table.callable_index.base_offset(),
+                        device_address: base + callable_offset,
                         stride: callable_stride as u64,
-                        size: (shader_binding_table.callable_index.index() * callable_stride)
-                            as u64,
+                        size: shader_binding_table.callable.len() as u64,
                     },
                     size.x,
                     size.y,
