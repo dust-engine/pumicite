@@ -795,6 +795,135 @@ impl Format {
         };
         Some(format)
     }
+    /// Convert a format into the `UINT` format with the same bit layout.
+    ///
+    /// This reinterprets the raw integer contents of each texel without any
+    /// conversion applied — for example, `R8G8B8A8_UNORM` becomes `R8G8B8A8_UINT`.
+    /// A format that is already `UINT` is returned unchanged.
+    ///
+    /// Returns `None` if the format has no `UINT` counterpart with an identical bit
+    /// layout (for example sRGB-only block-compressed, planar, or packed-float formats).
+    pub fn to_uint_format(&self) -> Option<Format> {
+        let format = match self {
+            // 8-bit
+            Format::R8_UNORM
+            | Format::R8_SNORM
+            | Format::R8_USCALED
+            | Format::R8_SSCALED
+            | Format::R8_UINT
+            | Format::R8_SINT
+            | Format::R8_SRGB => Format::R8_UINT,
+            Format::R8G8_UNORM
+            | Format::R8G8_SNORM
+            | Format::R8G8_USCALED
+            | Format::R8G8_SSCALED
+            | Format::R8G8_UINT
+            | Format::R8G8_SINT
+            | Format::R8G8_SRGB => Format::R8G8_UINT,
+            Format::R8G8B8_UNORM
+            | Format::R8G8B8_SNORM
+            | Format::R8G8B8_USCALED
+            | Format::R8G8B8_SSCALED
+            | Format::R8G8B8_UINT
+            | Format::R8G8B8_SINT
+            | Format::R8G8B8_SRGB => Format::R8G8B8_UINT,
+            Format::B8G8R8_UNORM
+            | Format::B8G8R8_SNORM
+            | Format::B8G8R8_USCALED
+            | Format::B8G8R8_SSCALED
+            | Format::B8G8R8_UINT
+            | Format::B8G8R8_SINT
+            | Format::B8G8R8_SRGB => Format::B8G8R8_UINT,
+            Format::R8G8B8A8_UNORM
+            | Format::R8G8B8A8_SNORM
+            | Format::R8G8B8A8_USCALED
+            | Format::R8G8B8A8_SSCALED
+            | Format::R8G8B8A8_UINT
+            | Format::R8G8B8A8_SINT
+            | Format::R8G8B8A8_SRGB => Format::R8G8B8A8_UINT,
+            Format::B8G8R8A8_UNORM
+            | Format::B8G8R8A8_SNORM
+            | Format::B8G8R8A8_USCALED
+            | Format::B8G8R8A8_SSCALED
+            | Format::B8G8R8A8_UINT
+            | Format::B8G8R8A8_SINT
+            | Format::B8G8R8A8_SRGB => Format::B8G8R8A8_UINT,
+            Format::A8B8G8R8_UNORM_PACK32
+            | Format::A8B8G8R8_SNORM_PACK32
+            | Format::A8B8G8R8_USCALED_PACK32
+            | Format::A8B8G8R8_SSCALED_PACK32
+            | Format::A8B8G8R8_UINT_PACK32
+            | Format::A8B8G8R8_SINT_PACK32
+            | Format::A8B8G8R8_SRGB_PACK32 => Format::A8B8G8R8_UINT_PACK32,
+            // 10-bit packed
+            Format::A2R10G10B10_UNORM_PACK32
+            | Format::A2R10G10B10_SNORM_PACK32
+            | Format::A2R10G10B10_USCALED_PACK32
+            | Format::A2R10G10B10_SSCALED_PACK32
+            | Format::A2R10G10B10_UINT_PACK32
+            | Format::A2R10G10B10_SINT_PACK32 => Format::A2R10G10B10_UINT_PACK32,
+            Format::A2B10G10R10_UNORM_PACK32
+            | Format::A2B10G10R10_SNORM_PACK32
+            | Format::A2B10G10R10_USCALED_PACK32
+            | Format::A2B10G10R10_SSCALED_PACK32
+            | Format::A2B10G10R10_UINT_PACK32
+            | Format::A2B10G10R10_SINT_PACK32 => Format::A2B10G10R10_UINT_PACK32,
+            // 16-bit
+            Format::R16_UNORM
+            | Format::R16_SNORM
+            | Format::R16_USCALED
+            | Format::R16_SSCALED
+            | Format::R16_UINT
+            | Format::R16_SINT
+            | Format::R16_SFLOAT => Format::R16_UINT,
+            Format::R16G16_UNORM
+            | Format::R16G16_SNORM
+            | Format::R16G16_USCALED
+            | Format::R16G16_SSCALED
+            | Format::R16G16_UINT
+            | Format::R16G16_SINT
+            | Format::R16G16_SFLOAT => Format::R16G16_UINT,
+            Format::R16G16B16_UNORM
+            | Format::R16G16B16_SNORM
+            | Format::R16G16B16_USCALED
+            | Format::R16G16B16_SSCALED
+            | Format::R16G16B16_UINT
+            | Format::R16G16B16_SINT
+            | Format::R16G16B16_SFLOAT => Format::R16G16B16_UINT,
+            Format::R16G16B16A16_UNORM
+            | Format::R16G16B16A16_SNORM
+            | Format::R16G16B16A16_USCALED
+            | Format::R16G16B16A16_SSCALED
+            | Format::R16G16B16A16_UINT
+            | Format::R16G16B16A16_SINT
+            | Format::R16G16B16A16_SFLOAT => Format::R16G16B16A16_UINT,
+            // 32-bit
+            Format::R32_UINT | Format::R32_SINT | Format::R32_SFLOAT => Format::R32_UINT,
+            Format::R32G32_UINT | Format::R32G32_SINT | Format::R32G32_SFLOAT => {
+                Format::R32G32_UINT
+            }
+            Format::R32G32B32_UINT | Format::R32G32B32_SINT | Format::R32G32B32_SFLOAT => {
+                Format::R32G32B32_UINT
+            }
+            Format::R32G32B32A32_UINT | Format::R32G32B32A32_SINT | Format::R32G32B32A32_SFLOAT => {
+                Format::R32G32B32A32_UINT
+            }
+            // 64-bit
+            Format::R64_UINT | Format::R64_SINT | Format::R64_SFLOAT => Format::R64_UINT,
+            Format::R64G64_UINT | Format::R64G64_SINT | Format::R64G64_SFLOAT => {
+                Format::R64G64_UINT
+            }
+            Format::R64G64B64_UINT | Format::R64G64B64_SINT | Format::R64G64B64_SFLOAT => {
+                Format::R64G64B64_UINT
+            }
+            Format::R64G64B64A64_UINT | Format::R64G64B64A64_SINT | Format::R64G64B64A64_SFLOAT => {
+                Format::R64G64B64A64_UINT
+            }
+            // No UINT counterpart with an identical bit layout.
+            _ => return None,
+        };
+        Some(format)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

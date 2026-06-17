@@ -37,7 +37,7 @@ impl TextureAsset {
     pub fn new(image: Image, heap: Option<ResourceHeap>) -> VkResult<Self> {
         let image = image.create_full_view()?;
         let handle = if let Some(heap) = heap.as_ref() {
-            heap.add_image(image.image(), pumicite::bindless::ImageAccessMode::Sampled)?
+            heap.add_image(&image, pumicite::bindless::ImageAccessMode::Sampled)?
         } else {
             u32::MAX
         };

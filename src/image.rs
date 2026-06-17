@@ -2,6 +2,8 @@
 //!
 //! This module provides safe wrappers for Vulkan images and utilities for common image operations.
 
+use std::ops::Deref;
+
 use ash::{VkResult, vk, vk::TaggedStructure};
 use glam::UVec3;
 
@@ -249,35 +251,45 @@ impl AsVkHandle for Image {
 /// The view is automatically destroyed when the `FullImageView` is dropped.
 pub struct FullImageView<T: ImageLike + HasDevice> {
     image: T,
-    view: vk::ImageView,
-    ty: vk::ImageViewType,
+    view: ImageViewItem,
 }
 impl<T: HasDevice + ImageLike> HasDevice for FullImageView<T> {
     fn device(&self) -> &crate::Device {
         self.image.device()
     }
 }
+impl<T: ImageLike + HasDevice> Deref for FullImageView<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.image
+    }
+}
 
 impl<T: ImageLike + HasDevice> Drop for FullImageView<T> {
     fn drop(&mut self) {
         unsafe {
-            self.image.device().destroy_image_view(self.view, None);
+            self.image.device().destroy_image_view(self.view.view, None);
         }
     }
 }
 impl<T: ImageLike + HasDevice> FullImageView<T> {
-    /// Returns a reference to the underlying image.
-    pub fn image(&self) -> &T {
-        &self.image
+    /// Returns the full image view covering all mip levels and array layers.
+    pub fn full_view(&self) -> &ImageViewItem {
+        &self.view
     }
 }
 impl<T: ImageLike + HasDevice> AsVkHandle for FullImageView<T> {
-    type Handle = vk::ImageView;
+    type Handle = vk::Image;
     fn vk_handle(&self) -> Self::Handle {
-        self.view
+        self.image.vk_handle()
     }
 }
-impl<T: ImageLike + HasDevice> ImageViewLike for FullImageView<T> {
+impl<T: ImageLike + HasDevice> ImageLike for FullImageView<T> {
+    fn aspects(&self) -> vk::ImageAspectFlags {
+        self.image.aspects()
+    }
+
     fn array_layer_count(&self) -> u32 {
         self.image.array_layer_count()
     }
@@ -286,8 +298,16 @@ impl<T: ImageLike + HasDevice> ImageViewLike for FullImageView<T> {
         self.image.mip_level_count()
     }
 
-    fn ty(&self) -> vk::ImageViewType {
-        self.ty
+    fn extent(&self) -> UVec3 {
+        self.image.extent()
+    }
+
+    fn format(&self) -> vk::Format {
+        self.image.format()
+    }
+
+    fn ty(&self) -> vk::ImageType {
+        self.image.ty()
     }
 }
 
@@ -303,8 +323,8 @@ impl<T: ImageLike + HasDevice> ImageViewLike for FullImageView<T> {
 /// [`linear_view`](Self::linear_view).
 pub struct SrgbImageView<T: HasDevice + ImageLike> {
     image: T,
-    linear_view: SrgbImageViewItem,
-    srgb_view: SrgbImageViewItem,
+    linear_view: ImageViewItem,
+    srgb_view: ImageViewItem,
 }
 
 impl<T: HasDevice + ImageLike> HasDevice for SrgbImageView<T> {
@@ -313,24 +333,59 @@ impl<T: HasDevice + ImageLike> HasDevice for SrgbImageView<T> {
     }
 }
 
+impl<T: ImageLike + HasDevice> Deref for SrgbImageView<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.image
+    }
+}
 impl<T: HasDevice + ImageLike> SrgbImageView<T> {
     /// Returns a borrowing handle to the sRGB-format view of the image.
     ///
     /// Sampling through this view applies the sRGB transfer function, converting
     /// stored sRGB values to linear values on read.
-    pub fn srgb_view(&self) -> &SrgbImageViewItem {
+    pub fn srgb_view(&self) -> &ImageViewItem {
         &self.srgb_view
     }
     /// Returns a borrowing handle to the linear-format view of the image.
     ///
     /// Sampling through this view returns raw texel values without any
     /// transfer function applied.
-    pub fn linear_view(&self) -> &SrgbImageViewItem {
+    pub fn linear_view(&self) -> &ImageViewItem {
         &self.linear_view
     }
-    /// Returns a reference to the underlying image.
-    pub fn image(&self) -> &T {
-        &self.image
+}
+impl<T: ImageLike + HasDevice> AsVkHandle for SrgbImageView<T> {
+    type Handle = vk::Image;
+
+    fn vk_handle(&self) -> Self::Handle {
+        self.image.vk_handle()
+    }
+}
+impl<T: ImageLike + HasDevice> ImageLike for SrgbImageView<T> {
+    fn aspects(&self) -> vk::ImageAspectFlags {
+        self.image.aspects()
+    }
+
+    fn array_layer_count(&self) -> u32 {
+        self.image.array_layer_count()
+    }
+
+    fn mip_level_count(&self) -> u32 {
+        self.image.mip_level_count()
+    }
+
+    fn extent(&self) -> UVec3 {
+        self.image.extent()
+    }
+
+    fn format(&self) -> vk::Format {
+        self.image.format()
+    }
+
+    fn ty(&self) -> vk::ImageType {
+        self.image.ty()
     }
 }
 impl<T: ImageLike + HasDevice> Drop for SrgbImageView<T> {
@@ -345,23 +400,101 @@ impl<T: ImageLike + HasDevice> Drop for SrgbImageView<T> {
         }
     }
 }
-/// A borrowed reference to one of the two views in an [`SrgbImageView`].
+
+/// An image bundled with a view that reinterprets its texels as unsigned integers.
 ///
-/// Implements [`ImageViewLike`] and [`AsVkHandle`] so it can be used directly
-/// with descriptor writes and rendering commands.
-pub struct SrgbImageViewItem {
+/// Wraps an image along with a `UINT`-format view covering all mip levels and array
+/// layers — for example, an `R8G8B8A8_UNORM` image is viewed as `R8G8B8A8_UINT`. This
+/// lets the raw integer contents of each texel be read or written in a shader (e.g. for
+/// bitwise or atomic access) without any format conversion applied.
+///
+/// The image must have been created with [`vk::ImageCreateFlags::MUTABLE_FORMAT`] and a
+/// compatible format list ([`vk::ImageFormatListCreateInfo`]) that includes the `UINT`
+/// variant.
+///
+/// The view is automatically destroyed when the `UintImageView` is dropped.
+/// Access the view via [`uint_view`](Self::uint_view).
+pub struct UintImageView<T: ImageLike + HasDevice> {
+    image: T,
+    uint_view: ImageViewItem,
+}
+impl<T: HasDevice + ImageLike> HasDevice for UintImageView<T> {
+    fn device(&self) -> &crate::Device {
+        self.image.device()
+    }
+}
+impl<T: ImageLike + HasDevice> Deref for UintImageView<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.image
+    }
+}
+impl<T: ImageLike + HasDevice> UintImageView<T> {
+    /// Returns the `UINT`-format view covering all mip levels and array layers.
+    pub fn uint_view(&self) -> &ImageViewItem {
+        &self.uint_view
+    }
+}
+impl<T: ImageLike + HasDevice> AsVkHandle for UintImageView<T> {
+    type Handle = vk::Image;
+    fn vk_handle(&self) -> Self::Handle {
+        self.image.vk_handle()
+    }
+}
+impl<T: ImageLike + HasDevice> ImageLike for UintImageView<T> {
+    fn aspects(&self) -> vk::ImageAspectFlags {
+        self.image.aspects()
+    }
+
+    fn array_layer_count(&self) -> u32 {
+        self.image.array_layer_count()
+    }
+
+    fn mip_level_count(&self) -> u32 {
+        self.image.mip_level_count()
+    }
+
+    fn extent(&self) -> UVec3 {
+        self.image.extent()
+    }
+
+    fn format(&self) -> vk::Format {
+        self.image.format()
+    }
+
+    fn ty(&self) -> vk::ImageType {
+        self.image.ty()
+    }
+}
+impl<T: ImageLike + HasDevice> Drop for UintImageView<T> {
+    fn drop(&mut self) {
+        unsafe {
+            self.image
+                .device()
+                .destroy_image_view(self.uint_view.view, None);
+        }
+    }
+}
+
+/// A borrowed handle to a single image view, paired with the metadata needed to
+/// use it in descriptor writes and rendering commands.
+///
+/// Returned by the view accessors on [`FullImageView`], [`SrgbImageView`], and
+/// [`UintImageView`]. Implements [`ImageViewLike`] and [`AsVkHandle`].
+pub struct ImageViewItem {
     ty: vk::ImageViewType,
     array_layer_count: u32,
     mip_level_count: u32,
     view: vk::ImageView,
 }
-impl AsVkHandle for SrgbImageViewItem {
+impl AsVkHandle for ImageViewItem {
     type Handle = vk::ImageView;
     fn vk_handle(&self) -> Self::Handle {
         self.view
     }
 }
-impl ImageViewLike for SrgbImageViewItem {
+impl ImageViewLike for ImageViewItem {
     fn ty(&self) -> vk::ImageViewType {
         self.ty
     }
@@ -415,9 +548,13 @@ pub trait ImageExt: ImageLike {
                 None,
             )?;
             Ok(FullImageView {
+                view: ImageViewItem {
+                    ty: view_type,
+                    array_layer_count: self.array_layer_count(),
+                    mip_level_count: self.mip_level_count(),
+                    view,
+                },
                 image: self,
-                view,
-                ty: view_type,
             })
         }
     }
@@ -446,7 +583,7 @@ pub trait ImageExt: ImageLike {
             vk::ImageType::TYPE_1D => vk::ImageViewType::TYPE_1D,
             vk::ImageType::TYPE_2D => vk::ImageViewType::TYPE_2D,
             vk::ImageType::TYPE_3D => vk::ImageViewType::TYPE_3D,
-            _ => unreachable!(),
+            _ => panic!("Unsupported view type: {:?}", self.ty()),
         };
         unsafe {
             let srgb_format = pumicite_types::format::Format::from(self.format())
@@ -490,17 +627,83 @@ pub trait ImageExt: ImageLike {
                 None,
             )?;
             Ok(SrgbImageView {
-                linear_view: SrgbImageViewItem {
+                linear_view: ImageViewItem {
                     ty: view_type,
                     array_layer_count: self.array_layer_count(),
                     mip_level_count: self.mip_level_count(),
                     view: linear_view,
                 },
-                srgb_view: SrgbImageViewItem {
+                srgb_view: ImageViewItem {
                     ty: view_type,
                     array_layer_count: self.array_layer_count(),
                     mip_level_count: self.mip_level_count(),
                     view: srgb_view,
+                },
+                image: self,
+            })
+        }
+    }
+
+    /// Creates a [`UintImageView`] that reinterprets the image's texels using its
+    /// `UINT`-format counterpart (e.g. an `R8G8B8A8_UNORM` image is viewed as
+    /// `R8G8B8A8_UINT`).
+    ///
+    /// The image must have been created with [`vk::ImageCreateFlags::MUTABLE_FORMAT`] and
+    /// a format list ([`vk::ImageFormatListCreateInfo`]) that includes the `UINT` variant.
+    ///
+    /// # Parameters
+    /// - `uint_usage` - Usage flags for the `UINT` view
+    ///
+    /// # Errors
+    /// Returns [`vk::Result::ERROR_FORMAT_NOT_SUPPORTED`] if the image's format has no
+    /// `UINT` counterpart with an identical bit layout.
+    fn create_uint_view(self, uint_usage: vk::ImageUsageFlags) -> VkResult<UintImageView<Self>>
+    where
+        Self: HasDevice + Sized,
+    {
+        let view_type = match self.ty() {
+            vk::ImageType::TYPE_1D if self.array_layer_count() > 1 => {
+                vk::ImageViewType::TYPE_1D_ARRAY
+            }
+            vk::ImageType::TYPE_1D => vk::ImageViewType::TYPE_1D,
+            vk::ImageType::TYPE_2D if self.array_layer_count() > 1 => {
+                vk::ImageViewType::TYPE_2D_ARRAY
+            }
+            vk::ImageType::TYPE_2D => vk::ImageViewType::TYPE_2D,
+            vk::ImageType::TYPE_3D => vk::ImageViewType::TYPE_3D,
+            _ => unreachable!(),
+        };
+        unsafe {
+            let uint_format = pumicite_types::format::Format::from(self.format())
+                .to_uint_format()
+                .ok_or(vk::Result::ERROR_FORMAT_NOT_SUPPORTED)?;
+            let view = self.device().create_image_view(
+                &vk::ImageViewCreateInfo {
+                    image: self.vk_handle(),
+                    view_type,
+                    format: uint_format.into(),
+                    components: vk::ComponentMapping::default(),
+                    subresource_range: vk::ImageSubresourceRange {
+                        aspect_mask: self.aspects(),
+                        base_mip_level: 0,
+                        base_array_layer: 0,
+                        level_count: self.mip_level_count(),
+                        layer_count: self.array_layer_count(),
+                    },
+                    ..Default::default()
+                }
+                .push(&mut vk::ImageViewUsageCreateInfo {
+                    usage: uint_usage,
+                    ..Default::default()
+                }),
+                None,
+            )?;
+            Ok(UintImageView {
+                uint_view: ImageViewItem {
+                    ty: view_type,
+                    array_layer_count: self.array_layer_count(),
+                    mip_level_count: self.mip_level_count(),
+                    view,
                 },
                 image: self,
             })

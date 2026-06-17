@@ -12,7 +12,7 @@ use bevy_window::PrimaryWindow;
 use glam::Vec2;
 use pumicite::buffer::BufferLike;
 use pumicite::device::DeviceBuilder;
-use pumicite::image::{FullImageView, ImageExt, ImageLike};
+use pumicite::image::{FullImageView, ImageExt};
 use pumicite::tracking::{Access, ResourceState};
 use pumicite::{
     Allocator,
@@ -381,7 +381,7 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
 
             // Transition images to TRANSFER_DST_OPTIMAL layout
             encoder.use_image_resource(
-                image.image(),
+                image,
                 &mut texture_state,
                 Access::COPY_WRITE,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -392,7 +392,7 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
             encoder.emit_barriers();
             encoder.copy_buffer_to_image_with_layout(
                 host_buffer,
-                image.image(),
+                image,
                 &[vk::BufferImageCopy {
                     image_subresource: vk::ImageSubresourceLayers {
                         aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -420,7 +420,7 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
 
             // Transition the image back into READ_ONLY_OPTIMAL layout
             encoder.use_image_resource(
-                image.image(),
+                image,
                 &mut texture_state,
                 Access::COPY_WRITE,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
@@ -543,7 +543,7 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
                     ..Default::default()
                 }
                 .image_info(&[vk::DescriptorImageInfo {
-                    image_view: texture.vk_handle(),
+                    image_view: texture.full_view().vk_handle(),
                     image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                     sampler: sampler.vk_handle(),
                 }])],

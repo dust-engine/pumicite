@@ -141,7 +141,7 @@ fn gbuffer_resize(mut query: Query<(&SwapchainImage, &mut GBuffer)>, allocator: 
         let g_buffer_extent = g_buffer
             .textures
             .as_ref()
-            .map(|x| x.depth.image().extent())
+            .map(|x| x.depth.extent())
             .unwrap_or_default();
         if g_buffer_extent != swapchain_image.extent() {
             g_buffer.textures = Some(GPUMutex::new(
@@ -211,7 +211,7 @@ fn start_main_render_pass(
             false,
         );
         encoder.use_image_resource(
-            current_gbuffer.depth.image(),
+            &current_gbuffer.depth,
             &mut gbuffer.state,
             Access::EARLY_FRAGMENT_TEST_WRITE,
             vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
@@ -234,7 +234,7 @@ fn start_main_render_pass(
                     .clear(0.0)
                     .image_layout(vk::ImageLayout::ATTACHMENT_OPTIMAL)
                     .store(true)
-                    .view(&current_gbuffer.depth);
+                    .view(current_gbuffer.depth.full_view());
             })
             .render_area(IVec2::ZERO, current_swapchain_image.extent().xy())
             .begin();

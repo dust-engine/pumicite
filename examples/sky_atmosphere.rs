@@ -669,7 +669,7 @@ fn compute_luts(
             );
 
             encoder.use_image_resource(
-                transmittance_view.image(),
+                transmittance_view,
                 &mut luts.transmittance.state,
                 Access::COMPUTE_WRITE,
                 vk::ImageLayout::GENERAL,
@@ -683,7 +683,7 @@ fn compute_luts(
             encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
 
             let image_info = vk::DescriptorImageInfo {
-                image_view: transmittance_view.vk_handle(),
+                image_view: transmittance_view.full_view().vk_handle(),
                 image_layout: vk::ImageLayout::GENERAL,
                 sampler: vk::Sampler::null(),
             };
@@ -729,7 +729,7 @@ fn compute_luts(
             );
 
             encoder.use_image_resource(
-                transmittance_view.image(),
+                transmittance_view,
                 &mut luts.transmittance.state,
                 Access::COMPUTE_READ,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
@@ -738,7 +738,7 @@ fn compute_luts(
                 false,
             );
             encoder.use_image_resource(
-                multi_scattering_view.image(),
+                multi_scattering_view,
                 &mut luts.multi_scattering.state,
                 Access::COMPUTE_WRITE,
                 vk::ImageLayout::GENERAL,
@@ -752,7 +752,7 @@ fn compute_luts(
             encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
 
             let transmittance_image_info = vk::DescriptorImageInfo {
-                image_view: transmittance_view.vk_handle(),
+                image_view: transmittance_view.full_view().vk_handle(),
                 image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 sampler: vk::Sampler::null(),
             };
@@ -763,7 +763,7 @@ fn compute_luts(
             };
 
             let multi_scattering_image_info = vk::DescriptorImageInfo {
-                image_view: multi_scattering_view.vk_handle(),
+                image_view: multi_scattering_view.full_view().vk_handle(),
                 image_layout: vk::ImageLayout::GENERAL,
                 sampler: vk::Sampler::null(),
             };
@@ -846,7 +846,7 @@ fn render_skyview_lut(
                 encoder.lock(&luts.sky_view.view, vk::PipelineStageFlags2::COMPUTE_SHADER);
 
             encoder.use_image_resource(
-                transmittance_view.image(),
+                transmittance_view,
                 &mut luts.transmittance.state,
                 Access::COMPUTE_READ,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
@@ -855,7 +855,7 @@ fn render_skyview_lut(
                 false,
             );
             encoder.use_image_resource(
-                multi_scattering_view.image(),
+                multi_scattering_view,
                 &mut luts.multi_scattering.state,
                 Access::COMPUTE_READ,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
@@ -864,7 +864,7 @@ fn render_skyview_lut(
                 false,
             );
             encoder.use_image_resource(
-                sky_view.image(),
+                sky_view,
                 &mut luts.sky_view.state,
                 Access::COMPUTE_WRITE,
                 vk::ImageLayout::GENERAL,
@@ -878,12 +878,12 @@ fn render_skyview_lut(
             encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
 
             let transmittance_image_info = vk::DescriptorImageInfo {
-                image_view: transmittance_view.vk_handle(),
+                image_view: transmittance_view.full_view().vk_handle(),
                 image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 sampler: vk::Sampler::null(),
             };
             let multi_scattering_image_info = vk::DescriptorImageInfo {
-                image_view: multi_scattering_view.vk_handle(),
+                image_view: multi_scattering_view.full_view().vk_handle(),
                 image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 sampler: vk::Sampler::null(),
             };
@@ -892,7 +892,7 @@ fn render_skyview_lut(
                 ..Default::default()
             };
             let sky_view_image_info = vk::DescriptorImageInfo {
-                image_view: sky_view.vk_handle(),
+                image_view: sky_view.full_view().vk_handle(),
                 image_layout: vk::ImageLayout::GENERAL,
                 sampler: vk::Sampler::null(),
             };
@@ -961,7 +961,7 @@ fn prepare_render_sky(mut luts: ResMut<AtmosphereLUTs>, mut state: SubmissionSta
         );
 
         encoder.use_image_resource(
-            transmittance_view.image(),
+            transmittance_view,
             &mut luts.transmittance.state,
             Access::FRAGMENT_SAMPLED_READ,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
@@ -970,7 +970,7 @@ fn prepare_render_sky(mut luts: ResMut<AtmosphereLUTs>, mut state: SubmissionSta
             false,
         );
         encoder.use_image_resource(
-            sky_view.image(),
+            sky_view,
             &mut luts.sky_view.state,
             Access::FRAGMENT_SAMPLED_READ,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
@@ -1027,12 +1027,12 @@ fn render_sky(
             );
 
             let transmittance_image_info = vk::DescriptorImageInfo {
-                image_view: transmittance_view.vk_handle(),
+                image_view: transmittance_view.full_view().vk_handle(),
                 image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 sampler: vk::Sampler::null(),
             };
             let sky_view_image_info = vk::DescriptorImageInfo {
-                image_view: sky_view.vk_handle(),
+                image_view: sky_view.full_view().vk_handle(),
                 image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 sampler: vk::Sampler::null(),
             };
