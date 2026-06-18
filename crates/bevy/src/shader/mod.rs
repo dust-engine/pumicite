@@ -368,36 +368,7 @@ impl AssetLoader for RayTracingPipelineLoader {
         let reused_shaders: BTreeMap<String, u32> = BTreeMap::new();
         let mut sbt_layout = SbtLayout::new(self.pipeline_cache.device());
 
-        // Process stages in canonical order: RayGen, Miss, Callable, HitGroup.
-        // SbtHandles assumes this ordering when computing handle offsets.
-        for shader in pipeline
-            .stages
-            .iter()
-            .filter(|s| {
-                matches!(
-                    s,
-                    pumicite_types::RayTracingPipelineShaderStage::RayGen { .. }
-                )
-            })
-            .chain(pipeline.stages.iter().filter(|s| {
-                matches!(
-                    s,
-                    pumicite_types::RayTracingPipelineShaderStage::Miss { .. }
-                )
-            }))
-            .chain(pipeline.stages.iter().filter(|s| {
-                matches!(
-                    s,
-                    pumicite_types::RayTracingPipelineShaderStage::Callable { .. }
-                )
-            }))
-            .chain(pipeline.stages.iter().filter(|s| {
-                matches!(
-                    s,
-                    pumicite_types::RayTracingPipelineShaderStage::HitGroup { .. }
-                )
-            }))
-        {
+        for shader in pipeline.stages.iter() {
             let mut process_shader = async |shader: &pumicite_types::Shader,
                                             stage: vk::ShaderStageFlags|
                    -> Result<u32, Self::Error> {

@@ -449,8 +449,9 @@ pub struct ShaderBindingTable {
 /// Maps a `(library_id, shader_id)` pair to a flat index into the pipeline's
 /// shader group handle array.
 ///
-/// `shader_id` is the group's index *within its library* (libraries lay their
-/// groups out in canonical RayGen → Miss → Callable → HitGroup order). The
+/// `shader_id` is the group's index *within its library*, i.e. the position of
+/// the stage in the library's pipeline definition (the order stages are listed
+/// in the `.rtx.pipeline.ron`); stages may be declared in any order. The
 /// remapper stores the running total of group counts per library, so a lookup
 /// is just that library's base plus the local `shader_id`.
 #[derive(Default, Clone)]
