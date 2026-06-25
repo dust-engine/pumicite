@@ -301,6 +301,9 @@ fn build_blas_system<T: BLASBuilder>(
             .take(batch_size)
             .zip(geometry_transfers.into_iter())
         {
+            if geometries.is_empty() {
+                continue;
+            }
             geometry_infos_primitive_counts.clear();
             geometry_infos_primitive_counts.extend(geometries.iter().map(
                 |geometry| match geometry {
@@ -430,6 +433,9 @@ fn build_blas_system<T: BLASBuilder>(
             infos.push(info);
         }
         drop(geometry_infos_primitive_counts);
+        if infos.is_empty() {
+            return;
+        }
 
         let scratch_buffer = Buffer::new_private(
             allocator.clone(),
