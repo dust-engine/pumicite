@@ -74,3 +74,7 @@ bevy = { version = "0.17.0-dev", default-features=false, features=["bevy_winit",
 bevy_pumicite = { path = "./crates/bevy" }
 pumicite_egui = { path = "./crates/egui" }
 pumicite_scene = { path = "./crates/scene" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-metal = "0.3.2"

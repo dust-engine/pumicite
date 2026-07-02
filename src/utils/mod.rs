@@ -1,5 +1,7 @@
 pub mod future;
 mod idalloc;
+#[cfg(target_vendor = "apple")]
+pub mod metal;
 use ash::vk::{self, TaggedStructure};
 use glam::Affine3A;
 pub use idalloc::IdAlloc;

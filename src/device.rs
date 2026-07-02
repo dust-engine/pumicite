@@ -315,6 +315,11 @@ impl Device {
         self.0.recycler.send(item).unwrap();
     }
 }
+impl HasDevice for Device {
+    fn device(&self) -> &Device {
+        self
+    }
+}
 
 impl Deref for Device {
     type Target = ash::Device;

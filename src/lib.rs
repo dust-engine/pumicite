@@ -112,7 +112,6 @@
 
 #![feature(min_specialization)]
 #![feature(ptr_metadata)]
-#![feature(box_as_ptr)]
 #![feature(async_fn_traits, unboxed_closures)]
 
 mod alloc;
@@ -164,5 +163,11 @@ pub mod prelude {
         sync::GPUMutex,
         tracking::{Access, ResourceState},
         utils::AsVkHandle,
+    };
+
+    #[cfg(target_vendor = "apple")]
+    pub use crate::utils::metal::{
+        AsMTLCommandBuffer, AsMTLCommandQueue, AsMTLDevice, AsMTLIOSurface, AsMTLSharedEvent,
+        AsMTLTexture,
     };
 }
