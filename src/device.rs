@@ -504,6 +504,11 @@ impl DeviceBuilder {
         }
         this
     }
+
+    /// Returns a reference to the physical device associated with this builder.
+    pub fn physical_device(&self) -> &PhysicalDevice {
+        &self.pdevice
+    }
     /// Enables a device extension by type.
     ///
     /// This method enables the specified extension if it's available on the physical device.
