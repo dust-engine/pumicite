@@ -302,6 +302,7 @@ fn build_blas_system<T: BLASBuilder>(
             .zip(geometry_transfers.into_iter())
         {
             if geometries.is_empty() {
+                tracing::warn!("Entity {entity:?} reported no geometry. Please avoid spawning this entity if you don't want a BLAS to be built for it.");
                 continue;
             }
             geometry_infos_primitive_counts.clear();
@@ -516,6 +517,10 @@ fn build_blas_system<T: BLASBuilder>(
     cmd_pool.pool.begin(&mut cmd_buf).unwrap();
     cmd_pool.pool.record_future(&mut cmd_buf, future);
     cmd_pool.pool.finish(&mut cmd_buf).unwrap();
+    if pending_accel_structs.is_empty() {
+        cmd_pool.pool.free(cmd_buf);
+        return;
+    }
     queue.submit(&mut cmd_buf).unwrap();
     tracing::info!(
         "Scheduled BLAS build for {} entities",
