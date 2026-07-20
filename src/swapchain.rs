@@ -197,8 +197,11 @@ impl SwapchainInner {
                     image,
                     indice: i as u32,
                     swapchain: inner.clone(),
-                    srgb_view: SwapchainImageView(srgb_view),
-                    linear_view: SwapchainImageView(linear_view),
+                    srgb_view: SwapchainImageView(
+                        srgb_view,
+                        srgb_format.map(|f| f.into()).unwrap_or(vk::Format::UNDEFINED),
+                    ),
+                    linear_view: SwapchainImageView(linear_view, linear_format.into()),
                     acquire_semaphore: SharedSemaphore::new_binary(inner.device.clone(), true)?
                         .with_name(c"Swapchain Acquire Semaphore"),
                     present_semaphore: SharedSemaphore::new_binary(inner.device.clone(), true)?
@@ -564,7 +567,7 @@ impl ImageLike for SwapchainImageInner {
     }
 }
 
-pub struct SwapchainImageView(vk::ImageView);
+pub struct SwapchainImageView(vk::ImageView, vk::Format);
 impl AsVkHandle for SwapchainImageView {
     type Handle = vk::ImageView;
     fn vk_handle(&self) -> Self::Handle {
@@ -576,12 +579,16 @@ impl ImageViewLike for SwapchainImageView {
         vk::ImageViewType::TYPE_2D
     }
 
-    fn array_layer_count(&self) -> u32 {
-        1
+    fn array_layers(&self) -> std::ops::Range<u32> {
+        0..1
     }
 
-    fn mip_level_count(&self) -> u32 {
-        1
+    fn mip_levels(&self) -> std::ops::Range<u32> {
+        0..1
+    }
+
+    fn format(&self) -> vk::Format {
+        self.1
     }
 }
 
