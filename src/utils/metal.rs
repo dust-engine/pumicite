@@ -1,6 +1,7 @@
 use crate::HasDevice;
 use crate::utils::AsVkHandle;
 use ash::vk;
+use ash::vk::Handle;
 
 
 
@@ -139,15 +140,22 @@ pub trait AsMTLCommandBuffer: AsVkHandle<Handle = vk::CommandBuffer> + HasDevice
     ) -> &objc2::runtime::ProtocolObject<dyn objc2_metal::MTL4CommandBuffer> {
         let mut queue_info = vk::ExportMetalCommandQueueInfoEXT::default();
         queue_info.s_type = vk::StructureType::from_raw(1000311012);
+        queue_info.queue = vk::Queue::from_raw(self.vk_handle().as_raw());
         let mut info = vk::ExportMetalObjectsInfoEXT::default();
         info.p_next = (&mut queue_info as *mut vk::ExportMetalCommandQueueInfoEXT).cast();
         unsafe {
             self.device()
                 .extension::<ash::ext::metal_objects::Meta>()
                 .export_metal_objects(&mut info);
-            &*queue_info
+            let mtl_command_buffer = queue_info
                 .mtl_command_queue
-                .cast::<objc2::runtime::ProtocolObject<dyn objc2_metal::MTL4CommandBuffer>>()
+                .cast::<objc2::runtime::ProtocolObject<dyn objc2_metal::MTL4CommandBuffer>>();
+            assert!(
+                !mtl_command_buffer.is_null(),
+                "kosmickrisp returned a null MTLCommandBuffer for command buffer {:?}",
+                self.vk_handle(),
+            );
+            &*mtl_command_buffer
         }
     }
 }
