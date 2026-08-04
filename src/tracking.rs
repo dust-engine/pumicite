@@ -225,6 +225,14 @@ impl Access {
         stage: vk::PipelineStageFlags2::COMPUTE_SHADER,
         access: vk::AccessFlags2::SHADER_READ,
     };
+    pub const MESH_WRITE: Access = Access {
+        stage: vk::PipelineStageFlags2::MESH_SHADER_EXT,
+        access: vk::AccessFlags2::SHADER_WRITE,
+    };
+    pub const MESH_READ: Access = Access {
+        stage: vk::PipelineStageFlags2::MESH_SHADER_EXT,
+        access: vk::AccessFlags2::SHADER_READ,
+    };
     pub const ACCELERATION_STRUCTURE_BUILD_READ: Access = Access {
         stage: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
         access: vk::AccessFlags2::SHADER_READ,
