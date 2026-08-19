@@ -12,6 +12,7 @@ use pumicite::{
 use super::{ImageLoadingError, TextureAsset, TextureLoadPreferences};
 use crate::{DescriptorHeap, staging::AsyncTransfer};
 pub use png::DecodingError as PngDecodingError;
+#[derive(bevy_reflect::TypePath)]
 pub struct PngLoader {
     allocator: Allocator,
     heap: Option<DescriptorHeap>,
@@ -89,7 +90,7 @@ impl AssetLoader for PngLoader {
                 .is_ok()
             {
                 let name: String = load_context
-                    .asset_path()
+                    .path()
                     .path()
                     .as_os_str()
                     .to_string_lossy()
@@ -104,7 +105,7 @@ impl AssetLoader for PngLoader {
             let allocation_info = texture.allocation_info();
             tracing::info!(
                 "Loading png image {} ({}x{}) sized {:.2} MB{} with format {:?}, mapped to Vulkan format {:?}",
-                load_context.asset_path(),
+                load_context.path(),
                 reader.info().width,
                 reader.info().height,
                 allocation_info.allocation_info.size as f32 / 1024.0 / 1024.0,

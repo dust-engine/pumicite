@@ -19,6 +19,7 @@ pub enum DdsError {
     FormatRequiresTranscodingError,
 }
 
+#[derive(bevy_reflect::TypePath)]
 pub struct DdsLoader {
     allocator: Allocator,
     transfer: AsyncTransfer,
@@ -107,7 +108,7 @@ impl AssetLoader for DdsLoader {
                 .is_ok()
             {
                 let name: String = load_context
-                    .asset_path()
+                    .path()
                     .path()
                     .as_os_str()
                     .to_string_lossy()
@@ -137,7 +138,7 @@ impl AssetLoader for DdsLoader {
                 .await?;
             batch.submit().await?;
 
-            tracing::info!("Loading {}", load_context.asset_path());
+            tracing::info!("Loading {}", load_context.path());
 
             Ok(TextureAsset::new(
                 image,

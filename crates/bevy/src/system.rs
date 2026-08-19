@@ -46,7 +46,7 @@
 //! Use [`SubmissionState::record`] for commands outside render passes.
 
 use bevy_ecs::{
-    component::{ComponentId, Tick},
+    change_detection::Tick, component::ComponentId,
     resource::Resource,
     system::{SystemMeta, SystemParam},
     world::{Mut, World, unsafe_world_cell::UnsafeWorldCell},
@@ -223,7 +223,7 @@ unsafe impl SystemParam for SubmissionState<'_> {
         system_meta: &SystemMeta,
         world: UnsafeWorldCell<'world>,
         _change_tick: Tick,
-    ) -> Self::Item<'world, 'state> {
+    ) -> Result<Self::Item<'world, 'state>, bevy_ecs::system::SystemParamValidationError> {
         unsafe {
             if *state == ComponentId::new(usize::MAX) {
                 panic!(
@@ -232,18 +232,10 @@ unsafe impl SystemParam for SubmissionState<'_> {
                 )
             }
             let value = world.get_resource_mut_by_id(*state).unwrap();
-            SubmissionState {
+            Ok(SubmissionState {
                 state: value.with_type(),
-            }
+            })
         }
-    }
-
-    unsafe fn validate_param(
-        _state: &mut Self::State,
-        _system_meta: &SystemMeta,
-        _world: UnsafeWorldCell,
-    ) -> Result<(), bevy_ecs::system::SystemParamValidationError> {
-        Ok(())
     }
 
     fn configurate(

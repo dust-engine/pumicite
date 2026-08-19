@@ -67,7 +67,7 @@ impl Deref for BLAS {
 /// entity to be built exactly once, add `Without<BLAS>` to your
 /// [`QueryFilter`](Self::QueryFilter); otherwise every batch will resubmit
 /// already-built entities.
-pub trait BLASBuilder: Resource + FromWorld {
+pub trait BLASBuilder: Resource + bevy_ecs::component::Component<Mutability = bevy_ecs::component::Mutable> + FromWorld {
     /// Per-entity data fetched from the ECS and forwarded to [`build_flags`](Self::build_flags)
     /// and [`geometries`](Self::geometries).
     type QueryData: ReadOnlyQueryData;

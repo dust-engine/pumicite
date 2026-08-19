@@ -45,6 +45,7 @@ impl Deref for GraphicsPipeline {
 /// - Specialization constants
 /// - Pipeline variants
 #[cfg(any(feature = "ron", feature = "postcard"))]
+#[derive(bevy_reflect::TypePath)]
 pub struct GraphicsPipelineLoader {
     pipeline_cache: Arc<PipelineCache>,
     heap: Option<DescriptorHeap>,
@@ -73,7 +74,7 @@ impl AssetLoader for GraphicsPipelineLoader {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let ext = load_context
-            .asset_path()
+            .path()
             .get_full_extension()
             .unwrap_or_default();
         let mut pipeline: pumicite_types::GraphicsPipeline = super::deserialize(&bytes, &ext)?;
@@ -92,9 +93,9 @@ impl AssetLoader for GraphicsPipelineLoader {
             }
             pumicite_types::PipelineLayoutRef::Path(path) => {
                 load_context
-                    .loader()
-                    .immediate()
-                    .load::<pumicite::bevy::PipelineLayout>(path)
+                    .load_builder()
+                    
+                    .load_value::<pumicite::bevy::PipelineLayout>(path)
                     .await?
                     .take()
                     .0
@@ -111,7 +112,7 @@ impl AssetLoader for GraphicsPipelineLoader {
         let mut shader_modules = Vec::with_capacity(pipeline.shaders.len());
         for (_, shader) in pipeline.shaders.iter() {
             let module: LoadedAsset<ShaderModule> =
-                load_context.loader().immediate().load(&shader.path).await?;
+                load_context.load_builder().load_value(&shader.path).await?;
             shader_modules.push(module.take());
         }
         let shader_entry_names = pipeline
@@ -621,7 +622,7 @@ impl AssetLoader for GraphicsPipelineLoader {
         let span = tracing::span!(
             tracing::Level::INFO,
             "Creating Graphics Pipeline",
-            path = load_context.asset_path().to_string()
+            path = load_context.path().to_string()
         )
         .entered();
         let pipeline = self

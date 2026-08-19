@@ -521,7 +521,7 @@ impl AssetLoader for GltfLoader {
                         }
                         gltf::buffer::Source::Uri(uri) => {
                             let buffer_path = load_context
-                                .asset_path()
+                                .path()
                                 .resolve_embed(uri)
                                 .map_err(|err| GltfError::InvalidBufferUri(uri.to_owned(), err))?;
                             let mut current_reader = load_context.read_asset(buffer_path).await?;
@@ -718,7 +718,7 @@ impl GltfLoader {
                     }
                     gltf::image::Source::Uri { uri, .. } => {
                         let buffer_path = load_context
-                            .asset_path()
+                            .path()
                             .resolve_embed(uri)
                             .map_err(|err| GltfError::InvalidBufferUri(uri.to_owned(), err))?;
                         let handle = load_context.load::<TextureAsset>(buffer_path);

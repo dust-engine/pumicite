@@ -754,8 +754,7 @@ impl PumiciteApp for App {
         {
             // Queue created
             let component_id = self.world_mut().register_component_with_descriptor(
-                bevy_ecs::component::ComponentDescriptor::new_resource::<crate::queue::SharedQueue>(
-                ),
+                bevy_ecs::component::ComponentDescriptor::new::<crate::queue::SharedQueue>(),
             );
             tracing::info!(
                 "Device queue {} using queue family {}",

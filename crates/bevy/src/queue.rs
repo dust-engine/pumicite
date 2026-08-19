@@ -61,7 +61,7 @@ use std::{
 };
 
 use bevy_ecs::{
-    component::{ComponentId, Tick},
+    change_detection::Tick, component::ComponentId,
     prelude::*,
     ptr::OwningPtr,
     system::{SystemMeta, SystemParam},
@@ -158,11 +158,13 @@ impl QueueConfiguration {
             let name = CString::new(name).unwrap();
             let queue = device.get_queue(queue_ref).with_name(name.as_c_str());
             OwningPtr::make(SharedQueue::new(queue), |ptr| unsafe {
-                world.insert_resource_by_id(
-                    component_id,
-                    ptr,
-                    bevy_ecs::change_detection::MaybeLocation::caller(),
-                );
+                        if world.resource_entities().get(component_id).is_none() {
+                            world.spawn(bevy_ecs::resource::IsResource::new(component_id));
+                        }
+                        world.insert_resource_by_id(
+                            component_id,
+                            ptr,
+                            bevy_ecs::change_detection::MaybeLocation::caller());
             });
         }
     }
@@ -271,32 +273,32 @@ unsafe impl<'a, T: 'static> SystemParam for Queue<'a, T> {
         _system_meta: &SystemMeta,
         world: UnsafeWorldCell<'world>,
         _change_tick: Tick,
-    ) -> Self::Item<'world, 'state> {
+    ) -> Result<Self::Item<'world, 'state>, bevy_ecs::system::SystemParamValidationError> {
         let shared_queue: Mut<'world, SharedQueue> =
             unsafe { world.get_resource_mut_by_id(*state).unwrap().with_type() };
         let shared_queue: &'world mut SharedQueue = shared_queue.into_inner();
 
         if Arc::get_mut(&mut shared_queue.inner).is_some() {
             // TODO: calling Arc::get_mut twice because of https://github.com/rust-lang/rust/issues/54663 and is_unique is not stable.
-            Queue {
+            Ok(Queue {
                 queue: Arc::get_mut(&mut shared_queue.inner)
                     .unwrap()
                     .get_mut()
                     .unwrap(),
                 _guard: None,
                 _marker: PhantomData,
-            }
+            })
         } else {
             let mut guard = shared_queue.inner.lock().unwrap();
             let queue: &mut pumicite::Queue = &mut guard;
-            Queue {
+            Ok(Queue {
                 // Forceibly transmute to 'world lifetime. Should be fine, since `Queue` also holds the guard.
                 queue: unsafe {
                     std::mem::transmute::<&mut pumicite::Queue, &mut pumicite::Queue>(queue)
                 },
                 _guard: Some(guard),
                 _marker: PhantomData,
-            }
+            })
         }
     }
 
@@ -311,8 +313,8 @@ unsafe impl<'a, T: 'static> SystemParam for Queue<'a, T> {
             return;
         }
         let combined_access = component_access_set.combined_access();
-        if combined_access.has_resource_write(component_id)
-            || combined_access.has_resource_read(component_id)
+        if combined_access.has_write(component_id)
+            || combined_access.has_read(component_id)
         {
             panic!(
                 "Initialized multiple Queue{} entries on system {}",
@@ -320,7 +322,7 @@ unsafe impl<'a, T: 'static> SystemParam for Queue<'a, T> {
                 system_meta.name()
             );
         }
-        component_access_set.add_unfiltered_resource_write(component_id);
+        component_access_set.add_resource_write(component_id);
     }
 }
 

@@ -79,7 +79,7 @@ impl<Filter: QueryFilter + Send + Sync + 'static> Plugin for EguiPlugin<Filter> 
         app.add_plugins((EguiBasePlugin, bevy_egui::EguiPlugin::default()));
         app.add_systems(
             PreUpdate,
-            set_egui_input_viewport_scale_factor.in_set(EguiInputSet::WriteEguiEvents),
+            sync_egui_camera_target_info.before(EguiPreUpdateSet::InitContexts),
         );
         app.add_systems(
             PostUpdate,
@@ -122,6 +122,7 @@ impl<Filter: QueryFilter + Send + Sync + 'static> Plugin for EguiPlugin<Filter> 
             EguiContext::default(),
             PrimaryEguiContext,
             EguiMultipassSchedule::new(EguiPrimaryContextPass),
+            bevy_camera::Camera::default(),
         ));
 
         let mut window_to_egui_context_map =
@@ -166,17 +167,30 @@ impl<Filter: QueryFilter + Send + Sync + 'static> Plugin for EguiPlugin<Filter> 
     }
 }
 
-fn set_egui_input_viewport_scale_factor(mut query: Query<(&mut EguiInput, &bevy_window::Window)>) {
-    for (mut input, window) in query.iter_mut() {
-        input.screen_rect = Some(bevy_egui::egui::Rect {
-            min: Default::default(),
-            max: bevy_egui::egui::pos2(window.resolution.size().x, window.resolution.size().y),
+/// Keeps the Egui context camera's render target info in sync with its window.
+///
+/// bevy_egui derives both the Egui scale factor (`write_egui_input_system`) and the
+/// screen rect (`update_ui_screen_rect`) from `Camera::computed.target_info`. That
+/// field is normally filled in by bevy_render's camera system, which pumicite does
+/// not run, so it stays `None` and bevy_egui silently falls back to defaults. We
+/// populate it from the window instead.
+fn sync_egui_camera_target_info(
+    mut query: Query<(&mut bevy_camera::Camera, &bevy_window::Window)>,
+) {
+    for (mut camera, window) in query.iter_mut() {
+        let physical_size = window.physical_size();
+        let scale_factor = window.scale_factor();
+        let is_current = camera.computed.target_info.as_ref().is_some_and(|info| {
+            info.physical_size == physical_size && info.scale_factor == scale_factor
         });
-        input
-            .viewports
-            .get_mut(&bevy_egui::egui::ViewportId::ROOT)
-            .unwrap()
-            .native_pixels_per_point = Some(window.scale_factor());
+        if is_current {
+            // Avoid triggering change detection on every frame.
+            continue;
+        }
+        camera.computed.target_info = Some(bevy_camera::RenderTargetInfo {
+            physical_size,
+            scale_factor,
+        });
     }
 }
 
@@ -478,7 +492,7 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
         pass.bind_vertex_buffers(0, [vertex_buffer].into_iter());
         pass.bind_index_buffer(index_buffer, 0, vk::IndexType::UINT32);
 
-        let rect = egui_ctx.get_mut().screen_rect();
+        let rect = egui_ctx.get_mut().viewport_rect();
         let viewport_logical_size = Vec2::new(rect.max.x - rect.min.x, rect.max.y - rect.min.y);
         let scale_factor = egui_ctx.get_mut().pixels_per_point();
         let viewport_physical_size = viewport_logical_size * scale_factor;

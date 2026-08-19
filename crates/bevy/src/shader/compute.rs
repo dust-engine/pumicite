@@ -31,6 +31,7 @@ impl ComputePipeline {
 ///
 /// Loads compute pipeline configurations and creates Vulkan compute pipelines.
 #[cfg(any(feature = "ron", feature = "postcard"))]
+#[derive(bevy_reflect::TypePath)]
 pub struct ComputePipelineLoader {
     pipeline_cache: Arc<PipelineCache>,
     heap: Option<DescriptorHeap>,
@@ -63,7 +64,7 @@ impl AssetLoader for ComputePipelineLoader {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let ext = load_context
-            .asset_path()
+            .path()
             .get_full_extension()
             .unwrap_or_default();
         let pipeline: pumicite_types::ComputePipeline = super::deserialize(&bytes, &ext)?;
@@ -81,9 +82,9 @@ impl AssetLoader for ComputePipelineLoader {
             }
             pumicite_types::PipelineLayoutRef::Path(path) => {
                 load_context
-                    .loader()
-                    .immediate()
-                    .load::<pumicite::bevy::PipelineLayout>(path)
+                    .load_builder()
+                    
+                    .load_value::<pumicite::bevy::PipelineLayout>(path)
                     .await?
                     .take()
                     .0
@@ -107,9 +108,9 @@ impl AssetLoader for ComputePipelineLoader {
         }
 
         let shader: LoadedAsset<ShaderModule> = load_context
-            .loader()
-            .immediate()
-            .load(&pipeline.shader.path)
+            .load_builder()
+            
+            .load_value(&pipeline.shader.path)
             .await?;
         let shader_flags = pipeline.shader.flags();
         let entry_point: CString = CString::new(pipeline.shader.entry_point)
@@ -118,7 +119,7 @@ impl AssetLoader for ComputePipelineLoader {
         let span = tracing::span!(
             tracing::Level::INFO,
             "Creating Compute Pipeline",
-            path = load_context.asset_path().to_string()
+            path = load_context.path().to_string()
         )
         .entered();
         let pipeline = self.pipeline_cache.create_compute_pipeline(

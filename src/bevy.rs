@@ -3,19 +3,54 @@ use std::{ops::Deref, sync::Arc};
 use bevy_asset::Asset;
 use bevy_ecs::{
     component::{Component, Immutable, Mutable, StorageType},
-    resource::Resource,
+    resource::{IsResource, Resource},
     world::FromWorld,
 };
 use bevy_reflect::TypePath;
 
 use crate::Device;
 
-impl Resource for crate::Device {}
-impl Resource for crate::Instance {}
-impl Resource for crate::Allocator {}
-impl Resource for crate::physical_device::PhysicalDevice {}
-impl Resource for crate::device::DeviceBuilder {}
-impl Resource for crate::instance::InstanceBuilder {}
+/// Implements [`Resource`] for a foreign type.
+macro_rules! impl_resource {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl Component for $ty {
+                const STORAGE_TYPE: StorageType = StorageType::SparseSet;
+                type Mutability = Mutable;
+
+                fn register_required_components(
+                    _component_id: bevy_ecs::component::ComponentId,
+                    required_components: &mut bevy_ecs::component::RequiredComponentsRegistrator,
+                ) {
+                    // Check for an existing id first to avoid recursing during
+                    // required-component initialization, as the derive does.
+                    let resource_component_id = if let Some(id) =
+                        required_components.components_registrator().component_id::<$ty>()
+                    {
+                        id
+                    } else {
+                        required_components
+                            .components_registrator()
+                            .register_component::<$ty>()
+                    };
+                    required_components.register_required::<IsResource>(move || {
+                        IsResource::new(resource_component_id)
+                    });
+                }
+            }
+            impl Resource for $ty {}
+        )*
+    };
+}
+
+impl_resource!(
+    crate::Device,
+    crate::Instance,
+    crate::Allocator,
+    crate::physical_device::PhysicalDevice,
+    crate::device::DeviceBuilder,
+    crate::instance::InstanceBuilder,
+);
 
 #[derive(Clone, Asset, TypePath)]
 pub struct PipelineLayout(pub Arc<crate::pipeline::PipelineLayout>);
@@ -53,7 +88,7 @@ impl FromWorld for PipelineCache {
     }
 }
 
-impl Resource for crate::debug::DebugUtilsMessenger {}
+impl_resource!(crate::debug::DebugUtilsMessenger);
 
 impl Component for crate::Surface {
     const STORAGE_TYPE: StorageType = StorageType::Table;

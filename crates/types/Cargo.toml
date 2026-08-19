@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 ash = { git = "https://github.com/0xbeefd1ed/ash", branch = "meta", default-features = false, features = ["std"] }
-glam = "0.30"
+glam = "0.32"
 
 [dev-dependencies]
 ron = "0.12"

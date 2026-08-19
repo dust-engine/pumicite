@@ -97,7 +97,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
     fn map_set_to_systems(
         &mut self,
         set: bevy_ecs::schedule::SystemSetKey,
-        systems: &mut Vec<SystemKey>,
+        systems: &mut indexmap::IndexSet<SystemKey, bevy_platform::hash::FixedHasher>,
         world: &mut World,
         graph: &mut ScheduleGraph,
     ) {
@@ -107,7 +107,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
         if self.render_sets_to_systems.contains_key(&interned_set) {
             let ending = add_system(graph, world, super::system::render_set_ending_system);
             self.render_sets_to_ending_systems.insert(set, ending);
-            systems.push(ending);
+            systems.insert(ending);
         }
 
         if !self.submission_sets_to_queue.contains_key(&interned_set) {
@@ -127,14 +127,14 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                 submission,
             },
         );
-        systems.push(submission);
-        systems.push(prelude);
+        systems.insert(submission);
+        systems.insert(prelude);
     }
 
     fn collapse_set(
         &mut self,
         set: bevy_ecs::schedule::SystemSetKey,
-        systems: &[bevy_ecs::schedule::SystemKey],
+        systems: &indexmap::IndexSet<SystemKey, bevy_platform::hash::FixedHasher>,
         world: &mut World,
         graph: &mut bevy_ecs::schedule::ScheduleGraph,
         dependency_flattened: &bevy_ecs::schedule::graph::DiGraph<NodeId>,
@@ -180,8 +180,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
             let shared_state_component_id = {
                 // create shared state
                 let shared_state_component_id = world.register_component_with_descriptor(
-                    bevy_ecs::component::ComponentDescriptor::new_resource::<RenderSetSharedState>(
-                    ),
+                    bevy_ecs::component::ComponentDescriptor::new::<RenderSetSharedState>(),
                 );
                 bevy_ptr::OwningPtr::make(
                     RenderSetSharedState::new(
@@ -191,12 +190,14 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                         config.debug_color,
                     ),
                     |ptr| unsafe {
-                        // SAFETY: component_id was just initialized and corresponds to resource of type R.
+                        if world.resource_entities().get(shared_state_component_id).is_none() {
+                            world.spawn(bevy_ecs::resource::IsResource::new(shared_state_component_id));
+                        }
+                        // SAFETY: forwarded from this function's contract.
                         world.insert_resource_by_id(
                             shared_state_component_id,
                             ptr,
-                            MaybeLocation::caller(),
-                        );
+                            MaybeLocation::caller());
                     },
                 );
                 shared_state_component_id
@@ -209,15 +210,15 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                 let system = graph.systems.get_mut(*system_node).unwrap();
                 system.configurate(&mut shared_config);
                 system
-                    .access
-                    .add_unfiltered_resource_write(shared_state_component_id);
+                    .access_mut()
+                    .add_resource_write(shared_state_component_id);
             }
 
             let submission_system = graph.systems.get_mut(meta_systems.submission).unwrap();
             submission_system.configurate(&mut queue_config);
             submission_system
-                .access
-                .add_unfiltered_resource_write(*queue_component_id);
+                .access_mut()
+                .add_resource_write(*queue_component_id);
 
             let user_systems = systems
                 .iter()
@@ -252,7 +253,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
         &mut self,
         _world: &mut bevy_ecs::world::World,
         graph: &mut bevy_ecs::schedule::ScheduleGraph,
-        dependency_flattened: &mut bevy_ecs::schedule::graph::DiGraph<SystemKey>,
+        mut dependency_flattened: bevy_ecs::schedule::FlattenedDependencies<'_>,
     ) -> Result<(), bevy_ecs::schedule::ScheduleBuildError> {
         if self.render_sets_to_systems.is_empty() {
             return Ok(());
@@ -506,7 +507,7 @@ fn add_system<Marker, T: IntoSystem<(), (), Marker>>(
     // ignore ambiguities with auto sync points
     // They aren't under user control, so no one should know or care.
     graph.ambiguous_with_all.insert(id.into());
-    graph.systems.get_mut(id).unwrap().access.extend(access);
+    graph.systems.get_mut(id).unwrap().access_mut().extend(access);
 
     id
 }

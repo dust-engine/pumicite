@@ -11,7 +11,8 @@ pub use png::*;
 
 use std::ops::Deref;
 
-use bevy_asset::{Asset, AssetLoader, AsyncReadExt, io::AsyncSeekForwardExt};
+use bevy_asset::{Asset, AssetLoader, AsyncReadExt};
+use bevy_tasks::futures_lite::AsyncSeekExt;
 use bevy_ecs::world::FromWorld;
 use bevy_reflect::TypePath;
 use pumicite::{ash::VkResult, bindless::ResourceHeap, image::FullImageView, prelude::*};
@@ -91,6 +92,7 @@ mod img_loader {
         FormatRequiresTranscodingError,
     }
 
+    #[derive(bevy_reflect::TypePath)]
     pub struct ImageLoader {
         allocator: Allocator,
         heap: Option<DescriptorHeap>,
@@ -126,6 +128,7 @@ mod img_loader {
                 reader.read_to_end(&mut data).await?;
                 let mut image_reader = image::ImageReader::new(std::io::Cursor::new(&data));
                 match load_context
+                    .path()
                     .path()
                     .extension()
                     .and_then(|x| x.to_str())
@@ -181,7 +184,7 @@ mod img_loader {
                     .is_ok()
                 {
                     let name: String = load_context
-                        .asset_path()
+                        .path()
                         .path()
                         .as_os_str()
                         .to_string_lossy()
@@ -274,6 +277,7 @@ pub enum KtxError {
     VulkanError(#[from] vk::Result),
 }
 #[cfg(feature = "ktx2")]
+#[derive(bevy_reflect::TypePath)]
 pub struct KtxLoader {
     allocator: Allocator,
 }
@@ -432,12 +436,14 @@ impl AssetLoader for KtxLoader {
             };
 
             reader
-                .seek_forward(
-                    header.index.sgd_byte_offset
+                .seekable()
+                .map_err(|_| KtxError::ReadIOError)?
+                .seek(std::io::SeekFrom::Current(
+                    (header.index.sgd_byte_offset
                         - ktx2::Header::LENGTH as u64
                         - level_indexes_size as u64
-                        + header.index.sgd_byte_length,
-                )
+                        + header.index.sgd_byte_length) as i64,
+                ))
                 .await
                 .map_err(|_| KtxError::ReadIOError)?; // Skip everything to "mip level array"
 
