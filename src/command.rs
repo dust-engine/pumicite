@@ -346,15 +346,8 @@ impl<'a> CommandEncoder<'a> {
                 .entry(wait_semaphore)
                 .or_default();
 
-            // Merge or update the wait condition based on semaphore values
-            if entry.0 == wait_value {
-                // Same wait value - combine the pipeline stages
-                entry.1 |= stages;
-            } else if entry.0 < wait_value {
-                // Higher wait value - replace with new condition
-                entry.0 = wait_value;
-                entry.1 = stages;
-            }
+            entry.0 = entry.0.max(wait_value);
+            entry.1 |= stages;
         } else {
             // wait_semaphore is None when the resource is being used for the first time.
             // We don't have to wait for anything if that's the case.
