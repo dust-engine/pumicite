@@ -97,13 +97,28 @@ impl<T: Send> GPUMutex<T> {
     /// Returns true if there is currently pending GPU work using the locked resource.
     pub fn is_locked(&self) -> bool {
         let (semaphore_ptr, signal_value) =
-            decode_semaphore(self.ptr.load(std::sync::atomic::Ordering::Relaxed));
+            decode_semaphore(self.ptr.load(std::sync::atomic::Ordering::Acquire));
         if semaphore_ptr.is_null() || signal_value == 0 {
             return false;
         }
         unsafe {
             let semaphore = &*semaphore_ptr; // This should be fine because GPUMutex already retains the ownership of the semaphore
             !semaphore.is_signaled(signal_value)
+        }
+    }
+
+    /// Returns the semaphore and timestamp of the current lock holder, without modifying the lock.
+    ///
+    /// The semaphore is `None` if the mutex has never been locked. The lock state is a snapshot
+    /// and may be superseded by a concurrent [`lock_until`](Self::lock_until).
+    pub(crate) fn current_lock(&self) -> (Option<&Semaphore>, u64) {
+        let (semaphore_ptr, value) =
+            decode_semaphore(self.ptr.load(std::sync::atomic::Ordering::Acquire));
+        if semaphore_ptr.is_null() {
+            (None, value)
+        } else {
+            // Safety: the mutex retains ownership of the semaphore it currently points to.
+            (Some(unsafe { &*semaphore_ptr }), value)
         }
     }
 
@@ -125,6 +140,7 @@ impl<T: Send> GPUMutex<T> {
     ///
     /// If the returned semaphore is Some, the call gets exclusive access to the resource after the returned
     /// semaphore was signaled. The exclusive access ends when the passed in semaphore was signaled.
+    #[track_caller]
     pub(crate) unsafe fn lock_until(
         &self,
         semaphore: &SharedSemaphore,
@@ -133,12 +149,24 @@ impl<T: Send> GPUMutex<T> {
         let new_semaphore_ptr = semaphore.as_ptr();
         let old_value = self.ptr.swap(
             encode_semaphore(new_semaphore_ptr, signal_value),
-            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::AcqRel,
         );
         let (old_semaphore_ptr, old_signal_value): (*const Semaphore, u64) =
             decode_semaphore(old_value);
         if new_semaphore_ptr == old_semaphore_ptr {
-            debug_assert!(signal_value >= old_signal_value);
+            assert!(
+                signal_value >= old_signal_value,
+                "GPUMutex<{ty}> locked out of order on timeline semaphore {handle:?} ({current}). \
+                A command buffer scheduled at timestamp {new} tried to lock the mutex \
+                after a command buffer scheduled at timestamp {old} had already locked it. \
+                Locking order must remain consistent with the order in which command buffers \
+                are scheduled onto the timeline.",
+                ty = std::any::type_name::<T>(),
+                handle = semaphore.vk_handle(),
+                current = semaphore.value(),
+                new = signal_value,
+                old = old_signal_value,
+            );
             (None, old_signal_value)
         } else {
             unsafe {
