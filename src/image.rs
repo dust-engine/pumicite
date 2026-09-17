@@ -386,6 +386,72 @@ image_view_wrapper! {
     }
 }
 
+/// An image bundled with one single-level view per mip level, for shaders that
+/// write a mip chain through storage images (`RWTexture2D` per level: an HZB or
+/// any other in-shader reduction). Wrap a full view first when the chain must
+/// also be sampled as a whole: `image.create_full_view()?.create_mip_views()?`.
+///
+/// Every view is destroyed when the `MipImageViews` is dropped.
+pub struct MipImageViews<T: ImageLike + HasDevice> {
+    image: T,
+    views: Vec<ImageViewItem>,
+}
+impl<T: ImageLike + HasDevice> MipImageViews<T> {
+    /// Returns the view covering exactly mip level `level`.
+    ///
+    /// # Panics
+    /// If `level >= mip_level_count()`.
+    pub fn mip_view(&self, level: u32) -> &ImageViewItem {
+        &self.views[level as usize]
+    }
+}
+impl<T: ImageLike + HasDevice> HasDevice for MipImageViews<T> {
+    fn device(&self) -> &crate::Device {
+        self.image.device()
+    }
+}
+impl<T: ImageLike + HasDevice> Deref for MipImageViews<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.image
+    }
+}
+impl<T: ImageLike + HasDevice> AsVkHandle for MipImageViews<T> {
+    type Handle = vk::Image;
+    fn vk_handle(&self) -> Self::Handle {
+        self.image.vk_handle()
+    }
+}
+impl<T: ImageLike + HasDevice> ImageLike for MipImageViews<T> {
+    fn aspects(&self) -> vk::ImageAspectFlags {
+        self.image.aspects()
+    }
+    fn array_layer_count(&self) -> u32 {
+        self.image.array_layer_count()
+    }
+    fn mip_level_count(&self) -> u32 {
+        self.image.mip_level_count()
+    }
+    fn extent(&self) -> UVec3 {
+        self.image.extent()
+    }
+    fn format(&self) -> vk::Format {
+        self.image.format()
+    }
+    fn ty(&self) -> vk::ImageType {
+        self.image.ty()
+    }
+}
+impl<T: ImageLike + HasDevice> Drop for MipImageViews<T> {
+    fn drop(&mut self) {
+        unsafe {
+            for view in &self.views {
+                self.image.device().destroy_image_view(view.view, None);
+            }
+        }
+    }
+}
+
 /// A borrowed handle to a single image view, paired with the metadata needed to
 /// use it in descriptor writes and rendering commands.
 ///
@@ -471,6 +537,67 @@ pub trait ImageExt: ImageLike {
                 image: self,
             })
         }
+    }
+
+    /// Creates a [`MipImageViews`]: one view per mip level, each covering that
+    /// single level and all array layers, in the image's own format.
+    fn create_mip_views(self) -> VkResult<MipImageViews<Self>>
+    where
+        Self: HasDevice + Sized,
+    {
+        let view_type = match self.ty() {
+            vk::ImageType::TYPE_1D if self.array_layer_count() > 1 => {
+                vk::ImageViewType::TYPE_1D_ARRAY
+            }
+            vk::ImageType::TYPE_1D => vk::ImageViewType::TYPE_1D,
+            vk::ImageType::TYPE_2D if self.array_layer_count() > 1 => {
+                vk::ImageViewType::TYPE_2D_ARRAY
+            }
+            vk::ImageType::TYPE_2D => vk::ImageViewType::TYPE_2D,
+            vk::ImageType::TYPE_3D => vk::ImageViewType::TYPE_3D,
+            _ => unreachable!(),
+        };
+        let mut views = Vec::with_capacity(self.mip_level_count() as usize);
+        for level in 0..self.mip_level_count() {
+            let result = unsafe {
+                self.device().create_image_view(
+                    &vk::ImageViewCreateInfo {
+                        image: self.vk_handle(),
+                        view_type,
+                        format: self.format(),
+                        components: vk::ComponentMapping::default(),
+                        subresource_range: vk::ImageSubresourceRange {
+                            aspect_mask: self.aspects(),
+                            base_mip_level: level,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: self.array_layer_count(),
+                        },
+                        ..Default::default()
+                    },
+                    None,
+                )
+            };
+            let view = match result {
+                Ok(view) => view,
+                Err(err) => {
+                    // Undo the levels created so far; the image is dropped by the caller.
+                    for created in &views {
+                        let created: &ImageViewItem = created;
+                        unsafe { self.device().destroy_image_view(created.view, None) };
+                    }
+                    return Err(err);
+                }
+            };
+            views.push(ImageViewItem {
+                ty: view_type,
+                format: self.format(),
+                mip_levels: level..level + 1,
+                array_layers: 0..self.array_layer_count(),
+                view,
+            });
+        }
+        Ok(MipImageViews { image: self, views })
     }
 
     /// Creates an [`SrgbImageView`]: a view that samples the image through its
