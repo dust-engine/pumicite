@@ -828,6 +828,7 @@ dependencies = [
  "bevy_utils",
  "bevy_window",
  "bevy_winit",
+ "bevy_world_serialization",
 ]
 
 [[package]]
@@ -1315,6 +1316,27 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "winit",
+]
+
+[[package]]
+name = "bevy_world_serialization"
+version = "0.19.0"
+source = "git+https://github.com/dust-engine/bevy?branch=release-0.19#1ba1ee2f535289714e1fafe55e462b68d21b4fc0"
+dependencies = [
+ "bevy_app",
+ "bevy_asset",
+ "bevy_camera 0.19.0 (git+https://github.com/dust-engine/bevy?branch=release-0.19)",
+ "bevy_derive",
+ "bevy_ecs",
+ "bevy_platform",
+ "bevy_reflect",
+ "bevy_transform",
+ "bevy_utils",
+ "derive_more",
+ "ron",
+ "serde",
+ "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]
@@ -3886,9 +3908,9 @@ dependencies = [
  "bevy_ecs",
  "bevy_pumicite",
  "bevy_reflect",
- "bevy_scene",
  "bevy_tasks",
  "bevy_transform",
+ "bevy_world_serialization",
  "bitvec",
  "bytemuck",
  "glam",

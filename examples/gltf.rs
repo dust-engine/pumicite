@@ -91,8 +91,9 @@ struct PbrPipeline {
 }
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let handle: Handle<bevy::scene::Scene> = asset_server.load("gltf/FlightHelmet.gltf");
-    commands.spawn(bevy::scene::SceneRoot(handle));
+    let handle: Handle<bevy::world_serialization::WorldAsset> =
+        asset_server.load("gltf/FlightHelmet.gltf");
+    commands.spawn(bevy::world_serialization::WorldAssetRoot(handle));
     commands.insert_resource(PbrPipeline {
         draw: asset_server.load("gltf/pbr.gfx.pipeline.ron"),
     });
