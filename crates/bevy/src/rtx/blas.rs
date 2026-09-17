@@ -67,7 +67,9 @@ impl Deref for BLAS {
 /// entity to be built exactly once, add `Without<BLAS>` to your
 /// [`QueryFilter`](Self::QueryFilter); otherwise every batch will resubmit
 /// already-built entities.
-pub trait BLASBuilder: Resource + bevy_ecs::component::Component<Mutability = bevy_ecs::component::Mutable> + FromWorld {
+pub trait BLASBuilder:
+    Resource + bevy_ecs::component::Component<Mutability = bevy_ecs::component::Mutable> + FromWorld
+{
     /// Per-entity data fetched from the ECS and forwarded to [`build_flags`](Self::build_flags)
     /// and [`geometries`](Self::geometries).
     type QueryData: ReadOnlyQueryData;
@@ -302,7 +304,9 @@ fn build_blas_system<T: BLASBuilder>(
             .zip(geometry_transfers.into_iter())
         {
             if geometries.is_empty() {
-                tracing::warn!("Entity {entity:?} reported no geometry. Please avoid spawning this entity if you don't want a BLAS to be built for it.");
+                tracing::warn!(
+                    "Entity {entity:?} reported no geometry. Please avoid spawning this entity if you don't want a BLAS to be built for it."
+                );
                 continue;
             }
             geometry_infos_primitive_counts.clear();

@@ -3,8 +3,6 @@ use crate::utils::AsVkHandle;
 use ash::vk;
 use ash::vk::Handle;
 
-
-
 pub trait AsMTLTexture: AsVkHandle<Handle = vk::Image> + HasDevice {
     /// Returns the underlying Metal texture (`id<MTLTexture>`) backing this image.
     ///
@@ -35,7 +33,6 @@ pub trait AsMTLTexture: AsVkHandle<Handle = vk::Image> + HasDevice {
 
 impl<T> AsMTLTexture for T where T: AsVkHandle<Handle = vk::Image> + HasDevice {}
 
-
 pub trait AsMTLIOSurface: AsVkHandle<Handle = vk::Image> + HasDevice {
     /// Returns the `IOSurface` backing this image, or `null` if the image is not
     /// backed by one.
@@ -56,7 +53,6 @@ pub trait AsMTLIOSurface: AsVkHandle<Handle = vk::Image> + HasDevice {
 }
 
 impl<T> AsMTLIOSurface for T where T: AsVkHandle<Handle = vk::Image> + HasDevice {}
-
 
 pub trait AsMTLCommandQueue: AsVkHandle<Handle = vk::Queue> + HasDevice {
     /// Returns the underlying Metal command queue (`id<MTLCommandQueue>`) backing
@@ -81,7 +77,6 @@ pub trait AsMTLCommandQueue: AsVkHandle<Handle = vk::Queue> + HasDevice {
 }
 
 impl<T> AsMTLCommandQueue for T where T: AsVkHandle<Handle = vk::Queue> + HasDevice {}
-
 
 pub trait AsMTLSharedEvent: AsVkHandle<Handle = vk::Semaphore> + HasDevice {
     /// Returns the underlying Metal shared event (`id<MTLSharedEvent>`) backing
@@ -108,7 +103,6 @@ pub trait AsMTLSharedEvent: AsVkHandle<Handle = vk::Semaphore> + HasDevice {
 
 impl<T> AsMTLSharedEvent for T where T: AsVkHandle<Handle = vk::Semaphore> + HasDevice {}
 
-
 pub trait AsMTLDevice: HasDevice {
     /// Returns the underlying Metal device (`id<MTLDevice>`) backing this logical
     /// device.
@@ -130,7 +124,6 @@ pub trait AsMTLDevice: HasDevice {
 }
 
 impl<T> AsMTLDevice for T where T: HasDevice {}
-
 
 pub trait AsMTLCommandBuffer: AsVkHandle<Handle = vk::CommandBuffer> + HasDevice {
     /// Returns the underlying Metal command buffer (`id<MTL4CommandBuffer>`)

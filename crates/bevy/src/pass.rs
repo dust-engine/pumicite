@@ -190,14 +190,21 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                         config.debug_color,
                     ),
                     |ptr| unsafe {
-                        if world.resource_entities().get(shared_state_component_id).is_none() {
-                            world.spawn(bevy_ecs::resource::IsResource::new(shared_state_component_id));
+                        if world
+                            .resource_entities()
+                            .get(shared_state_component_id)
+                            .is_none()
+                        {
+                            world.spawn(bevy_ecs::resource::IsResource::new(
+                                shared_state_component_id,
+                            ));
                         }
                         // SAFETY: forwarded from this function's contract.
                         world.insert_resource_by_id(
                             shared_state_component_id,
                             ptr,
-                            MaybeLocation::caller());
+                            MaybeLocation::caller(),
+                        );
                     },
                 );
                 shared_state_component_id
@@ -507,7 +514,12 @@ fn add_system<Marker, T: IntoSystem<(), (), Marker>>(
     // ignore ambiguities with auto sync points
     // They aren't under user control, so no one should know or care.
     graph.ambiguous_with_all.insert(id.into());
-    graph.systems.get_mut(id).unwrap().access_mut().extend(access);
+    graph
+        .systems
+        .get_mut(id)
+        .unwrap()
+        .access_mut()
+        .extend(access);
 
     id
 }

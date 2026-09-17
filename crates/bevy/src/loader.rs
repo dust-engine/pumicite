@@ -12,9 +12,9 @@ pub use png::*;
 use std::ops::Deref;
 
 use bevy_asset::{Asset, AssetLoader, AsyncReadExt};
-use bevy_tasks::futures_lite::AsyncSeekExt;
 use bevy_ecs::world::FromWorld;
 use bevy_reflect::TypePath;
+use bevy_tasks::futures_lite::AsyncSeekExt;
 use pumicite::{ash::VkResult, bindless::ResourceHeap, image::FullImageView, prelude::*};
 use serde::{Deserialize, Serialize};
 

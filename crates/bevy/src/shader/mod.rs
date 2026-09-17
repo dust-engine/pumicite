@@ -318,10 +318,7 @@ impl AssetLoader for RayTracingPipelineLoader {
     ) -> Result<RayTracingPipelineLibrary, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let ext = load_context
-            .path()
-            .get_full_extension()
-            .unwrap_or_default();
+        let ext = load_context.path().get_full_extension().unwrap_or_default();
         let pipeline: pumicite_types::RayTracingPipeline = deserialize(&bytes, &ext)?;
 
         let layout = match &pipeline.layout {
@@ -338,7 +335,6 @@ impl AssetLoader for RayTracingPipelineLoader {
             pumicite_types::PipelineLayoutRef::Path(path) => {
                 load_context
                     .load_builder()
-                    
                     .load_value::<pumicite::bevy::PipelineLayout>(path)
                     .await?
                     .take()
@@ -651,10 +647,7 @@ impl AssetLoader for PipelineLayoutLoader {
 
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let ext = load_context
-            .path()
-            .get_full_extension()
-            .unwrap_or_default();
+        let ext = load_context.path().get_full_extension().unwrap_or_default();
         let layout: pumicite_types::PipelineLayout = deserialize(&bytes, &ext)?;
 
         let layout = Self::load_inner(
@@ -664,10 +657,7 @@ impl AssetLoader for PipelineLayoutLoader {
             load_context,
         )
         .await?;
-        lock.insert(
-            load_context.path().clone_owned(),
-            Arc::downgrade(&layout),
-        );
+        lock.insert(load_context.path().clone_owned(), Arc::downgrade(&layout));
         drop(lock);
 
         Ok(layout)
@@ -756,17 +746,11 @@ impl AssetLoader for DescriptorSetLayoutLoader {
 
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let ext = load_context
-            .path()
-            .get_full_extension()
-            .unwrap_or_default();
+        let ext = load_context.path().get_full_extension().unwrap_or_default();
         let layout: pumicite_types::DescriptorSetLayout = deserialize(&bytes, &ext)?;
 
         let layout = Self::load_inner(&layout, self.device.clone())?;
-        lock.insert(
-            load_context.path().clone_owned(),
-            Arc::downgrade(&layout),
-        );
+        lock.insert(load_context.path().clone_owned(), Arc::downgrade(&layout));
 
         drop(lock);
         Ok(layout)

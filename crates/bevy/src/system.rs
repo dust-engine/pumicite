@@ -46,7 +46,8 @@
 //! Use [`SubmissionState::record`] for commands outside render passes.
 
 use bevy_ecs::{
-    change_detection::Tick, component::ComponentId,
+    change_detection::Tick,
+    component::ComponentId,
     resource::Resource,
     system::{SystemMeta, SystemParam},
     world::{Mut, World, unsafe_world_cell::UnsafeWorldCell},

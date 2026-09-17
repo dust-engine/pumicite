@@ -199,7 +199,9 @@ impl SwapchainInner {
                     swapchain: inner.clone(),
                     srgb_view: SwapchainImageView(
                         srgb_view,
-                        srgb_format.map(|f| f.into()).unwrap_or(vk::Format::UNDEFINED),
+                        srgb_format
+                            .map(|f| f.into())
+                            .unwrap_or(vk::Format::UNDEFINED),
                     ),
                     linear_view: SwapchainImageView(linear_view, linear_format.into()),
                     acquire_semaphore: SharedSemaphore::new_binary(inner.device.clone(), true)?

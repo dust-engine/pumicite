@@ -61,7 +61,8 @@ use std::{
 };
 
 use bevy_ecs::{
-    change_detection::Tick, component::ComponentId,
+    change_detection::Tick,
+    component::ComponentId,
     prelude::*,
     ptr::OwningPtr,
     system::{SystemMeta, SystemParam},
@@ -158,13 +159,14 @@ impl QueueConfiguration {
             let name = CString::new(name).unwrap();
             let queue = device.get_queue(queue_ref).with_name(name.as_c_str());
             OwningPtr::make(SharedQueue::new(queue), |ptr| unsafe {
-                        if world.resource_entities().get(component_id).is_none() {
-                            world.spawn(bevy_ecs::resource::IsResource::new(component_id));
-                        }
-                        world.insert_resource_by_id(
-                            component_id,
-                            ptr,
-                            bevy_ecs::change_detection::MaybeLocation::caller());
+                if world.resource_entities().get(component_id).is_none() {
+                    world.spawn(bevy_ecs::resource::IsResource::new(component_id));
+                }
+                world.insert_resource_by_id(
+                    component_id,
+                    ptr,
+                    bevy_ecs::change_detection::MaybeLocation::caller(),
+                );
             });
         }
     }
@@ -313,9 +315,7 @@ unsafe impl<'a, T: 'static> SystemParam for Queue<'a, T> {
             return;
         }
         let combined_access = component_access_set.combined_access();
-        if combined_access.has_write(component_id)
-            || combined_access.has_read(component_id)
-        {
+        if combined_access.has_write(component_id) || combined_access.has_read(component_id) {
             panic!(
                 "Initialized multiple Queue{} entries on system {}",
                 std::any::type_name::<T>(),

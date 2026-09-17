@@ -73,10 +73,7 @@ impl AssetLoader for GraphicsPipelineLoader {
     ) -> Result<GraphicsPipeline, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let ext = load_context
-            .path()
-            .get_full_extension()
-            .unwrap_or_default();
+        let ext = load_context.path().get_full_extension().unwrap_or_default();
         let mut pipeline: pumicite_types::GraphicsPipeline = super::deserialize(&bytes, &ext)?;
         settings.apply_on(&mut pipeline);
 
@@ -94,7 +91,6 @@ impl AssetLoader for GraphicsPipelineLoader {
             pumicite_types::PipelineLayoutRef::Path(path) => {
                 load_context
                     .load_builder()
-                    
                     .load_value::<pumicite::bevy::PipelineLayout>(path)
                     .await?
                     .take()
