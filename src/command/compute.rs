@@ -8,6 +8,7 @@ use glam::UVec3;
 
 use crate::{
     HasDevice,
+    buffer::BufferLike,
     pipeline::{Pipeline, PipelineLayout},
     utils::AsVkHandle,
 };
@@ -103,6 +104,24 @@ impl<'a> CommandEncoder<'a> {
         unsafe {
             self.device()
                 .cmd_dispatch(self.buffer().buffer, size.x, size.y, size.z);
+        }
+    }
+
+    /// Dispatches compute work with the workgroup counts read from a GPU buffer.
+    ///
+    /// # Parameters
+    /// - `args`: buffer holding a [`vk::DispatchIndirectCommand`] (`x`, `y`, `z`
+    ///   as three `u32`) at `args_offset` bytes. The buffer needs to be created with
+    ///   [`vk::BufferUsageFlags::INDIRECT_BUFFER`].
+    /// - `args_offset`: The byte offset within the buffer where the
+    ///   `vk::DispatchIndirectCommand` is located.
+    pub fn dispatch_indirect(&mut self, args: &'a impl BufferLike, args_offset: vk::DeviceSize) {
+        unsafe {
+            self.device().cmd_dispatch_indirect(
+                self.buffer().buffer,
+                args.vk_handle(),
+                args.offset() + args_offset,
+            );
         }
     }
 

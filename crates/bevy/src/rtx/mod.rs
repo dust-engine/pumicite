@@ -70,6 +70,13 @@ impl Plugin for RtxPipelinePlugin {
                         .unwrap();
                     device_builder
                         .enable_feature(
+                            |rtx_features: &mut vk::PhysicalDeviceRayTracingPipelineFeaturesKHR| {
+                                &mut rtx_features.ray_tracing_pipeline_trace_rays_indirect
+                            },
+                        )
+                        .ok();
+                    device_builder
+                        .enable_feature(
                             |rtx_features: &mut vk::PhysicalDeviceHostQueryResetFeatures| {
                                 &mut rtx_features.host_query_reset // For ray tracing AS compaction size query
                             },

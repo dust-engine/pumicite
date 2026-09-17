@@ -712,6 +712,67 @@ impl<'a> CommandEncoder<'a> {
         buffer: &'a impl BufferLike,
         size: UVec3,
     ) {
+        let [raygen, miss, hitgroup, callable] =
+            Self::sbt_regions(shader_binding_table, raygen_shader, buffer);
+        unsafe {
+            self.device()
+                .extension::<ash::khr::ray_tracing_pipeline::Meta>()
+                .cmd_trace_rays(
+                    self.buffer().buffer,
+                    &raygen,
+                    &miss,
+                    &hitgroup,
+                    &callable,
+                    size.x,
+                    size.y,
+                    size.z,
+                );
+        }
+    }
+
+    /// Dispatches rays with the dispatch dimensions read from a GPU buffer.
+    ///
+    /// Requires the `rayTracingPipelineTraceRaysIndirect` feature
+    /// ([`vk::PhysicalDeviceRayTracingPipelineFeaturesKHR`]).
+    ///
+    /// # Parameters
+    ///
+    /// - `shader_binding_table`, `raygen_shader`, `buffer`: as for [`trace_rays`](Self::trace_rays)
+    /// - `args`: buffer holding a [`vk::TraceRaysIndirectCommandKHR`] (`width`,
+    ///   `height`, `depth` as three `u32`) at `args_offset` bytes. The buffer
+    ///   needs [`vk::BufferUsageFlags::INDIRECT_BUFFER`] and
+    ///   [`vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS`].
+    pub fn trace_rays_indirect(
+        &mut self,
+        shader_binding_table: &ShaderBindingTable,
+        raygen_shader: u32,
+        buffer: &'a impl BufferLike,
+        args: &'a impl BufferLike,
+        args_offset: vk::DeviceSize,
+    ) {
+        let [raygen, miss, hitgroup, callable] =
+            Self::sbt_regions(shader_binding_table, raygen_shader, buffer);
+        unsafe {
+            self.device()
+                .extension::<ash::khr::ray_tracing_pipeline::Meta>()
+                .cmd_trace_rays_indirect(
+                    self.buffer().buffer,
+                    &raygen,
+                    &miss,
+                    &hitgroup,
+                    &callable,
+                    args.device_address() + args.offset() + args_offset,
+                );
+        }
+    }
+
+    /// The four SBT regions (raygen, miss, hit group, callable) for a trace
+    /// call, laid out the way [`ShaderBindingTable::write_buffer`] fills `buffer`.
+    fn sbt_regions(
+        shader_binding_table: &ShaderBindingTable,
+        raygen_shader: u32,
+        buffer: &impl BufferLike,
+    ) -> [vk::StridedDeviceAddressRegionKHR; 4] {
         let raygen_stride = shader_binding_table
             .layout
             .raygen_layout()
@@ -746,38 +807,28 @@ impl<'a> CommandEncoder<'a> {
         let callable_offset =
             hitgroup_offset + shader_binding_table.hitgroup.len().next_multiple_of(align) as u64;
 
-        unsafe {
-            self.device()
-                .extension::<ash::khr::ray_tracing_pipeline::Meta>()
-                .cmd_trace_rays(
-                    self.buffer().buffer,
-                    &vk::StridedDeviceAddressRegionKHR {
-                        device_address: base
-                            + raygen_offset
-                            + (raygen_stride * raygen_shader) as u64,
-                        stride: raygen_stride as u64,
-                        size: raygen_stride as u64,
-                    },
-                    &vk::StridedDeviceAddressRegionKHR {
-                        device_address: base + miss_offset,
-                        stride: miss_stride as u64,
-                        size: shader_binding_table.miss.len() as u64,
-                    },
-                    &vk::StridedDeviceAddressRegionKHR {
-                        device_address: base + hitgroup_offset,
-                        stride: hitgroup_stride as u64,
-                        size: shader_binding_table.hitgroup.len() as u64,
-                    },
-                    &vk::StridedDeviceAddressRegionKHR {
-                        device_address: base + callable_offset,
-                        stride: callable_stride as u64,
-                        size: shader_binding_table.callable.len() as u64,
-                    },
-                    size.x,
-                    size.y,
-                    size.z,
-                );
-        }
+        [
+            vk::StridedDeviceAddressRegionKHR {
+                device_address: base + raygen_offset + (raygen_stride * raygen_shader) as u64,
+                stride: raygen_stride as u64,
+                size: raygen_stride as u64,
+            },
+            vk::StridedDeviceAddressRegionKHR {
+                device_address: base + miss_offset,
+                stride: miss_stride as u64,
+                size: shader_binding_table.miss.len() as u64,
+            },
+            vk::StridedDeviceAddressRegionKHR {
+                device_address: base + hitgroup_offset,
+                stride: hitgroup_stride as u64,
+                size: shader_binding_table.hitgroup.len() as u64,
+            },
+            vk::StridedDeviceAddressRegionKHR {
+                device_address: base + callable_offset,
+                stride: callable_stride as u64,
+                size: shader_binding_table.callable.len() as u64,
+            },
+        ]
     }
 }
 
