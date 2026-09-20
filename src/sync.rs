@@ -48,12 +48,12 @@ use crate::{Device, HasDevice, utils::AsVkHandle};
 ///   before accessing the wrapped resource.
 /// - **Deferred cleanup**: If dropped while GPU work is pending, the resource is
 ///   automatically sent to a cleanup queue and dropped only after the GPU finishes.
-pub struct GPUMutex<T> {
+pub struct GPUMutex<T: Send> {
     /// (SharedSemaphore::as_ptr(), u64 timestamp)
     ptr: AtomicU128,
     pub(crate) inner: ManuallyDrop<Box<T>>,
 }
-impl<T> Deref for GPUMutex<T> {
+impl<T: Send> Deref for GPUMutex<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -61,11 +61,17 @@ impl<T> Deref for GPUMutex<T> {
     }
 }
 
+/// Packs a semaphore pointer and a timestamp into a single `u128`.
+///
+/// The pointer occupies the low 64 bits and the timestamp the high 64 bits.
+/// A null pointer with a zero timestamp encodes to `0`, which is the "unlocked" state.
 fn encode_semaphore(ptr: *const Semaphore, value: u64) -> u128 {
-    unsafe { std::mem::transmute((ptr, value)) }
+    (ptr as usize as u128) | ((value as u128) << 64)
 }
 fn decode_semaphore(encoded: u128) -> (*const Semaphore, u64) {
-    unsafe { std::mem::transmute(encoded) }
+    let ptr = encoded as u64 as usize as *const Semaphore;
+    let value = (encoded >> 64) as u64;
+    (ptr, value)
 }
 
 impl<T: Send> GPUMutex<T> {
@@ -98,7 +104,7 @@ impl<T: Send> GPUMutex<T> {
     pub fn is_locked(&self) -> bool {
         let (semaphore_ptr, signal_value) =
             decode_semaphore(self.ptr.load(std::sync::atomic::Ordering::Acquire));
-        if semaphore_ptr.is_null() || signal_value == 0 {
+        if semaphore_ptr.is_null() {
             return false;
         }
         unsafe {
@@ -204,17 +210,18 @@ impl<T: Send> GPUMutex<T> {
 
     /// Async version of [`unwrap_block`](Self::unwrap_block).
     pub async fn unwrap_block_async(mut self) -> VkResult<Box<T>> {
-        let inner = unsafe { ManuallyDrop::take(&mut self.inner) };
-        let ptr = *self.ptr.get_mut();
-        std::mem::forget(self);
-
-        let (semaphore_ptr, wait_value): (*const Semaphore, u64) = decode_semaphore(ptr);
-        if semaphore_ptr.is_null() {
-            return Ok(inner);
+        let (semaphore_ptr, wait_value): (*const Semaphore, u64) =
+            decode_semaphore(*self.ptr.get_mut());
+        if !semaphore_ptr.is_null() {
+            // `self` keeps its strong count on the semaphore for the whole await, so borrow
+            // it through a `ManuallyDrop` rather than taking ownership. Ownership of both
+            // the semaphore and the resource stays with `self` until the wait resolves, so
+            // dropping this future mid-wait goes through `<GPUMutex as Drop>::drop`.
+            let semaphore = ManuallyDrop::new(unsafe { Arc::from_raw(semaphore_ptr) });
+            semaphore.wait_async(wait_value).await?;
         }
-        // At this point we have exclusive ownership over the timeline semaphore.
-        let semaphore = unsafe { Arc::from_raw(semaphore_ptr) };
-        semaphore.wait_async(wait_value).await?;
+        // Safety: the semaphore has reached `wait_value`, so the GPU is done with the resource.
+        let (inner, _semaphore, _) = unsafe { self.into_inner() };
         Ok(inner)
     }
 
@@ -288,7 +295,7 @@ impl<T> Future for GPUMutexFuture<T> {
     }
 }
 
-impl<T> Drop for GPUMutex<T> {
+impl<T: Send> Drop for GPUMutex<T> {
     fn drop(&mut self) {
         unsafe {
             let (semaphore_ptr, wait_value): (*const Semaphore, u64) =
@@ -443,6 +450,9 @@ impl Semaphore {
         if self.is_binary() {
             unsafe { self.device.get_fence_status(self.fence).unwrap() }
         } else {
+            if val == 0 {
+                return true;
+            }
             self.value() >= val
         }
     }
@@ -696,6 +706,12 @@ impl Timeline {
     /// Schedule a command buffer for execution on the current timeline.
     ///
     /// Must be called before recording the command buffer.
+    ///
+    /// **Once scheduled, the command buffer must be submitted.** This reserves the next
+    /// timestamp on the timeline, and only GPU execution of the command buffer can signal it.
+    /// Every command buffer scheduled after it on this timeline, and every [`GPUMutex`]
+    /// it locks, waits for that timestamp. Dropping, freeing, or resetting a scheduled
+    /// command buffer without submitting it panics.
     pub fn schedule(&mut self, cb: &mut crate::command::CommandBuffer) {
         assert!(
             cb.semaphore.is_none(),
@@ -742,7 +758,7 @@ pub(crate) fn spawn_recycler_thread(
 ) {
     std::thread::Builder::new()
         .name("Pumicite Deferred Drops".to_string())
-        .stack_size(512)
+        .stack_size(512 * 1024)
         .spawn(move || {
             let mut queues: BTreeMap<SharedSemaphore, BTreeMap<u64, Vec<RetiredGPUMutex>>> =
                 BTreeMap::new();
@@ -751,12 +767,15 @@ pub(crate) fn spawn_recycler_thread(
             let mut container_pool: Vec<Vec<RetiredGPUMutex>> = Vec::new();
             let mut container_pool2: Vec<BTreeMap<u64, Vec<RetiredGPUMutex>>> = Vec::new();
 
+            let mut binary_items: Vec<RetiredGPUMutex> = Vec::new();
+
             let mut semaphores: Vec<vk::Semaphore> = Vec::new();
             let mut semaphore_values: Vec<u64> = Vec::new();
+            let mut fences: Vec<vk::Fence> = Vec::new();
 
             'outer: loop {
                 'inner: loop {
-                    let item = if queues.is_empty() {
+                    let item = if queues.is_empty() && binary_items.is_empty() {
                         match receiver.recv() {
                             Ok(a) => a,
                             Err(_) => break 'outer, // disconnected
@@ -775,6 +794,10 @@ pub(crate) fn spawn_recycler_thread(
                         drop(item);
                         continue;
                     }
+                    if item.semaphore.is_binary() {
+                        binary_items.push(item);
+                        continue;
+                    }
                     let queue = queues
                         .entry(item.semaphore.clone())
                         .or_insert_with(|| container_pool2.pop().unwrap_or_default());
@@ -789,23 +812,41 @@ pub(crate) fn spawn_recycler_thread(
                     semaphores.push(timeline_semaphore.vk_handle());
                     semaphore_values.push(*timestamps.first_entry().unwrap().key());
                 }
+                for item in binary_items.iter() {
+                    fences.push(item.semaphore.raw_fence());
+                }
                 // There shouldn't be any empty waits. If the wait list is empty we would've blocked at receiver.recv
-                debug_assert!(!semaphores.is_empty());
-                unsafe {
-                    device
-                        .wait_semaphores(
-                            &vk::SemaphoreWaitInfo {
-                                flags: vk::SemaphoreWaitFlags::ANY,
-                                ..Default::default()
-                            }
-                            .semaphores(&semaphores)
-                            .values(&semaphore_values),
-                            !0,
-                        )
-                        .unwrap();
+                debug_assert!(!semaphores.is_empty() || !fences.is_empty());
+
+                if !semaphores.is_empty() {
+                    unsafe {
+                        device
+                            .wait_semaphores(
+                                &vk::SemaphoreWaitInfo {
+                                    flags: vk::SemaphoreWaitFlags::ANY,
+                                    ..Default::default()
+                                }
+                                .semaphores(&semaphores)
+                                .values(&semaphore_values),
+                                !0,
+                            )
+                            .unwrap();
+                    }
+                }
+                if !fences.is_empty() {
+                    // Deliberately never reset the fences here: `Semaphore::wait_blocked` is
+                    // the only consumer of a binary semaphore's fence, and resetting it from
+                    // this thread would make that wait hang.
+                    unsafe {
+                        device.wait_for_fences(&fences, false, !0).unwrap();
+                    }
                 }
                 semaphores.clear();
                 semaphore_values.clear();
+                fences.clear();
+
+                // Destroy binary-locked resources whose fence was signaled
+                binary_items.retain(|item| !item.semaphore.is_signaled(item.value));
 
                 // Destroy resources for which the semaphore was signaled
                 for (timeline_semamphore, timestamps) in queues.iter_mut() {
@@ -834,4 +875,29 @@ pub(crate) fn spawn_recycler_thread(
             drop(receiver);
         })
         .unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn semaphore_encoding_round_trips() {
+        let cases: [(usize, u64); 4] = [
+            (0, 0),
+            (0x1000, 1),
+            (0xdead_beef_0000, u64::MAX),
+            (usize::MAX, 0x8000_0000_0000_0001),
+        ];
+        for (ptr, value) in cases {
+            let ptr = ptr as *const Semaphore;
+            let encoded = encode_semaphore(ptr, value);
+            let (decoded_ptr, decoded_value) = decode_semaphore(encoded);
+            assert_eq!(decoded_ptr, ptr);
+            assert_eq!(decoded_value, value);
+        }
+        // The unlocked sentinel must decode to a null pointer with zero timestamp.
+        assert_eq!(decode_semaphore(0), (std::ptr::null(), 0));
+        assert_eq!(encode_semaphore(std::ptr::null(), 0), 0);
+    }
 }

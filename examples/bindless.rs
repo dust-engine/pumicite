@@ -112,7 +112,7 @@ fn clear(
     let Some(pipeline) = pipelines.get(&example_resource.pipeline) else {
         return;
     };
-    let Some(example) = example_assets.get_mut(&example_resource.image) else {
+    let Some(mut example) = example_assets.get_mut(&example_resource.image) else {
         return;
     };
     state.record(|encoder| {

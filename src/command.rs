@@ -331,7 +331,7 @@ impl<'a> CommandEncoder<'a> {
     /// Command buffers scheduled onto a common timeline must lock a shared mutex in
     /// the same order they were scheduled onto the timeline. Ordering inversion will
     /// cause a panic.
-    /// 
+    ///
     /// This may not be practical when recording command buffers in parallel, in which
     /// case you can take the locks in schedule order with [`CommandBuffer::lock`] before
     /// handing the command buffers to worker threads. Worker threads will then use
@@ -781,6 +781,7 @@ pub enum CommandBufferState {
 /// 1. **Allocation**: Created by [`CommandPool::alloc`]
 /// 2. **Scheduling**: Prepared for recording via [`crate::sync::Timeline::schedule`]. The order of execution of a command buffer in regards to a Timeline
 ///    depends on the order that [`crate::sync::Timeline::schedule`] was called.
+///    **Once scheduled, the command buffer must be submitted.**
 /// 3. **Begin**: Before recording, call [`CommandPool::begin`]
 /// 3. **Recording**: Commands recorded via [`CommandPool::record()`]
 /// 4. **Execution**: Submitted with [Queue::submit](crate::Queue::submit)
@@ -1053,6 +1054,21 @@ impl Drop for CommandBuffer {
                 );
             }
             CommandBufferState::Freed => (),
+            _ if self.semaphore.is_some() => {
+                // Scheduled on a Timeline but never submitted. The reserved timestamp can only
+                // be signaled by GPU execution, so everything waiting on it would wedge forever.
+                if std::thread::panicking() {
+                    tracing::error!(
+                        "Dropping CommandBuffer {:?} that was scheduled on a Timeline but never submitted",
+                        self.buffer
+                    );
+                } else {
+                    panic!(
+                        "Dropping CommandBuffer {:?} that was scheduled on a Timeline but never submitted.",
+                        self.buffer
+                    );
+                }
+            }
             _ => {
                 tracing::warn!(
                     "Dropping CommandBuffer {:?} without returning it to the CommandPool {:?}",
@@ -1139,7 +1155,8 @@ impl Drop for CommandPoolInner {
 }
 
 pub struct CommandEncoderGuard<'a> {
-    pool: &'a mut CommandPool,
+    /// Holds the exclusive borrow of the pool for as long as recording is in progress.
+    _pool: &'a mut CommandPool,
     /// Buffer is in a box to ensure the validity of the pointer from CommandEncoder.
     /// This allows [`CommandEncoderGuard`] to be Unpin.
     buffer: Option<Box<CommandBuffer>>,
@@ -1155,7 +1172,10 @@ impl<'a> CommandEncoderGuard<'a> {
 impl<'a> Drop for CommandEncoderGuard<'a> {
     fn drop(&mut self) {
         if let Some(cb) = self.buffer.take() {
-            self.pool.free(*cb);
+            // The command buffer is scheduled on a Timeline, so it must be submitted.
+            // Let CommandBuffer::drop report the abandoned schedule (it panics unless we
+            // are already unwinding).
+            drop(cb);
         }
     }
 }
@@ -1243,7 +1263,7 @@ impl CommandPool {
         CommandEncoderGuard {
             buffer: Some(command_buffer),
             encoder,
-            pool: self,
+            _pool: self,
         }
     }
     /// Record commands using the provided [`CommandEncoder`].
@@ -1382,6 +1402,10 @@ impl CommandPool {
         }
     }
     /// Returning a command buffer to the pool.
+    ///
+    /// # Panics
+    /// Panics if the command buffer is still executing, or if it was scheduled on a
+    /// [`Timeline`](crate::sync::Timeline) but never submitted.
     pub fn free(&mut self, mut command_buffer: CommandBuffer) {
         assert!(
             Arc::ptr_eq(&command_buffer.pool, &self.inner),
@@ -1391,6 +1415,11 @@ impl CommandPool {
             command_buffer.state,
             CommandBufferState::Pending,
             "Command buffer is still being executed!"
+        );
+        assert!(
+            command_buffer.semaphore.is_none(),
+            "Command buffer was scheduled on a Timeline but never submitted. \
+             Once scheduled, a command buffer must be submitted."
         );
         command_buffer.retainer.clear();
         if !command_buffer.retainer.is_unused() {
@@ -1405,6 +1434,10 @@ impl CommandPool {
     }
 
     /// Resets a command buffer. The command pool must be created with [`CommandPool::new_resettable`]
+    ///
+    /// # Panics
+    /// Panics if the command buffer is still executing, or if it was scheduled on a
+    /// [`Timeline`](crate::sync::Timeline) but never submitted.
     pub fn reset(&mut self, command_buffer: &mut CommandBuffer) {
         assert!(
             Arc::ptr_eq(&command_buffer.pool, &self.inner),
@@ -1414,6 +1447,11 @@ impl CommandPool {
             command_buffer.state,
             CommandBufferState::Pending,
             "Command buffer is still being executed!"
+        );
+        assert!(
+            command_buffer.semaphore.is_none(),
+            "Command buffer was scheduled on a Timeline but never submitted. \
+             Once scheduled, a command buffer must be submitted."
         );
         command_buffer.retainer.clear();
         command_buffer.wait_semaphores.clear();

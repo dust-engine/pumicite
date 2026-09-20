@@ -107,6 +107,11 @@ pub trait BLASBuilder:
     /// Records geometry uploads for one entity and returns the resulting
     /// [`BLASBuildGeometry`] descriptors.
     ///
+    /// The returned list must contain at least one geometry. An entity that should not
+    /// get a BLAS must not match [`QueryFilter`](Self::QueryFilter); if its geometry is not
+    /// available yet, keep it out of the query (e.g. with a marker component) or return
+    /// `false` from [`is_ready`](Self::is_ready). Returning an empty list panics.
+    ///
     /// The future is awaited inside the build system's command-recording context,
     /// so implementations may issue transfer commands on `recorder` (e.g. staging
     /// vertex/index data into device-local buffers). The returned descriptors must
@@ -303,12 +308,13 @@ fn build_blas_system<T: BLASBuilder>(
             .take(batch_size)
             .zip(geometry_transfers.into_iter())
         {
-            if geometries.is_empty() {
-                tracing::warn!(
-                    "Entity {entity:?} reported no geometry. Please avoid spawning this entity if you don't want a BLAS to be built for it."
-                );
-                continue;
-            }
+            assert!(
+                !geometries.is_empty(),
+                "{}::geometries returned no geometry for entity {entity:?}. \
+                 BLASBuilder::geometries must return at least one geometry; keep entities \
+                 without geometry out of the query instead.",
+                std::any::type_name::<T>()
+            );
             geometry_infos_primitive_counts.clear();
             geometry_infos_primitive_counts.extend(geometries.iter().map(
                 |geometry| match geometry {
@@ -438,9 +444,6 @@ fn build_blas_system<T: BLASBuilder>(
             infos.push(info);
         }
         drop(geometry_infos_primitive_counts);
-        if infos.is_empty() {
-            return;
-        }
 
         let scratch_buffer = Buffer::new_private(
             allocator.clone(),
@@ -521,10 +524,9 @@ fn build_blas_system<T: BLASBuilder>(
     cmd_pool.pool.begin(&mut cmd_buf).unwrap();
     cmd_pool.pool.record_future(&mut cmd_buf, future);
     cmd_pool.pool.finish(&mut cmd_buf).unwrap();
-    if pending_accel_structs.is_empty() {
-        cmd_pool.pool.free(cmd_buf);
-        return;
-    }
+    // The query was non-empty and every entity contributed at least one geometry, so the
+    // scheduled command buffer always carries a build and is always submitted.
+    debug_assert!(!pending_accel_structs.is_empty());
     queue.submit(&mut cmd_buf).unwrap();
     tracing::info!(
         "Scheduled BLAS build for {} entities",
