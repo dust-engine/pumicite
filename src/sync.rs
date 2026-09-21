@@ -43,9 +43,10 @@ use crate::{Device, HasDevice, utils::AsVkHandle};
 /// - **Cross-queue syncronization**: Once (locked)[`crate::command::CommandEncoder::lock`]
 ///   on a (CommandEncoder)[`crate::command::CommandEncoder`], the command buffer will
 ///   automatically keep track of the semaphores to wait and signal upon submission.
-/// - **Host syncronization**: The CPU can check [`is_locked`](Self::is_locked) or wait
-///   via [`unwrap_block`](Self::unwrap_block) to safely wait for the GPU work to finish
-///   before accessing the wrapped resource.
+/// - **Host syncronization**: The CPU can try [`try_deref_mut`](Self::try_deref_mut) for
+///   non-blocking access, or wait via [`unwrap_block`](Self::unwrap_block) /
+///   [`unwrap_block_async`](Self::unwrap_block_async) for the GPU work to finish before
+///   accessing the wrapped resource.
 /// - **Deferred cleanup**: If dropped while GPU work is pending, the resource is
 ///   automatically sent to a cleanup queue and dropped only after the GPU finishes.
 pub struct GPUMutex<T: Send> {
@@ -100,40 +101,23 @@ impl<T: Send> GPUMutex<T> {
         }
     }
 
-    /// Returns true if there is currently pending GPU work using the locked resource.
-    pub fn is_locked(&self) -> bool {
-        let (semaphore_ptr, signal_value) =
-            decode_semaphore(self.ptr.load(std::sync::atomic::Ordering::Acquire));
-        if semaphore_ptr.is_null() {
-            return false;
-        }
-        unsafe {
-            let semaphore = &*semaphore_ptr; // This should be fine because GPUMutex already retains the ownership of the semaphore
-            !semaphore.is_signaled(signal_value)
-        }
-    }
-
-    /// Returns the semaphore and timestamp of the current lock holder, without modifying the lock.
-    ///
-    /// The semaphore is `None` if the mutex has never been locked. The lock state is a snapshot
-    /// and may be superseded by a concurrent [`lock_until`](Self::lock_until).
-    pub(crate) fn current_lock(&self) -> (Option<&Semaphore>, u64) {
-        let (semaphore_ptr, value) =
-            decode_semaphore(self.ptr.load(std::sync::atomic::Ordering::Acquire));
-        if semaphore_ptr.is_null() {
-            (None, value)
-        } else {
-            // Safety: the mutex retains ownership of the semaphore it currently points to.
-            (Some(unsafe { &*semaphore_ptr }), value)
-        }
-    }
-
-    /// Obtain a mutable reference to the wrapped item if there is no currently pending GPU work using the locked resource.
+    /// Obtain a mutable reference to the wrapped item if there is no currently pending GPU
+    /// work using the locked resource.
     pub fn try_deref_mut(&mut self) -> Option<&mut T> {
-        if self.is_locked() {
-            None
-        } else {
+        let (semaphore_ptr, signal_value) = decode_semaphore(*self.ptr.get_mut());
+        if semaphore_ptr.is_null() {
+            return Some(&mut self.inner);
+        }
+        let signaled = unsafe {
+            // Safety: we hold `&mut self`, so no `lock_until` can run concurrently. The mutex
+            // therefore still owns the semaphore this pointer refers to, and it stays alive
+            // for the duration of this call.
+            (*semaphore_ptr).is_signaled(signal_value)
+        };
+        if signaled {
             Some(&mut self.inner)
+        } else {
+            None
         }
     }
 
@@ -673,7 +657,7 @@ impl Drop for RetiredGPUMutex {
 ///
 /// ```
 /// # use pumicite::{Device, sync::Timeline, command::CommandPool};
-/// # let (device, queue) = Device::create_system_default().unwrap();
+/// # let (device, mut queue) = Device::create_system_default().unwrap();
 /// // Create a timeline for a specific execution sequence
 /// let mut timeline = Timeline::new(device.clone()).unwrap();
 /// let mut pool = CommandPool::new(device, queue.family_index()).unwrap();
@@ -686,6 +670,16 @@ impl Drop for RetiredGPUMutex {
 /// timeline.schedule(&mut command_buffer2); // timestamp = 2
 ///
 /// // cmd2 will wait for cmd1 to complete, regardless of submission order
+/// # for cb in [&mut command_buffer1, &mut command_buffer2] {
+/// #     pool.begin(cb).unwrap();
+/// #     pool.record(cb, |_| {});
+/// #     pool.finish(cb).unwrap();
+/// # }
+/// # // Submit out of order to demonstrate the timeline ordering guarantee.
+/// # queue.submit(&mut command_buffer2).unwrap();
+/// # queue.submit(&mut command_buffer1).unwrap();
+/// # command_buffer1.block_until_completion().unwrap();
+/// # command_buffer2.block_until_completion().unwrap();
 /// ```
 pub struct Timeline {
     /// The timeline semaphore used for ordering and synchronization.

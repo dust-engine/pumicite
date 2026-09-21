@@ -23,21 +23,22 @@
 //!
 //! ```
 //! # use std::sync::Arc;
-//! # use pumicite::{Instance, Device, bindless::BindlessConfig};
+//! # use pumicite::{Instance, Device, bindless::{ResourceHeap, SamplerHeap}};
 //! # let entry = Arc::new(unsafe { ash::Entry::load() }.unwrap());
 //! # let instance = Instance::builder(entry).build().unwrap();
 //! # let pdevice = instance.enumerate_physical_devices().unwrap().next().unwrap();
-//! // Enable bindless on device creation
+//! // Enable the required extensions and features on device creation
 //! let mut builder = Device::builder(pdevice);
-//! builder.enable_bindless(BindlessConfig::default()).unwrap();
+//! builder.enable_bindless().unwrap();
 //! builder.enable_queue(0, 1.0);
 //! let device = builder.build().unwrap();
 //!
-//! // Get the bindless heap
-//! let heap = device.get_bindless_heap().unwrap();
+//! // Create the heaps with a fixed capacity
+//! let resources = ResourceHeap::new(device.clone(), 1024).unwrap();
+//! let samplers = SamplerHeap::new(device, 64).unwrap();
 //!
-//! // Use heap.add_resource() to add textures/buffers
-//! // Pass handles to shaders via push constants
+//! // Use resources.add_image() / add_buffer() and samplers.add() to obtain handles,
+//! // then pass those handles to shaders via push constants
 //! ```
 //!
 //! # Requirements

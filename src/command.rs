@@ -48,7 +48,7 @@
 //!
 //! ```
 //! # use pumicite::{Device, command::CommandPool, sync::Timeline};
-//! # let (device, queue) = Device::create_system_default().unwrap();
+//! # let (device, mut queue) = Device::create_system_default().unwrap();
 //! // Create a command pool and timeline
 //! let mut pool = CommandPool::new(device.clone(), queue.family_index()).unwrap();
 //! let mut timeline = Timeline::new(device).unwrap();
@@ -65,6 +65,10 @@
 //!
 //! // Finish recording
 //! pool.finish(&mut cmd).unwrap();
+//!
+//! // Once scheduled, a command buffer must be submitted.
+//! queue.submit(&mut cmd).unwrap();
+//! cmd.block_until_completion().unwrap();
 //! ```
 //!
 //! [^nvperf]: [NVIDIA Tips and Tricks: Vulkan Dos and Don’t](https://developer.nvidia.com/blog/vulkan-dos-donts/)
@@ -278,7 +282,7 @@ impl<'a> CommandEncoder<'a> {
     /// # Example
     /// ```
     /// # use pumicite::{Device, command::CommandPool, sync::Timeline, Allocator, ash::vk, buffer::Buffer};
-    /// # let (device, queue) = Device::create_system_default().unwrap();
+    /// # let (device, mut queue) = Device::create_system_default().unwrap();
     /// # let mut pool = CommandPool::new(device.clone(), queue.family_index()).unwrap();
     /// # let mut timeline = Timeline::new(device.clone()).unwrap();
     /// # let mut cmd = pool.alloc().unwrap();
@@ -292,6 +296,8 @@ impl<'a> CommandEncoder<'a> {
     ///     // retained is guaranteed to live until GPU execution completes
     /// });
     /// # pool.finish(&mut cmd).unwrap();
+    /// # queue.submit(&mut cmd).unwrap();
+    /// # cmd.block_until_completion().unwrap();
     /// ```
     pub fn retain<T: Sized>(&mut self, arc: T) -> &'a T {
         unsafe {
@@ -310,7 +316,8 @@ impl<'a> CommandEncoder<'a> {
     /// mutex becomes available,
     /// and the mutex will remain locked until this command buffer completes execution.
     ///
-    /// This is equivalent to calling [`CommandBuffer::lock`] followed by [`assert_locked`](Self::assert_locked).
+    /// This is equivalent to calling [`CommandBuffer::lock`] followed by
+    /// [`get_locked`](Self::get_locked) on the returned guard.
     ///
     /// # Parameters
     /// - `res`: The GPU mutex to lock
@@ -334,15 +341,15 @@ impl<'a> CommandEncoder<'a> {
     ///
     /// This may not be practical when recording command buffers in parallel, in which
     /// case you can take the locks in schedule order with [`CommandBuffer::lock`] before
-    /// handing the command buffers to worker threads. Worker threads will then use
-    /// [`assert_locked`](Self::assert_locked) while recording.
+    /// handing the command buffers to worker threads. Worker threads then call
+    /// [`get_locked`](Self::get_locked) on the returned guards while recording.
     #[track_caller]
     pub fn lock<T: Send + Sync>(
         &mut self,
         res: &GPUMutex<T>,
         stages: vk::PipelineStageFlags2,
     ) -> &'a T {
-        self.buffer_mut().lock(res, stages);
+        self.buffer_mut().lock_inner(res, stages);
         unsafe {
             // Safety: The lifetime extension is safe because the GPUMutex ensures
             // the resource remains valid until the command buffer completes execution.
@@ -350,118 +357,44 @@ impl<'a> CommandEncoder<'a> {
         }
     }
 
-    /// Returns a reference to a resource that is already locked for the duration of this
-    /// command buffer's execution.
-    ///
-    /// [`lock`](Self::lock) requires that command buffers sharing a mutex on one timeline lock
-    /// it in schedule order. That order cannot be guaranteed when several threads record in
-    /// parallel, because a command buffer scheduled later may lock the mutex before one
-    /// scheduled earlier gets to record. This method lets the earlier command buffer obtain
-    /// the reference anyway.
-    ///
-    /// It asserts that the mutex is currently held on this command buffer's timeline at this
-    /// command buffer's timestamp or a later one. That holder keeps the resource alive until
-    /// the timeline passes its timestamp, which is after this command buffer has finished
-    /// executing, so the returned reference is valid for the GPU execution lifetime.
-    ///
-    /// # Example
-    /// ```
-    /// # use pumicite::{Device, command::CommandPool, sync::{GPUMutex, Timeline}, ash::vk};
-    /// # let (device, queue) = Device::create_system_default().unwrap();
-    /// # let mut timeline = Timeline::new(device.clone()).unwrap();
-    /// # let mut pool = CommandPool::new(device, queue.family_index()).unwrap();
-    /// let mutex = GPUMutex::new(7u32);
-    ///
-    /// let mut cb1 = pool.alloc().unwrap();
-    /// let mut cb2 = pool.alloc().unwrap();
-    /// timeline.schedule(&mut cb1); // timestamp 1
-    /// timeline.schedule(&mut cb2); // timestamp 2
-    ///
-    /// // Lock in schedule order before any recording happens, as a main thread would
-    /// // before handing the command buffers to worker threads.
-    /// cb1.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
-    /// cb2.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
-    ///
-    /// // Record in the opposite order; both only borrow the already-taken lock.
-    /// pool.begin(&mut cb2).unwrap();
-    /// pool.record(&mut cb2, |encoder| {
-    ///     assert_eq!(*encoder.assert_locked(&mutex), 7);
-    /// });
-    /// pool.finish(&mut cb2).unwrap();
-    ///
-    /// pool.begin(&mut cb1).unwrap();
-    /// pool.record(&mut cb1, |encoder| {
-    ///     assert_eq!(*encoder.assert_locked(&mutex), 7);
-    /// });
-    /// pool.finish(&mut cb1).unwrap();
-    /// ```
+    /// Returns a resource locked earlier with [`CommandBuffer::lock`], with the GPU execution
+    /// lifetime of this encoder.
     ///
     /// # Panics
-    /// Panics if the mutex is unlocked, held on a different semaphore, or held on this timeline
-    /// at a timestamp earlier than this command buffer's. A lock held only by an earlier
-    /// command buffer would be released while this one may still be executing:
-    ///
-    /// ```should_panic
-    /// # use pumicite::{Device, command::CommandPool, sync::{GPUMutex, Timeline}, ash::vk};
-    /// # let (device, queue) = Device::create_system_default().unwrap();
-    /// # let mut timeline = Timeline::new(device.clone()).unwrap();
-    /// # let mut pool = CommandPool::new(device, queue.family_index()).unwrap();
-    /// let mutex = GPUMutex::new(0u32);
-    ///
-    /// let mut cb1 = pool.alloc().unwrap();
-    /// let mut cb2 = pool.alloc().unwrap();
-    /// timeline.schedule(&mut cb1); // timestamp 1
-    /// timeline.schedule(&mut cb2); // timestamp 2
-    ///
-    /// // Only the earlier command buffer holds the lock, so the later one must lock itself.
-    /// cb1.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
-    /// pool.begin(&mut cb2).unwrap();
-    /// pool.record(&mut cb2, |encoder| {
-    ///     encoder.assert_locked(&mutex); // panics
-    /// });
-    /// ```
+    /// Panics if this encoder is not recording the command buffer that took the lock. A guard
+    /// taken by one command buffer says nothing about what another command buffer waits on,
+    /// even a later one on the same timeline, so that command buffer must take its own lock.
     #[track_caller]
-    pub fn assert_locked<T: Send + Sync>(&self, res: &GPUMutex<T>) -> &'a T {
+    pub fn get_locked<T>(&self, guard: &GPUMutexGuard<T>) -> &'a T {
         let buffer = self.buffer();
         let semaphore = buffer
             .semaphore
             .as_ref()
             .expect("Command buffer must be scheduled on a timeline first");
-        let timestamp = buffer.timestamp;
-
-        let (holder, holder_value) = res.current_lock();
-        let held_here = holder.is_some_and(|holder| std::ptr::eq(holder, semaphore.as_ptr()));
-        if !held_here || holder_value < timestamp {
-            let holder = match holder {
-                None => "The mutex is currently unlocked.".to_string(),
-                Some(_) if held_here => format!(
-                    "The mutex is currently held on the same timeline at timestamp {holder_value}, \
-                    which is before this command buffer, so it would be released while this \
-                    command buffer may still be executing."
-                ),
-                Some(holder) => format!(
-                    "The mutex is currently held on a different semaphore {:?} at value \
-                    {holder_value}.",
-                    holder.vk_handle()
-                ),
-            };
+        if !std::ptr::eq(semaphore.as_ptr(), guard.semaphore.as_ptr())
+            || buffer.timestamp != guard.timestamp
+        {
             panic!(
-                "GPUMutex<{ty}> is not locked for the command buffer scheduled at timestamp \
-                {timestamp} on timeline semaphore {handle:?} (current counter value: {current}). \
-                {holder} \
-                CommandEncoder::assert_locked requires that this command buffer, or a command \
-                buffer scheduled after it on the same timeline, has already locked the mutex. \
-                Call CommandEncoder::lock or CommandBuffer::lock first.",
+                "GPUMutexGuard<{ty}> was taken by the command buffer scheduled at timestamp \
+                {guard_ts} on timeline semaphore {guard_handle:?}, but it is being used to record \
+                the command buffer scheduled at timestamp {cb_ts} on timeline semaphore \
+                {cb_handle:?}. A guard is only valid for the command buffer that took the lock. \
+                Call CommandBuffer::lock or CommandEncoder::lock for this command buffer instead.",
                 ty = std::any::type_name::<T>(),
-                handle = semaphore.vk_handle(),
-                current = semaphore.value(),
+                guard_ts = guard.timestamp,
+                guard_handle = guard.semaphore.vk_handle(),
+                cb_ts = buffer.timestamp,
+                cb_handle = semaphore.vk_handle(),
             );
         }
-
         unsafe {
-            // Safety: the holder's lock keeps the resource alive until the timeline passes
-            // `holder_value >= timestamp`, which is after this command buffer has executed.
-            &*Box::as_ptr(&res.inner)
+            // Safety: this encoder is recording the command buffer identified by
+            // (guard.semaphore, guard.timestamp). That command buffer locked the mutex, so the
+            // resource stays alive at least until the timeline reaches `guard.timestamp`,
+            // which is when this command buffer finishes executing. Timestamps on a timeline
+            // are never reused, and the guard's strong count on the semaphore rules out
+            // address reuse, so no other command buffer can match this identity.
+            &*guard.ptr
         }
     }
 
@@ -863,15 +796,32 @@ impl CommandBuffer {
     /// available, and the mutex stays locked until this command buffer completes execution.
     /// Unlike [`CommandEncoder::lock`] this does not require an active recording, so it can be
     /// called right after [`Timeline::schedule`](crate::sync::Timeline::schedule), for example
-    /// on the main thread before handing command buffers to worker threads. Use
-    /// [`CommandEncoder::assert_locked`] while recording to obtain the reference to the resource.
+    /// on the main thread before handing command buffers to worker threads.
+    ///
+    /// The returned [`GPUMutexGuard`] is proof that this command buffer holds the lock. Pass it
+    /// to the thread recording this command buffer and call [`CommandEncoder::get_locked`] there to
+    /// obtain the resource reference.
     ///
     /// # Panics
     /// Panics if the command buffer has not been scheduled on a timeline, has already been
     /// submitted, or if a command buffer scheduled later on the same timeline already holds
-    /// the mutex. See [`CommandEncoder::assert_locked`].
+    /// the mutex. See [`GPUMutexGuard`].
     #[track_caller]
-    pub fn lock<T: Send + Sync>(&mut self, res: &GPUMutex<T>, stages: vk::PipelineStageFlags2) {
+    pub fn lock<T: Send + Sync>(
+        &mut self,
+        res: &GPUMutex<T>,
+        stages: vk::PipelineStageFlags2,
+    ) -> GPUMutexGuard<T> {
+        self.lock_inner(res, stages);
+        GPUMutexGuard {
+            ptr: Box::as_ptr(&res.inner),
+            semaphore: self.semaphore.clone().unwrap(),
+            timestamp: self.timestamp,
+        }
+    }
+
+    #[track_caller]
+    fn lock_inner<T: Send + Sync>(&mut self, res: &GPUMutex<T>, stages: vk::PipelineStageFlags2) {
         assert!(
             matches!(
                 self.state,
@@ -895,15 +845,9 @@ impl CommandBuffer {
             // The command buffer needs to wait for this semaphore before executing.
             let entry = self.wait_semaphores.entry(wait_semaphore).or_default();
 
-            // Merge or update the wait condition based on semaphore values
-            if entry.0 == wait_value {
-                // Same wait value - combine the pipeline stages
-                entry.1 |= stages;
-            } else if entry.0 < wait_value {
-                // Higher wait value - replace with new condition
-                entry.0 = wait_value;
-                entry.1 = stages;
-            }
+            // Merge the wait condition with any existing wait on the same semaphore.
+            entry.0 = entry.0.max(wait_value);
+            entry.1 |= stages;
         } else {
             // wait_semaphore is None when the resource is being used for the first time.
             // We don't have to wait for anything if that's the case.
@@ -1034,6 +978,79 @@ impl CommandBuffer {
             self.timestamp = 0;
         }
         completed
+    }
+}
+/// Proof that a [`GPUMutex`] is locked for a specific command buffer's execution.
+///
+/// Returned by [`CommandBuffer::lock`]. The guard carries a pointer to the locked resource
+/// together with the identity of the command buffer that locked it, namely its timeline
+/// semaphore and timestamp. A thread recording that command buffer calls
+/// [`CommandEncoder::get_locked`] to obtain the resource reference without locking the mutex again.
+///
+/// This is how several threads can record command buffers that share a mutex on one
+/// timeline: the main thread takes every lock in schedule order with [`CommandBuffer::lock`]
+/// and hands each worker the guards for its command buffer. Locking from the workers instead
+/// would race on the order, and [`CommandEncoder::lock`] panics on an ordering inversion.
+///
+/// Dropping the guard does **not** release anything. The lock is released by the GPU when
+/// the command buffer finishes executing, exactly as with [`CommandEncoder::lock`]. The guard
+/// is cheap to clone.
+///
+/// # Example
+/// ```
+/// # use pumicite::{Device, command::CommandPool, sync::{GPUMutex, Timeline}, ash::vk};
+/// # let (device, mut queue) = Device::create_system_default().unwrap();
+/// # let mut timeline = Timeline::new(device.clone()).unwrap();
+/// # let mut pool = CommandPool::new(device, queue.family_index()).unwrap();
+/// let mutex = GPUMutex::new(7u32);
+///
+/// let mut cb1 = pool.alloc().unwrap();
+/// let mut cb2 = pool.alloc().unwrap();
+/// timeline.schedule(&mut cb1); // timestamp 1
+/// timeline.schedule(&mut cb2); // timestamp 2
+///
+/// // Lock in schedule order before any recording happens, as a main thread would
+/// // before handing the command buffers to worker threads.
+/// let guard1 = cb1.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
+/// let guard2 = cb2.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
+///
+/// // Record in the opposite order; each command buffer uses its own guard.
+/// pool.begin(&mut cb2).unwrap();
+/// pool.record(&mut cb2, |encoder| {
+///     assert_eq!(*encoder.get_locked(&guard2), 7);
+/// });
+/// pool.finish(&mut cb2).unwrap();
+///
+/// pool.begin(&mut cb1).unwrap();
+/// pool.record(&mut cb1, |encoder| {
+///     assert_eq!(*encoder.get_locked(&guard1), 7);
+/// });
+/// pool.finish(&mut cb1).unwrap();
+/// # queue.submit(&mut cb1).unwrap();
+/// # queue.submit(&mut cb2).unwrap();
+/// # cb1.block_until_completion().unwrap();
+/// # cb2.block_until_completion().unwrap();
+/// ```
+pub struct GPUMutexGuard<T> {
+    /// Pointer to the resource inside the mutex's box. Stable across moves of the mutex.
+    ptr: *const T,
+    /// Timeline semaphore of the command buffer that took the lock. The strong count keeps
+    /// the semaphore alive, so its address cannot be reused while a guard exists.
+    semaphore: SharedSemaphore,
+    /// Timestamp of the command buffer that took the lock.
+    timestamp: u64,
+}
+// Safety: the guard only ever hands out `&T`, so sharing or sending it between threads is
+// exactly as safe as sharing `&T`, which requires `T: Sync`.
+unsafe impl<T: Sync> Send for GPUMutexGuard<T> {}
+unsafe impl<T: Sync> Sync for GPUMutexGuard<T> {}
+impl<T> Clone for GPUMutexGuard<T> {
+    fn clone(&self) -> Self {
+        Self {
+            ptr: self.ptr,
+            semaphore: self.semaphore.clone(),
+            timestamp: self.timestamp,
+        }
     }
 }
 impl Drop for CommandBuffer {
@@ -1522,5 +1539,96 @@ mod tests {
             encoder.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
         });
         pool.finish(&mut cb1).unwrap();
+    }
+
+    /// A later command buffer's guard must not be usable by an earlier command buffer on the
+    /// same timeline. cb2 consumed the wait on the other timeline; cb1 runs before cb2 and has
+    /// no such wait, so letting it borrow cb2's lock would race the other timeline's work.
+    #[test]
+    #[should_panic(expected = "was taken by the command buffer scheduled at timestamp 2")]
+    fn guard_from_later_command_buffer_rejected() {
+        let (device, queue) = Device::create_system_default().unwrap();
+        let mut timeline_a = Timeline::new(device.clone()).unwrap();
+        let mut timeline_b = Timeline::new(device.clone()).unwrap();
+        let mut pool = CommandPool::new(device, queue.family_index()).unwrap();
+
+        let mutex = GPUMutex::new(0u32);
+
+        // Another timeline holds the mutex first, so whoever locks next inherits a wait on it.
+        let mut cb_other = pool.alloc().unwrap();
+        timeline_b.schedule(&mut cb_other);
+        cb_other.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
+
+        let mut cb1 = pool.alloc().unwrap();
+        let mut cb2 = pool.alloc().unwrap();
+        timeline_a.schedule(&mut cb1); // timestamp 1
+        timeline_a.schedule(&mut cb2); // timestamp 2
+
+        // Only cb2 locks; it now carries the wait on timeline_b.
+        let guard2 = cb2.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
+        assert_eq!(cb2.wait_semaphores.len(), 1);
+        assert!(cb1.wait_semaphores.is_empty());
+
+        // cb1 tries to ride on cb2's lock: panics here.
+        pool.begin(&mut cb1).unwrap();
+        pool.record(&mut cb1, |encoder| {
+            encoder.get_locked(&guard2);
+        });
+        pool.finish(&mut cb1).unwrap();
+    }
+
+    /// An earlier command buffer's guard must not be usable by a later command buffer on the
+    /// same timeline either. cb1's lock is released once the timeline passes timestamp 1,
+    /// which can be while cb2 is still executing.
+    #[test]
+    #[should_panic(expected = "was taken by the command buffer scheduled at timestamp 1")]
+    fn guard_from_earlier_command_buffer_rejected() {
+        let (device, queue) = Device::create_system_default().unwrap();
+        let mut timeline = Timeline::new(device.clone()).unwrap();
+        let mut pool = CommandPool::new(device, queue.family_index()).unwrap();
+
+        let mutex = GPUMutex::new(0u32);
+
+        let mut cb1 = pool.alloc().unwrap();
+        let mut cb2 = pool.alloc().unwrap();
+        timeline.schedule(&mut cb1); // timestamp 1
+        timeline.schedule(&mut cb2); // timestamp 2
+
+        let guard1 = cb1.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
+
+        // cb2 tries to ride on cb1's lock: panics here.
+        pool.begin(&mut cb2).unwrap();
+        pool.record(&mut cb2, |encoder| {
+            encoder.get_locked(&guard1);
+        });
+        pool.finish(&mut cb2).unwrap();
+    }
+
+    /// The guard keys on the resource's heap allocation, so moving the `GPUMutex` after
+    /// locking it does not invalidate the guard.
+    #[test]
+    fn guard_survives_moving_the_mutex() {
+        let (device, mut queue) = Device::create_system_default().unwrap();
+        let mut timeline = Timeline::new(device.clone()).unwrap();
+        let mut pool = CommandPool::new(device, queue.family_index()).unwrap();
+
+        let mutex = GPUMutex::new(42u32);
+        let mut cb = pool.alloc().unwrap();
+        timeline.schedule(&mut cb);
+        let guard = cb.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
+
+        // Move the mutex to a new address.
+        let moved = Box::new(mutex);
+
+        pool.begin(&mut cb).unwrap();
+        pool.record(&mut cb, |encoder| {
+            let value = encoder.get_locked(&guard);
+            assert_eq!(*value, 42);
+            assert!(std::ptr::eq(value, &**moved));
+        });
+        pool.finish(&mut cb).unwrap();
+        queue.submit(&mut cb).unwrap();
+        cb.block_until_completion().unwrap();
+        pool.free(cb);
     }
 }

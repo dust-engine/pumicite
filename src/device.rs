@@ -61,17 +61,17 @@
 //!
 //! ```
 //! # use std::sync::Arc;
-//! # use pumicite::{Instance, Device, bindless::BindlessConfig};
+//! # use pumicite::{Instance, Device, bindless::ResourceHeap};
 //! # let entry = Arc::new(unsafe { ash::Entry::load() }.unwrap());
 //! # let instance = Instance::builder(entry).build().unwrap();
 //! # let pdevice = instance.enumerate_physical_devices().unwrap().next().unwrap();
 //! let mut builder = Device::builder(pdevice);
-//! builder.enable_bindless(BindlessConfig::default()).unwrap();
+//! builder.enable_bindless().unwrap();
 //! builder.enable_queue(0, 1.0);
 //! let device = builder.build().unwrap();
 //!
-//! // Access the bindless heap
-//! let heap = device.bindless_heap();
+//! // Create a bindless resource heap
+//! let heap = ResourceHeap::new(device, 1024).unwrap();
 //! ```
 
 use crate::{

@@ -22,7 +22,7 @@
 //! ```
 //! # use pumicite::{Device, command::CommandPool, sync::Timeline};
 //! use pumicite::tracking::{ResourceState, Access};
-//! # let (device, queue) = Device::create_system_default().unwrap();
+//! # let (device, mut queue) = Device::create_system_default().unwrap();
 //! # let mut pool = CommandPool::new(device.clone(), queue.family_index()).unwrap();
 //! # let mut timeline = Timeline::new(device).unwrap();
 //! # let mut cmd = pool.alloc().unwrap();
@@ -44,6 +44,8 @@
 //!     // ... draw calls using the buffer ...
 //! });
 //! # pool.finish(&mut cmd).unwrap();
+//! # queue.submit(&mut cmd).unwrap();
+//! # cmd.block_until_completion().unwrap();
 //! ```
 //!
 //! # Key Concepts
@@ -93,7 +95,7 @@
 //! ```
 //! # use pumicite::{Device, command::CommandPool, sync::Timeline};
 //! use pumicite::tracking::{ResourceState, Access};
-//! # let (device, queue) = Device::create_system_default().unwrap();
+//! # let (device, mut queue) = Device::create_system_default().unwrap();
 //! # let mut pool = CommandPool::new(device.clone(), queue.family_index()).unwrap();
 //! # let mut timeline = Timeline::new(device).unwrap();
 //! # let mut cmd = pool.alloc().unwrap();
@@ -110,6 +112,8 @@
 //!     encoder.emit_barriers();
 //! });
 //! # pool.finish(&mut cmd).unwrap();
+//! # queue.submit(&mut cmd).unwrap();
+//! # cmd.block_until_completion().unwrap();
 //! ```
 //!
 //! ## Image Layout Transitions

@@ -88,17 +88,17 @@
 //!
 //! ```
 //! # use std::sync::Arc;
-//! # use pumicite::{Instance, Device, bindless::BindlessConfig};
+//! # use pumicite::{Instance, Device, bindless::ResourceHeap};
 //! # let entry = Arc::new(unsafe { ash::Entry::load() }.unwrap());
 //! # let instance = Instance::builder(entry).build().unwrap();
 //! # let pdevice = instance.enumerate_physical_devices().unwrap().next().unwrap();
 //! let mut builder = Device::builder(pdevice);
-//! builder.enable_bindless(BindlessConfig::default()).unwrap();
+//! builder.enable_bindless().unwrap();
 //! # builder.enable_queue(0, 1.0);
 //! let device = builder.build().unwrap();
 //!
-//! let heap = device.bindless_heap();
-//! // Use heap.add_resource() to add images/buffers for shader access
+//! let heap = ResourceHeap::new(device, 1024).unwrap();
+//! // Use heap.add_image() / heap.add_buffer() to obtain handles for shader access
 //! ```
 //!
 //! ## Feature Flags
@@ -156,7 +156,7 @@ pub mod prelude {
         Allocator, Device, HasDevice, ash,
         ash::vk,
         buffer::{Buffer, BufferExt, BufferLike},
-        command::{CommandBuffer, CommandEncoder},
+        command::{CommandBuffer, CommandEncoder, GPUMutexGuard},
         debug::DebugObject,
         image::{Image, ImageExt, ImageLike},
         queue::Queue,
