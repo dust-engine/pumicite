@@ -752,10 +752,7 @@ impl AsVkHandle for Timeline {
 /// # Lifetime
 ///
 /// The thread runs until the channel is disconnected (i.e., the [`Device`] is dropped).
-pub(crate) fn spawn_recycler_thread(
-    device: Device,
-    receiver: crossbeam_channel::Receiver<RetiredGPUMutex>,
-) {
+pub(crate) fn spawn_recycler_thread(receiver: crossbeam_channel::Receiver<RetiredGPUMutex>) {
     std::thread::Builder::new()
         .name("Pumicite Deferred Drops".to_string())
         .stack_size(512 * 1024)
@@ -819,6 +816,7 @@ pub(crate) fn spawn_recycler_thread(
                 debug_assert!(!semaphores.is_empty() || !fences.is_empty());
 
                 if !semaphores.is_empty() {
+                    let device = queues.keys().next().unwrap().device();
                     unsafe {
                         device
                             .wait_semaphores(
@@ -837,6 +835,7 @@ pub(crate) fn spawn_recycler_thread(
                     // Deliberately never reset the fences here: `Semaphore::wait_blocked` is
                     // the only consumer of a binary semaphore's fence, and resetting it from
                     // this thread would make that wait hang.
+                    let device = binary_items[0].semaphore.device();
                     unsafe {
                         device.wait_for_fences(&fences, false, !0).unwrap();
                     }

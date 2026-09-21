@@ -748,7 +748,7 @@ impl DeviceBuilder {
             recycler: sender,
         }));
 
-        crate::sync::spawn_recycler_thread(device.clone(), receiver);
+        crate::sync::spawn_recycler_thread(receiver);
 
         Ok(device)
     }
