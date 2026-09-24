@@ -130,6 +130,10 @@ impl<T: Send> GPUMutex<T> {
     ///
     /// If the returned semaphore is Some, the call gets exclusive access to the resource after the returned
     /// semaphore was signaled. The exclusive access ends when the passed in semaphore was signaled.
+    ///
+    /// # Panics
+    /// Panics if the mutex is already locked on `semaphore` at a later timestamp. The mutex is
+    /// left unchanged, so it stays locked until that later timestamp.
     #[track_caller]
     pub(crate) unsafe fn lock_until(
         &self,
@@ -137,59 +141,80 @@ impl<T: Send> GPUMutex<T> {
         signal_value: u64,
     ) -> (Option<SharedSemaphore>, u64) {
         let new_semaphore_ptr = semaphore.as_ptr();
-        let old_value = self.ptr.swap(
-            encode_semaphore(new_semaphore_ptr, signal_value),
-            std::sync::atomic::Ordering::AcqRel,
-        );
-        let (old_semaphore_ptr, old_signal_value): (*const Semaphore, u64) =
-            decode_semaphore(old_value);
+        let new_value = encode_semaphore(new_semaphore_ptr, signal_value);
+        // The mutex owns a strong count on the semaphore it is locked on. Take it before the
+        // pointer is published, because a concurrent `lock_until` may take ownership of it right
+        // after. It is dropped again if the mutex already owns one, or if we panic.
+        let new_semaphore = semaphore.clone();
+
+        let mut old_value = self.ptr.load(std::sync::atomic::Ordering::Acquire);
+        let (old_semaphore_ptr, old_signal_value) = loop {
+            let (old_semaphore_ptr, old_signal_value): (*const Semaphore, u64) =
+                decode_semaphore(old_value);
+            // Check the order before anything is stored, so that a panic leaves the mutex
+            // locked until the later timestamp.
+            if new_semaphore_ptr == old_semaphore_ptr {
+                assert!(
+                    signal_value >= old_signal_value,
+                    "GPUMutex<{ty}> locked out of order on timeline semaphore {handle:?} ({current}). \
+                    A command buffer scheduled at timestamp {new} tried to lock the mutex \
+                    after a command buffer scheduled at timestamp {old} had already locked it. \
+                    Locking order must remain consistent with the order in which command buffers \
+                    are scheduled onto the timeline.",
+                    ty = std::any::type_name::<T>(),
+                    handle = semaphore.vk_handle(),
+                    current = semaphore.value(),
+                    new = signal_value,
+                    old = old_signal_value,
+                );
+            }
+            match self.ptr.compare_exchange_weak(
+                old_value,
+                new_value,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            ) {
+                Ok(_) => break (old_semaphore_ptr, old_signal_value),
+                Err(actual) => old_value = actual,
+            }
+        };
+
         if new_semaphore_ptr == old_semaphore_ptr {
-            assert!(
-                signal_value >= old_signal_value,
-                "GPUMutex<{ty}> locked out of order on timeline semaphore {handle:?} ({current}). \
-                A command buffer scheduled at timestamp {new} tried to lock the mutex \
-                after a command buffer scheduled at timestamp {old} had already locked it. \
-                Locking order must remain consistent with the order in which command buffers \
-                are scheduled onto the timeline.",
-                ty = std::any::type_name::<T>(),
-                handle = semaphore.vk_handle(),
-                current = semaphore.value(),
-                new = signal_value,
-                old = old_signal_value,
-            );
+            // The mutex already owned a strong count on this semaphore; `new_semaphore` drops.
             (None, old_signal_value)
         } else {
-            unsafe {
-                // GPUMutex retains ownership over the new semaphore. Clone the new semaphore.
-                Arc::increment_strong_count(new_semaphore_ptr);
-                if old_semaphore_ptr.is_null() {
-                    (None, old_signal_value)
-                } else {
-                    // The old semaphore have its ownership transferred out.
-                    (
-                        Some(SharedSemaphore::from_raw(old_semaphore_ptr)),
-                        old_signal_value,
-                    )
-                }
+            // The mutex now owns the strong count taken above.
+            let _ = new_semaphore.into_raw();
+            if old_semaphore_ptr.is_null() {
+                (None, old_signal_value)
+            } else {
+                // The old semaphore has its ownership transferred out.
+                (
+                    Some(unsafe { SharedSemaphore::from_raw(old_semaphore_ptr) }),
+                    old_signal_value,
+                )
             }
         }
     }
 
     /// Blocks until GPU work completes, then returns the protected value.
-    pub fn unwrap_block(mut self) -> Box<T> {
-        unsafe {
-            let (semaphore_ptr, wait_value): (*const Semaphore, u64) =
-                decode_semaphore(*self.ptr.get_mut());
-            if !semaphore_ptr.is_null() {
-                // At this point we have exclusive ownership over the timeline semaphore.
-                let semaphore = Arc::from_raw(semaphore_ptr);
-                // Wait for GPU access to finish
-                semaphore.wait_blocked(wait_value, !0).unwrap();
-            }
-            let inner = ManuallyDrop::take(&mut self.inner);
-            std::mem::forget(self);
-            inner
+    ///
+    /// If waiting fails, the error is returned and the mutex is dropped as usual, so the
+    /// resource is not freed while the GPU may still be using it.
+    pub fn unwrap_block(mut self) -> VkResult<Box<T>> {
+        let (semaphore_ptr, wait_value): (*const Semaphore, u64) =
+            decode_semaphore(*self.ptr.get_mut());
+        if !semaphore_ptr.is_null() {
+            // `self` keeps its strong count on the semaphore until the wait succeeds, so borrow
+            // it through a `ManuallyDrop` rather than taking ownership. If the wait fails,
+            // returning the error drops `self`, and `<GPUMutex as Drop>::drop` releases that
+            // count once.
+            let semaphore = ManuallyDrop::new(unsafe { Arc::from_raw(semaphore_ptr) });
+            semaphore.wait_blocked(wait_value, !0)?;
         }
+        // Safety: the semaphore has reached `wait_value`, so the GPU is done with the resource.
+        let (inner, _semaphore, _) = unsafe { self.into_inner() };
+        Ok(inner)
     }
 
     /// Async version of [`unwrap_block`](Self::unwrap_block).
@@ -892,5 +917,48 @@ mod tests {
         // The unlocked sentinel must decode to a null pointer with zero timestamp.
         assert_eq!(decode_semaphore(0), (std::ptr::null(), 0));
         assert_eq!(encode_semaphore(std::ptr::null(), 0), 0);
+    }
+
+    /// Concurrent `lock_until` calls hand the mutex's strong count from semaphore to semaphore
+    /// without leaking or double-releasing any of them.
+    #[test]
+    fn concurrent_lock_until_refcounts() {
+        let (device, _queue) = Device::create_system_default().unwrap();
+        let mutex = GPUMutex::new(0u32);
+        let semaphores: Vec<SharedSemaphore> = (0..8)
+            .map(|_| SharedSemaphore::new(device.clone(), 0).unwrap())
+            .collect();
+        const LOCKS: u64 = 10_000;
+        std::thread::scope(|s| {
+            for semaphore in &semaphores {
+                let mutex = &mutex;
+                s.spawn(move || {
+                    for timestamp in 1..=LOCKS {
+                        // Safety: every semaphore is signaled to LOCKS before the mutex drops.
+                        let (waited, _) = unsafe { mutex.lock_until(semaphore, timestamp) };
+                        drop(waited);
+                    }
+                });
+            }
+        });
+        for semaphore in &semaphores {
+            semaphore.signal(LOCKS);
+        }
+        drop(mutex);
+        for semaphore in &semaphores {
+            assert_eq!(Arc::strong_count(semaphore), 1);
+        }
+    }
+
+    /// `unwrap_block` releases the mutex's strong count on the semaphore exactly once.
+    #[test]
+    fn unwrap_block_releases_semaphore_once() {
+        let (device, _queue) = Device::create_system_default().unwrap();
+        let semaphore = SharedSemaphore::new(device, 0).unwrap();
+        let mutex = GPUMutex::new_locked(Box::new(7u32), semaphore.clone(), 1);
+        assert_eq!(Arc::strong_count(&semaphore), 2);
+        semaphore.signal(1);
+        assert_eq!(*mutex.unwrap_block().unwrap(), 7);
+        assert_eq!(Arc::strong_count(&semaphore), 1);
     }
 }

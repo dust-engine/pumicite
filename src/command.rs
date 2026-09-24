@@ -1541,6 +1541,97 @@ mod tests {
         pool.finish(&mut cb1).unwrap();
     }
 
+    /// The out-of-order panic must leave the mutex untouched. If the earlier timestamp were
+    /// stored before panicking, a caller that catches the panic would see the mutex unlock as
+    /// soon as cb1 finishes, while cb2 still holds it.
+    #[test]
+    fn out_of_order_lock_leaves_mutex_unchanged() {
+        let (device, mut queue) = Device::create_system_default().unwrap();
+        let mut timeline = Timeline::new(device.clone()).unwrap();
+        let mut pool = CommandPool::new(device, queue.family_index()).unwrap();
+
+        let mut mutex = GPUMutex::new(0u32);
+
+        let mut cb1 = pool.alloc().unwrap();
+        let mut cb2 = pool.alloc().unwrap();
+        timeline.schedule(&mut cb1); // timestamp 1
+        timeline.schedule(&mut cb2); // timestamp 2
+        let semaphore = cb2.semaphore.clone().unwrap();
+
+        cb2.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
+        let strong_count = Arc::strong_count(&*semaphore);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cb1.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
+        }));
+        assert!(result.is_err());
+        assert_eq!(Arc::strong_count(&*semaphore), strong_count);
+
+        // cb1 finishing must not release the mutex: cb2 has not even been submitted.
+        pool.begin(&mut cb1).unwrap();
+        pool.record(&mut cb1, |_| {});
+        pool.finish(&mut cb1).unwrap();
+        queue.submit(&mut cb1).unwrap();
+        cb1.block_until_completion().unwrap();
+        assert!(mutex.try_deref_mut().is_none());
+
+        pool.begin(&mut cb2).unwrap();
+        pool.record(&mut cb2, |_| {});
+        pool.finish(&mut cb2).unwrap();
+        queue.submit(&mut cb2).unwrap();
+        cb2.block_until_completion().unwrap();
+        assert!(mutex.try_deref_mut().is_some());
+
+        pool.free(cb1);
+        pool.free(cb2);
+    }
+
+    /// The mutex owns exactly one strong count on the semaphore it is locked on, whichever
+    /// way it got there.
+    #[test]
+    fn lock_semaphore_refcounts() {
+        let (device, mut queue) = Device::create_system_default().unwrap();
+        let mut timeline_a = Timeline::new(device.clone()).unwrap();
+        let mut timeline_b = Timeline::new(device.clone()).unwrap();
+        let mut pool = CommandPool::new(device, queue.family_index()).unwrap();
+
+        let mutex = GPUMutex::new(0u32);
+
+        let mut a1 = pool.alloc().unwrap();
+        let mut a2 = pool.alloc().unwrap();
+        let mut b1 = pool.alloc().unwrap();
+        timeline_a.schedule(&mut a1); // timestamp 1 on A
+        timeline_a.schedule(&mut a2); // timestamp 2 on A
+        timeline_b.schedule(&mut b1); // timestamp 1 on B
+        let a = a1.semaphore.clone().unwrap();
+        let b = b1.semaphore.clone().unwrap();
+        let counts = || (Arc::strong_count(&*a), Arc::strong_count(&*b));
+        let (a0, b0) = counts();
+
+        // Unlocked -> A: the mutex takes a count on A.
+        a1.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
+        assert_eq!(counts(), (a0 + 1, b0));
+        // A -> A: the mutex keeps its single count on A.
+        a2.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
+        assert_eq!(counts(), (a0 + 1, b0));
+        // A -> B: the count on A moves into b1's waits, and the mutex takes a count on B.
+        b1.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
+        assert_eq!(b1.wait_semaphores.len(), 1);
+        assert_eq!(counts(), (a0 + 1, b0 + 1));
+
+        for cb in [&mut a1, &mut a2, &mut b1] {
+            pool.begin(cb).unwrap();
+            pool.record(cb, |_| {});
+            pool.finish(cb).unwrap();
+            queue.submit(cb).unwrap();
+        }
+        for cb in [&mut a1, &mut a2, &mut b1] {
+            cb.block_until_completion().unwrap();
+        }
+        pool.free(a1);
+        pool.free(a2);
+        pool.free(b1);
+    }
+
     /// A later command buffer's guard must not be usable by an earlier command buffer on the
     /// same timeline. cb2 consumed the wait on the other timeline; cb1 runs before cb2 and has
     /// no such wait, so letting it borrow cb2's lock would race the other timeline's work.
