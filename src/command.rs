@@ -1171,44 +1171,6 @@ impl Drop for CommandPoolInner {
     }
 }
 
-pub struct CommandEncoderGuard<'a> {
-    /// Holds the exclusive borrow of the pool for as long as recording is in progress.
-    _pool: &'a mut CommandPool,
-    /// Buffer is in a box to ensure the validity of the pointer from CommandEncoder.
-    /// This allows [`CommandEncoderGuard`] to be Unpin.
-    buffer: Option<Box<CommandBuffer>>,
-    encoder: CommandEncoder<'a>,
-}
-impl<'a> CommandEncoderGuard<'a> {
-    pub fn finish(mut self) -> VkResult<CommandBuffer> {
-        self.encoder.emit_barriers();
-        let buffer = self.buffer.take().unwrap();
-        Ok(*buffer)
-    }
-}
-impl<'a> Drop for CommandEncoderGuard<'a> {
-    fn drop(&mut self) {
-        if let Some(cb) = self.buffer.take() {
-            // The command buffer is scheduled on a Timeline, so it must be submitted.
-            // Let CommandBuffer::drop report the abandoned schedule (it panics unless we
-            // are already unwinding).
-            drop(cb);
-        }
-    }
-}
-impl<'a> Deref for CommandEncoderGuard<'a> {
-    type Target = CommandEncoder<'a>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.encoder
-    }
-}
-impl<'a> DerefMut for CommandEncoderGuard<'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.encoder
-    }
-}
-
 impl CommandPool {
     /// Creates a new command pool for a specific queue family
     pub fn new(device: Device, queue_family_index: u32) -> VkResult<Self> {
@@ -1251,36 +1213,6 @@ impl CommandPool {
                 }),
                 retainer_pool: Vec::new(),
             })
-        }
-    }
-    pub fn record_with_guard(&mut self, command_buffer: CommandBuffer) -> CommandEncoderGuard<'_> {
-        assert_eq!(
-            command_buffer.state,
-            CommandBufferState::Recording,
-            "Must call CommandPool::begin before recording a command buffer"
-        );
-        assert!(
-            command_buffer.semaphore.is_some(),
-            "Must call Timeline::schedule before recording a command buffer"
-        );
-        assert!(
-            Arc::ptr_eq(&command_buffer.pool, &self.inner),
-            "Command buffer recorded on the wrong pool!"
-        );
-        let mut command_buffer = Box::new(command_buffer);
-
-        let encoder = CommandEncoder {
-            buffer: &mut *command_buffer,
-            pending_memory_barrier: MemoryBarrier::default(),
-            pending_image_barrier: Vec::new(),
-            pending_buffer_barrier: Vec::new(),
-            render_pass_state: CommandEncoderRenderPassState::OutsideRenderPass,
-        };
-
-        CommandEncoderGuard {
-            buffer: Some(command_buffer),
-            encoder,
-            _pool: self,
         }
     }
     /// Record commands using the provided [`CommandEncoder`].

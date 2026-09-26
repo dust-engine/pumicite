@@ -43,7 +43,7 @@ use bevy_ecs::{
 use pumicite::{
     ash::{self, VkResult, vk},
     buffer::{RingBuffer, RingBufferSuballocation},
-    command::{CommandEncoderGuard, CommandEncoderRenderPassState, CommandPool},
+    command::{CommandEncoderRenderPassState, CommandPool},
     device::DeviceBuilder,
     prelude::*,
     sync::Timeline,
@@ -407,24 +407,11 @@ struct AsyncTransferInner {
     queue: SharedQueue,
     command_pool: Mutex<AsyncTransferCommandContext>,
 }
-
-impl FromWorld for AsyncTransfer {
-    fn from_world(world: &mut bevy_ecs::world::World) -> Self {
-        let queue = world.make_shared_queue::<TransferQueue>();
-        let device = world.resource::<Device>().clone();
-        let pool = CommandPool::new(device.clone(), queue.family_index()).unwrap();
-        let timeline = Timeline::new(device).unwrap();
-        Self(Arc::new(AsyncTransferInner {
-            queue,
-            command_pool: Mutex::new(AsyncTransferCommandContext { timeline, pool }),
-        }))
-    }
-}
-
 struct AsyncTransferCommandContext {
-    pool: CommandPool,
+    command_pool: CommandPool,
     timeline: Timeline,
 }
+
 
 /// Guard for an active async transfer batch.
 ///
@@ -435,10 +422,6 @@ struct AsyncTransferCommandContext {
 /// memory during long upload sequences.
 pub struct AsyncTransferGuard<'a> {
     inner: &'a Arc<AsyncTransferInner>,
-    encoder: CommandEncoderGuard<'a>,
-    lock: async_lock::MutexGuard<'a, AsyncTransferCommandContext>,
-
-    pending_task: Option<bevy_tasks::Task<VkResult<CommandBuffer>>>,
 }
 
 impl AsyncTransferGuard<'_> {
@@ -449,41 +432,6 @@ impl AsyncTransferGuard<'_> {
     /// Call this periodically during long upload sequences to avoid exhausting
     /// staging buffer space.
     pub async fn flush(&mut self) -> VkResult<()> {
-        if let Some(pending_task) = self.pending_task.as_ref() {
-            if pending_task.is_finished() {
-                let task = self.pending_task.take().unwrap();
-                let cb = task.await?;
-                self.lock.pool.free(cb);
-            } else {
-                // Still some pending work ongoing.
-                return Ok(());
-            }
-        }
-
-        let mut new_cb = self.lock.pool.alloc()?;
-        self.lock.timeline.schedule(&mut new_cb);
-        self.lock.pool.begin(&mut new_cb)?;
-        let new_encoder = unsafe {
-            let pool_ptr: *mut CommandPool = &mut self.lock.pool;
-            (&mut *pool_ptr).record_with_guard(new_cb)
-        };
-        let old_encoder = std::mem::replace(&mut self.encoder, new_encoder);
-
-        let mut cb = old_encoder.finish()?;
-        self.lock.pool.finish(&mut cb)?;
-
-        let inner = self.inner.clone();
-        let task = bevy_tasks::IoTaskPool::get().spawn(async move {
-            {
-                let mut queue = inner.queue.lock().unwrap();
-                queue.submit(&mut cb)?;
-                drop(queue);
-            }
-            cb.block_async_until_completion().await?;
-            Ok::<CommandBuffer, vk::Result>(cb)
-        });
-        self.pending_task = Some(task);
-        Ok(())
     }
 
     /// Submits all remaining work and waits for completion.
@@ -491,36 +439,7 @@ impl AsyncTransferGuard<'_> {
     /// This finalizes the transfer batch, submits the command buffer to the
     /// transfer queue, and asynchronously waits until all transfers complete.
     pub async fn submit(mut self) -> VkResult<()> {
-        if let Some(pending_task) = self.pending_task.take() {
-            // Finish any remaining async transfers
-            let cb = pending_task.await?;
-            self.lock.pool.free(cb);
-        }
-        let mut cb = self.encoder.finish()?;
-        self.lock.pool.finish(&mut cb)?;
-        drop(self.lock);
-
-        {
-            let mut queue = self.inner.queue.lock().unwrap();
-            queue.submit(&mut cb)?;
-            drop(queue);
-        }
-        cb.block_async_until_completion().await?;
-
-        let mut command_pool = self.inner.command_pool.lock().await;
-        command_pool.pool.free(cb);
         Ok(())
-    }
-}
-impl<'a> Deref for AsyncTransferGuard<'a> {
-    type Target = CommandEncoder<'a>;
-    fn deref(&self) -> &Self::Target {
-        self.encoder.deref()
-    }
-}
-impl<'a> DerefMut for AsyncTransferGuard<'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.encoder.deref_mut()
     }
 }
 
@@ -538,21 +457,8 @@ impl AsyncTransfer {
     /// batch.submit().await?;
     /// ```
     pub async fn batch(&self) -> VkResult<AsyncTransferGuard<'_>> {
-        let mut lock = self.0.command_pool.lock().await;
-        let mut new_command_buffer = lock.pool.alloc()?;
-        lock.timeline.schedule(&mut new_command_buffer);
-        lock.pool.begin(&mut new_command_buffer)?;
-
-        // Safety: The returned struct is self referencing. This is ok.
-        let encoder = unsafe {
-            let pool_ptr: *mut CommandPool = &mut lock.pool;
-            (&mut *pool_ptr).record_with_guard(new_command_buffer)
-        };
         Ok(AsyncTransferGuard {
-            lock,
-            encoder,
             inner: &self.0,
-            pending_task: None,
         })
     }
 }
