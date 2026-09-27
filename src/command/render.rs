@@ -51,7 +51,7 @@ use crate::{
     utils::{AsVkHandle, Version},
 };
 
-use super::CommandEncoder;
+use super::{CommandEncoder, GPURef};
 
 impl<'a> CommandEncoder<'a> {
     /// Begins a new dynamic render pass.
@@ -257,7 +257,7 @@ impl HasDevice for RenderPassAttachmentBuilder<'_, '_> {
 }
 impl<'a> RenderPassAttachmentBuilder<'_, 'a> {
     /// Sets the image view for this attachment.
-    pub fn view(&mut self, image: &'a impl ImageViewLike) -> &mut Self {
+    pub fn view(&mut self, image: GPURef<'a, impl ImageViewLike>) -> &mut Self {
         self.attachment.image_view = image.vk_handle();
         self
     }
@@ -275,7 +275,7 @@ impl<'a> RenderPassAttachmentBuilder<'_, 'a> {
     }
 
     /// Sets the resolve target image view for MSAA attachments.
-    pub fn resolve_view(&mut self, image: &'a impl ImageViewLike) -> &mut Self {
+    pub fn resolve_view(&mut self, image: GPURef<'a, impl ImageViewLike>) -> &mut Self {
         self.attachment.resolve_image_view = image.vk_handle();
         self
     }
@@ -399,7 +399,7 @@ impl<'a, 'b> DerefMut for RenderPass<'a, 'b> {
 
 impl<'a> RenderPass<'_, 'a> {
     /// Binds a graphics pipeline for subsequent draw commands.
-    pub fn bind_pipeline(&mut self, pipeline: &'a Pipeline) {
+    pub fn bind_pipeline(&mut self, pipeline: GPURef<'a, Pipeline>) {
         unsafe {
             self.encoder.device().cmd_bind_pipeline(
                 self.encoder.buffer().buffer,
@@ -413,7 +413,7 @@ impl<'a> RenderPass<'_, 'a> {
     pub fn bind_vertex_buffers(
         &mut self,
         first_binding: u32,
-        buffers: impl IntoIterator<Item = &'a impl BufferLike>,
+        buffers: impl IntoIterator<Item = GPURef<'a, impl BufferLike>>,
     ) {
         // most devices have up to 32 vertex bindings.
         let mut handles: smallvec::SmallVec<[vk::Buffer; 4]> = Default::default();
@@ -452,7 +452,7 @@ impl<'a> RenderPass<'_, 'a> {
     /// Binds an index buffer for indexed drawing.
     pub fn bind_index_buffer(
         &mut self,
-        buffer: &'a impl BufferLike,
+        buffer: GPURef<'a, impl BufferLike>,
         offset: u64,
         index_type: vk::IndexType,
     ) {
@@ -621,7 +621,7 @@ impl<'a> RenderPass<'_, 'a> {
     /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndirectCommand`] structs.
     pub fn draw_indirect(
         &mut self,
-        indirect_buffer: &'a impl BufferLike,
+        indirect_buffer: GPURef<'a, impl BufferLike>,
         draw_count: u32,
         stride: u32,
     ) {
@@ -641,7 +641,7 @@ impl<'a> RenderPass<'_, 'a> {
     /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndexedIndirectCommand`] structs.
     pub fn draw_indexed_indirect(
         &mut self,
-        indirect_buffer: &'a impl BufferLike,
+        indirect_buffer: GPURef<'a, impl BufferLike>,
         draw_count: u32,
         stride: u32,
     ) {
@@ -662,8 +662,8 @@ impl<'a> RenderPass<'_, 'a> {
     /// `count_buffer` contains a `u32` specifying the actual number of draws.
     pub fn draw_indirect_count(
         &mut self,
-        indirect_buffer: &'a impl BufferLike,
-        count_buffer: &'a impl BufferLike,
+        indirect_buffer: GPURef<'a, impl BufferLike>,
+        count_buffer: GPURef<'a, impl BufferLike>,
         max_draw_count: u32,
         stride: u32,
     ) {
@@ -686,8 +686,8 @@ impl<'a> RenderPass<'_, 'a> {
     /// `count_buffer` contains a `u32` specifying the actual number of draws.
     pub fn draw_indexed_indirect_count(
         &mut self,
-        indirect_buffer: &'a impl BufferLike,
-        count_buffer: &'a impl BufferLike,
+        indirect_buffer: GPURef<'a, impl BufferLike>,
+        count_buffer: GPURef<'a, impl BufferLike>,
         max_draw_count: u32,
         stride: u32,
     ) {
@@ -736,7 +736,7 @@ impl<'a> RenderPass<'_, 'a> {
     /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndirectCommand`] structs.
     pub fn draw_mesh_tasks_indirect(
         &mut self,
-        indirect_buffer: &'a impl BufferLike,
+        indirect_buffer: GPURef<'a, impl BufferLike>,
         draw_count: u32,
         stride: u32,
     ) {
@@ -770,8 +770,8 @@ impl<'a> RenderPass<'_, 'a> {
     /// `count_buffer` contains a `u32` specifying the actual number of draws.
     pub fn draw_mesh_tasks_indirect_count(
         &mut self,
-        indirect_buffer: &'a impl BufferLike,
-        count_buffer: &'a impl BufferLike,
+        indirect_buffer: GPURef<'a, impl BufferLike>,
+        count_buffer: GPURef<'a, impl BufferLike>,
         max_draw_count: u32,
         stride: u32,
     ) {

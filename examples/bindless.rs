@@ -1,4 +1,3 @@
-use std::ops::Deref;
 use std::sync::Arc;
 
 use bevy::prelude::*;
@@ -7,7 +6,6 @@ use bevy_reflect::TypePath;
 use glam::UVec3;
 use pumicite::bindless::ResourceHeap;
 use pumicite::image::Image;
-use pumicite::pipeline::Pipeline;
 fn main() {
     let mut app = bevy::app::App::new();
     app.add_plugins(bevy_pumicite::DefaultPlugins);
@@ -120,10 +118,10 @@ fn clear(
             return;
         };
 
-        let target_image = encoder.retain(example.image.clone());
+        let target_image = encoder.retain(example.image.clone()).deref();
 
         encoder.use_image_resource(
-            target_image.deref(),
+            target_image,
             &mut example.state,
             Access::COMPUTE_WRITE,
             vk::ImageLayout::GENERAL,
@@ -134,8 +132,8 @@ fn clear(
         encoder.emit_barriers();
 
         heap.bind(encoder, vk::PipelineBindPoint::COMPUTE);
-        let pipeline: &Pipeline = encoder.retain(pipeline.clone().into_inner()).as_ref();
-        encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, pipeline);
+        let pipeline = encoder.retain(pipeline.clone().into_inner());
+        encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, pipeline.deref());
         encoder.push_constants(
             pipeline.layout(),
             vk::ShaderStageFlags::ALL,
@@ -159,7 +157,7 @@ fn clear(
             false,
         );
         encoder.use_image_resource(
-            target_image.deref(),
+            target_image,
             &mut example.state,
             Access::BLIT_SRC,
             vk::ImageLayout::GENERAL,
@@ -169,7 +167,7 @@ fn clear(
         );
         encoder.emit_barriers();
         encoder.blit_image_with_layout(
-            target_image.deref(),
+            target_image,
             vk::ImageLayout::GENERAL,
             current_swapchain_image,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,

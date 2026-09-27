@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::debug::DebugObject;
+use crate::command::{GPURef};
 use crate::image::{ImageLike, ImageViewLike};
 use crate::physical_device::PhysicalDevice;
 use crate::tracking::ResourceState;
@@ -609,6 +610,14 @@ impl SwapchainImageInner {
         } else {
             Some(&self.srgb_view)
         }
+    }
+}
+impl<'a> GPURef<'a, SwapchainImageInner> {
+    pub fn linear_view(self) -> GPURef<'a, SwapchainImageView> {
+        unsafe { GPURef::new_unchecked(self.unwrap().linear_view()) }
+    }
+    pub fn srgb_view(self) -> Option<GPURef<'a, SwapchainImageView>> {
+        unsafe { self.unwrap().srgb_view().map(|v| GPURef::new_unchecked(v)) }
     }
 }
 /// Specifies the desired swapchain color output mode.

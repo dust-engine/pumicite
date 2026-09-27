@@ -72,7 +72,7 @@ fn mesh_shading(
 
         if let Some(pipeline) = pipeline {
             let pipeline = pass.retain(pipeline.clone().into_inner());
-            pass.bind_pipeline(pipeline);
+            pass.bind_pipeline(pipeline.deref());
             pass.set_viewport(
                 0,
                 &[vk::Viewport {

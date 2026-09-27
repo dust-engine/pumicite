@@ -5,7 +5,11 @@
 use ash::vk;
 
 use crate::{
-    HasDevice, buffer::BufferLike, command::{CommandEncoderRenderPassState, GPURef, GPURefMut}, image::ImageLike, utils::AsVkHandle,
+    HasDevice,
+    buffer::BufferLike,
+    command::{CommandEncoderRenderPassState, GPURef},
+    image::ImageLike,
+    utils::AsVkHandle,
 };
 
 use super::CommandEncoder;
@@ -15,7 +19,7 @@ impl<'a> CommandEncoder<'a> {
     ///
     /// This is a convenience method for small updates (≤64KB) that embeds the data
     /// directly in the command stream, avoiding the need for a staging buffer.
-    pub fn update_buffer(&mut self, buffer: GPURefMut<'a, impl BufferLike>, data: &[u8]) {
+    pub fn update_buffer(&mut self, buffer: GPURef<'a, impl BufferLike>, data: &[u8]) {
         debug_assert!(matches!(
             self.render_pass_state(),
             CommandEncoderRenderPassState::OutsideRenderPass
@@ -35,7 +39,11 @@ impl<'a> CommandEncoder<'a> {
     /// Copies the entire contents of one buffer to another.
     ///
     /// The copy size is the minimum of the source and destination buffer sizes.
-    pub fn copy_buffer(&mut self, src: GPURef<'a, impl BufferLike>, dst: GPURefMut<'a, impl BufferLike>) {
+    pub fn copy_buffer(
+        &mut self,
+        src: GPURef<'a, impl BufferLike>,
+        dst: GPURef<'a, impl BufferLike>,
+    ) {
         let size = src.size().min(dst.size());
         self.copy_buffer_region(src, 0, dst, 0, size);
     }
@@ -45,7 +53,7 @@ impl<'a> CommandEncoder<'a> {
         &mut self,
         src: GPURef<'a, impl BufferLike>,
         src_offset: u64,
-        dst: GPURefMut<'a, impl BufferLike>,
+        dst: GPURef<'a, impl BufferLike>,
         dst_offset: u64,
         size: u64,
     ) {
@@ -69,7 +77,7 @@ impl<'a> CommandEncoder<'a> {
     pub fn copy_buffer_to_image_with(
         &mut self,
         buffer: GPURef<'a, impl BufferLike>,
-        image: GPURefMut<'a, impl ImageLike>,
+        image: GPURef<'a, impl ImageLike>,
         copies: &[vk::BufferImageCopy],
     ) {
         self.copy_buffer_to_image_with_layout(buffer, image, copies, vk::ImageLayout::GENERAL);
@@ -79,7 +87,7 @@ impl<'a> CommandEncoder<'a> {
     pub fn copy_buffer_to_image_with_layout(
         &mut self,
         buffer: GPURef<'a, impl BufferLike>,
-        image: GPURefMut<'a, impl ImageLike>,
+        image: GPURef<'a, impl ImageLike>,
         copies: &[vk::BufferImageCopy],
         image_layout: vk::ImageLayout,
     ) {
@@ -118,9 +126,9 @@ impl<'a> CommandEncoder<'a> {
     /// formats. Both images must support blit operations for their formats.
     pub fn blit_image_with_layout(
         &mut self,
-        src: &'a impl ImageLike,
+        src: GPURef<'a, impl ImageLike>,
         src_image_layout: vk::ImageLayout,
-        dst: &'a impl ImageLike,
+        dst: GPURef<'a, impl ImageLike>,
         dst_image_layout: vk::ImageLayout,
         regions: &[vk::ImageBlit],
         filter: vk::Filter,
@@ -144,8 +152,8 @@ impl<'a> CommandEncoder<'a> {
 
     pub fn blit_image(
         &mut self,
-        src: &'a impl ImageLike,
-        dst: &'a impl ImageLike,
+        src: GPURef<'a, impl ImageLike>,
+        dst: GPURef<'a, impl ImageLike>,
         regions: &[vk::ImageBlit],
         filter: vk::Filter,
     ) {
@@ -161,8 +169,8 @@ impl<'a> CommandEncoder<'a> {
 
     pub fn copy_image_to_image<S: ImageLike, T: ImageLike>(
         &mut self,
-        src: &'a S,
-        dst: &'a T,
+        src: GPURef<'a, S>,
+        dst: GPURef<'a, T>,
         region: &[vk::ImageCopy],
     ) {
         self.copy_image_to_image_with_layout(
@@ -176,9 +184,9 @@ impl<'a> CommandEncoder<'a> {
 
     pub fn copy_image_to_image_with_layout<S: ImageLike, T: ImageLike>(
         &mut self,
-        src: &'a S,
+        src: GPURef<'a, S>,
         src_layout: vk::ImageLayout,
-        dst: &'a T,
+        dst: GPURef<'a, T>,
         dst_layout: vk::ImageLayout,
         region: &[vk::ImageCopy],
     ) {
@@ -196,9 +204,9 @@ impl<'a> CommandEncoder<'a> {
 
     pub fn copy_image_to_buffer_with_layout(
         &mut self,
-        src_image: &'a impl ImageLike,
+        src_image: GPURef<'a, impl ImageLike>,
         src_image_layout: vk::ImageLayout,
-        dst_buf: &'a impl BufferLike,
+        dst_buf: GPURef<'a, impl BufferLike>,
         regions: &[vk::BufferImageCopy],
     ) {
         unsafe {
@@ -214,7 +222,7 @@ impl<'a> CommandEncoder<'a> {
 
     pub fn clear_color_image<T: ImageLike>(
         &mut self,
-        image: &'a T,
+        image: GPURef<'a, T>,
         clear_color: &vk::ClearColorValue,
     ) {
         self.clear_color_image_with_layout(image, clear_color, vk::ImageLayout::GENERAL);
@@ -223,7 +231,7 @@ impl<'a> CommandEncoder<'a> {
     /// Clears a color image to a solid color.
     pub fn clear_color_image_with_layout<T: ImageLike>(
         &mut self,
-        image: &'a T,
+        image: GPURef<'a, T>,
         clear_color: &vk::ClearColorValue,
         image_layout: vk::ImageLayout,
     ) {

@@ -680,7 +680,7 @@ fn compute_luts(
             encoder.emit_barriers();
 
             let pipeline = encoder.retain(transmittance_pipeline.clone().into_inner());
-            encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
+            encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, pipeline.deref());
 
             let image_info = vk::DescriptorImageInfo {
                 image_view: transmittance_view.full_view().vk_handle(),
@@ -749,7 +749,7 @@ fn compute_luts(
             encoder.emit_barriers();
 
             let pipeline = encoder.retain(multi_scattering_pipeline.clone().into_inner());
-            encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
+            encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, pipeline.deref());
 
             let transmittance_image_info = vk::DescriptorImageInfo {
                 image_view: transmittance_view.full_view().vk_handle(),
@@ -875,7 +875,7 @@ fn render_skyview_lut(
             encoder.emit_barriers();
 
             let pipeline = encoder.retain(sky_view_pipeline.clone().into_inner());
-            encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
+            encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, pipeline.deref());
 
             let transmittance_image_info = vk::DescriptorImageInfo {
                 image_view: transmittance_view.full_view().vk_handle(),
@@ -1002,7 +1002,7 @@ fn render_sky(
             let extent = pass.render_area().extent;
 
             let pipeline = pass.retain(sky_render_pipeline.clone().into_inner());
-            pass.bind_pipeline(&pipeline);
+            pass.bind_pipeline(pipeline.deref());
 
             pass.set_viewport(
                 0,

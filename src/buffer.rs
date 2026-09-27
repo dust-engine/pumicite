@@ -39,7 +39,7 @@ use ash::{
 };
 use vk_mem::Alloc;
 
-use crate::{Allocator, Device, HasDevice, command::{CommandEncoder, GPURef, GPURefMut}, utils::AsVkHandle};
+use crate::{Allocator, Device, HasDevice, command::{CommandEncoder, GPURef}, utils::AsVkHandle};
 
 /// Common interface for Vulkan buffer types.
 ///
@@ -82,24 +82,6 @@ pub trait BufferLike: AsVkHandle<Handle = vk::Buffer> + Send + Sync + 'static {
     fn as_slice_mut(&mut self) -> Option<&mut [u8]>;
 }
 impl<T: BufferLike> GPURef<'_, T> {
-    pub fn offset(&self) -> vk::DeviceSize {
-        unsafe {
-            self.unwrap().offset()
-        }
-    }
-    pub fn device_address(&self) -> vk::DeviceAddress {
-        unsafe {
-            self.unwrap().device_address()
-        }
-    }
-
-    pub fn size(&self) -> vk::DeviceSize {
-        unsafe {
-            self.unwrap().size()
-        }
-    }
-}
-impl<T: BufferLike> GPURefMut<'_, T> {
     pub fn offset(&self) -> vk::DeviceSize {
         unsafe {
             self.unwrap().offset()

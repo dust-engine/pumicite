@@ -43,7 +43,7 @@ use bevy_ecs::{
 use pumicite::{
     ash::{self, VkResult, vk},
     buffer::{RingBuffer, RingBufferSuballocation, StagingBufferAllocator},
-    command::{CommandEncoderRenderPassState, CommandPool, GPURefMut},
+    command::{CommandEncoderRenderPassState, CommandPool, GPURef},
     device::DeviceBuilder,
     prelude::*,
     sync::Timeline,
@@ -241,7 +241,7 @@ impl UniformRingBuffer {
         &mut self,
         encoder: &mut CommandEncoder<'a>,
         data: &[u8],
-    ) -> GPURefMut<'a, RingBufferSuballocation> {
+    ) -> GPURef<'a, RingBufferSuballocation> {
         let alignment = self
             .0
             .device()
@@ -343,7 +343,7 @@ impl BufferInitializer<'_> {
                 writer(host_buffer.as_slice_mut().unwrap());
                 let host_buffer = encoder.retain(host_buffer);
                 let locked_buffer = encoder.lock(&buffer, vk::PipelineStageFlags2::COPY);
-                encoder.copy_buffer(host_buffer.as_ref(), locked_buffer);
+                encoder.copy_buffer(host_buffer, locked_buffer);
             }
             buffer
         }
@@ -358,7 +358,7 @@ impl BufferInitializer<'_> {
         ctx: &mut CommandEncoder<'a>,
         layout: Layout,
         writer: impl FnOnce(&mut [u8]),
-    ) -> GPURefMut<'a, RingBufferSuballocation> {
+    ) -> GPURef<'a, RingBufferSuballocation> {
         debug_assert!(matches!(
             ctx.render_pass_state(),
             CommandEncoderRenderPassState::OutsideRenderPass
@@ -380,7 +380,7 @@ impl BufferInitializer<'_> {
                 writer(host_buffer.as_slice_mut().unwrap());
 
                 let host_buffer = ctx.retain(host_buffer);
-                ctx.copy_buffer(host_buffer.as_ref(), buffer);
+                ctx.copy_buffer(host_buffer, buffer);
             }
             buffer
         }
@@ -470,7 +470,7 @@ impl<'a> AsyncTransferGuard<'a> {
             .record(&mut command_ctx.current_command_buffer, |encoder| {
                 let staging_buffer = encoder.retain(staging_buffer);
                 encoder.image_barrier(
-                    unsafe { GPURefMut::new_unchecked(image) },
+                    unsafe { GPURef::new_unchecked(image) },
                     Access::NONE,
                     Access::COPY_WRITE,
                     vk::ImageLayout::UNDEFINED,
@@ -507,13 +507,13 @@ impl<'a> AsyncTransferGuard<'a> {
                     })
                     .collect();
                 encoder.copy_buffer_to_image_with_layout(
-                    staging_buffer.as_ref(),
-                    unsafe { GPURefMut::new_unchecked(image) },
+                    staging_buffer,
+                    unsafe { GPURef::new_unchecked(image) },
                     &regions,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 );
                 encoder.image_barrier(
-                    unsafe { GPURefMut::new_unchecked(image) },
+                    unsafe { GPURef::new_unchecked(image) },
                     Access::COPY_WRITE,
                     Access::NONE,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,

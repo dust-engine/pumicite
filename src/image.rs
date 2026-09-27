@@ -8,7 +8,7 @@ use ash::{VkResult, vk, vk::TaggedStructure};
 use glam::UVec3;
 
 use crate::buffer::StagingBufferAllocator;
-use crate::command::{GPURef, GPURefMut};
+use crate::command::{GPURef};
 use crate::prelude::*;
 use vk_mem::Alloc;
 
@@ -61,29 +61,29 @@ impl<T: ImageLike + ?Sized> GPURef<'_, T> {
         unsafe { self.unwrap().ty() }
     }
 }
-impl<T: ImageLike + ?Sized> GPURefMut<'_, T> {
+impl<T: ImageLike> crate::sync::GPUMutex<T> {
     pub fn aspects(&self) -> vk::ImageAspectFlags {
-        unsafe { self.unwrap().aspects() }
+        self.inner.aspects()
     }
 
     pub fn array_layer_count(&self) -> u32 {
-        unsafe { self.unwrap().array_layer_count() }
+        self.inner.array_layer_count()
     }
 
     pub fn mip_level_count(&self) -> u32 {
-        unsafe { self.unwrap().mip_level_count() }
+        self.inner.mip_level_count()
     }
 
     pub fn extent(&self) -> UVec3 {
-        unsafe { self.unwrap().extent() }
+        self.inner.extent()
     }
 
     pub fn format(&self) -> vk::Format {
-        unsafe { self.unwrap().format() }
+        self.inner.format()
     }
 
     pub fn ty(&self) -> vk::ImageType {
-        unsafe { self.unwrap().ty() }
+        self.inner.ty()
     }
 }
 
@@ -321,6 +321,18 @@ macro_rules! image_view_wrapper {
             $(#[$accessor_meta])*
             pub fn $accessor(&self) -> &ImageViewItem {
                 &self.$field
+            }
+        }
+        impl<T: ImageLike + HasDevice> crate::sync::GPUMutex<$name<T>> {
+            $(#[$accessor_meta])*
+            pub fn $accessor(&self) -> &ImageViewItem {
+                &self.inner.$field
+            }
+        }
+        impl<'a, T: ImageLike + HasDevice> GPURef<'a, $name<T>> {
+            $(#[$accessor_meta])*
+            pub fn $accessor(self) -> GPURef<'a, ImageViewItem> {
+                unsafe { GPURef::new_unchecked(&self.unwrap().$field) }
             }
         }
         impl<T: ImageLike + HasDevice> HasDevice for $name<T> {

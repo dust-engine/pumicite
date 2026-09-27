@@ -119,7 +119,7 @@ fn mesh_shader_culling(
     state.render(move |mut pass| {
         let render_area = pass.render_area();
         let pipeline = pass.retain(pipeline.into_inner());
-        pass.bind_pipeline(pipeline);
+        pass.bind_pipeline(pipeline.deref());
         pass.set_viewport(
             0,
             &[vk::Viewport {

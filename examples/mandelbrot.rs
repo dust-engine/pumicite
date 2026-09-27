@@ -150,7 +150,7 @@ fn mandelbrot_rendering(
         if let Some(pipeline) = pipeline {
             // Use the Arc inside ComputePipeline directly, no clone or move
             let pipeline = encoder.retain(pipeline.clone().into_inner());
-            encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, &pipeline);
+            encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, pipeline.deref());
             encoder.push_descriptor_set(
                 vk::PipelineBindPoint::COMPUTE,
                 pipeline.layout(),

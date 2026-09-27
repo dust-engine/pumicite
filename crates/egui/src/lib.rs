@@ -487,7 +487,7 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
 
         let pipeline = pass.retain(pipeline.into_inner());
 
-        pass.bind_pipeline(pipeline);
+        pass.bind_pipeline(pipeline.deref());
 
         pass.bind_vertex_buffers(0, [vertex_buffer].into_iter());
         pass.bind_index_buffer(index_buffer, 0, vk::IndexType::UINT32);
