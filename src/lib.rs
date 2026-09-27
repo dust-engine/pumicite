@@ -113,6 +113,7 @@
 #![feature(min_specialization)]
 #![feature(ptr_metadata)]
 #![feature(async_fn_traits, unboxed_closures)]
+#![feature(auto_traits)]
 
 mod alloc;
 pub mod buffer;
@@ -155,7 +156,7 @@ pub mod prelude {
     pub use crate::{
         Allocator, Device, HasDevice, ash,
         ash::vk,
-        buffer::{Buffer, BufferExt, BufferLike},
+        buffer::{Buffer, BufferLike},
         command::{CommandBuffer, CommandEncoder, GPUMutexGuard},
         debug::DebugObject,
         image::{Image, ImageExt, ImageLike},

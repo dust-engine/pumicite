@@ -39,7 +39,7 @@ use ash::{
 };
 use vk_mem::Alloc;
 
-use crate::{Allocator, Device, HasDevice, command::CommandEncoder, utils::AsVkHandle};
+use crate::{Allocator, Device, HasDevice, command::{CommandEncoder, GPURef, GPURefMut}, utils::AsVkHandle};
 
 /// Common interface for Vulkan buffer types.
 ///
@@ -80,18 +80,43 @@ pub trait BufferLike: AsVkHandle<Handle = vk::Buffer> + Send + Sync + 'static {
     ///
     /// Returns `None` if the buffer is not host-visible or not mapped.
     fn as_slice_mut(&mut self) -> Option<&mut [u8]>;
-
-    /// Flushes the specified range to make CPU writes visible to the GPU.
-    ///
-    /// This is a no-op for `HOST_COHERENT` memory.
-    fn flush(&mut self, range: impl RangeBounds<vk::DeviceSize>) -> VkResult<()>;
-
-    /// Invalidates the specified range to make GPU writes visible to the CPU.
-    ///
-    /// This is a no-op for `HOST_COHERENT` memory.
-    fn invalidate(&mut self, range: impl RangeBounds<vk::DeviceSize>) -> VkResult<()>;
 }
+impl<T: BufferLike> GPURef<'_, T> {
+    pub fn offset(&self) -> vk::DeviceSize {
+        unsafe {
+            self.unwrap().offset()
+        }
+    }
+    pub fn device_address(&self) -> vk::DeviceAddress {
+        unsafe {
+            self.unwrap().device_address()
+        }
+    }
 
+    pub fn size(&self) -> vk::DeviceSize {
+        unsafe {
+            self.unwrap().size()
+        }
+    }
+}
+impl<T: BufferLike> GPURefMut<'_, T> {
+    pub fn offset(&self) -> vk::DeviceSize {
+        unsafe {
+            self.unwrap().offset()
+        }
+    }
+    pub fn device_address(&self) -> vk::DeviceAddress {
+        unsafe {
+            self.unwrap().device_address()
+        }
+    }
+
+    pub fn size(&self) -> vk::DeviceSize {
+        unsafe {
+            self.unwrap().size()
+        }
+    }
+}
 /// A buffer fully bound to a memory allocation.
 ///
 /// Buffer types:
@@ -190,48 +215,6 @@ impl BufferLike for Buffer {
         } else {
             None
         }
-    }
-
-    fn flush(&mut self, range: impl RangeBounds<vk::DeviceSize>) -> VkResult<()> {
-        if self
-            .memory_properties
-            .contains(vk::MemoryPropertyFlags::HOST_COHERENT)
-        {
-            return Ok(());
-        }
-        let offset = match range.start_bound() {
-            std::ops::Bound::Included(start) => *start,
-            std::ops::Bound::Excluded(start) => start + 1,
-            std::ops::Bound::Unbounded => 0,
-        };
-        let end = match range.end_bound() {
-            std::ops::Bound::Included(end) => end + 1,
-            std::ops::Bound::Excluded(end) => *end,
-            std::ops::Bound::Unbounded => self.size,
-        };
-        self.allocator()
-            .flush_allocation(&self.allocation, offset, end - offset)
-    }
-
-    fn invalidate(&mut self, range: impl RangeBounds<vk::DeviceSize>) -> VkResult<()> {
-        if self
-            .memory_properties
-            .contains(vk::MemoryPropertyFlags::HOST_COHERENT)
-        {
-            return Ok(());
-        }
-        let offset = match range.start_bound() {
-            std::ops::Bound::Included(start) => *start,
-            std::ops::Bound::Excluded(start) => start + 1,
-            std::ops::Bound::Unbounded => 0,
-        };
-        let end = match range.end_bound() {
-            std::ops::Bound::Included(end) => end + 1,
-            std::ops::Bound::Excluded(end) => *end,
-            std::ops::Bound::Unbounded => self.size,
-        };
-        self.allocator()
-            .invalidate_allocation(&self.allocation, offset, end - offset)
     }
 }
 impl Drop for Buffer {
@@ -733,14 +716,6 @@ impl BufferLike for RingBufferSuballocation {
             unsafe { Some(std::slice::from_raw_parts_mut(self.ptr, self.size as usize)) }
         }
     }
-    fn flush(&mut self, _range: impl RangeBounds<vk::DeviceSize>) -> VkResult<()> {
-        // TODO
-        Ok(())
-    }
-    fn invalidate(&mut self, _range: impl RangeBounds<vk::DeviceSize>) -> VkResult<()> {
-        // TODO
-        Ok(())
-    }
 }
 
 /// A buffer that abstracts over the differences between integrated and discrete GPUs.
@@ -848,14 +823,7 @@ impl ManagedBuffer {
         }
     }
     pub fn flush(&self, encoder: &mut CommandEncoder<'_>) {
-        match self {
-            ManagedBuffer::Transfer { host, device } => {
-                let host = encoder.retain(host.clone());
-                let device = encoder.retain(device.clone());
-                encoder.copy_buffer(host.as_ref(), device.as_ref());
-            }
-            ManagedBuffer::Direct { .. } => {}
-        }
+        todo!()
     }
 }
 impl AsVkHandle for ManagedBuffer {
@@ -894,16 +862,6 @@ impl BufferLike for ManagedBuffer {
     fn as_slice_mut(&mut self) -> Option<&mut [u8]> {
         Some(ManagedBuffer::as_slice_mut(self))
     }
-
-    fn flush(&mut self, _range: impl RangeBounds<vk::DeviceSize>) -> VkResult<()> {
-        // TODO
-        Ok(())
-    }
-
-    fn invalidate(&mut self, _range: impl RangeBounds<vk::DeviceSize>) -> VkResult<()> {
-        // TODO
-        Ok(())
-    }
 }
 
 /// Trait for types that can allocate staging buffers.
@@ -935,97 +893,3 @@ impl StagingBufferAllocator for Allocator {
         Buffer::new_host(self.clone(), size, 4, vk::BufferUsageFlags::TRANSFER_SRC)
     }
 }
-
-/// Extension trait providing buffer update methods.
-pub trait BufferExt: BufferLike + Sized {
-    /// Updates the entire buffer contents.
-    ///
-    /// Uses direct memory writes for host-visible buffers, or staging transfer otherwise.
-    fn update_contents<'a, A: StagingBufferAllocator, E>(
-        &'a mut self,
-        writer: impl FnOnce(&mut [u8]) -> Result<(), E>,
-        encoder: &mut CommandEncoder<'a>,
-        staging_allocator: &mut A,
-    ) -> Result<(), E>
-    where
-        E: From<vk::Result>,
-    {
-        self.update_region(writer, encoder, staging_allocator, 0, self.size())
-    }
-
-    /// Async version of [`update_contents`](BufferExt::update_contents).
-    fn update_contents_async<'a, A: StagingBufferAllocator, E>(
-        &'a mut self,
-        writer: impl AsyncFnOnce(&mut [u8]) -> Result<(), E>,
-        encoder: &mut CommandEncoder<'a>,
-        staging_allocator: &mut A,
-    ) -> impl Future<Output = Result<(), E>>
-    where
-        E: From<vk::Result> + Send + Sync,
-    {
-        self.update_region_async(writer, encoder, staging_allocator, 0, self.size())
-    }
-
-    /// Updates a region of the buffer contents.
-    ///
-    /// Like [`update_contents`](BufferExt::update_contents), but operates on a specific
-    /// byte range within the buffer.
-    fn update_region<'a, A: StagingBufferAllocator, E>(
-        &'a mut self,
-        writer: impl FnOnce(&mut [u8]) -> Result<(), E>,
-        encoder: &mut CommandEncoder<'a>,
-        staging_allocator: &mut A,
-        offset: u64,
-        size: u64,
-    ) -> Result<(), E>
-    where
-        E: From<vk::Result>,
-    {
-        if let Some(slice) = self.as_slice_mut() {
-            writer(&mut slice[offset as usize..(offset + size) as usize])?;
-            Ok(())
-        } else {
-            let mut staging_buffer = staging_allocator.allocate_staging_buffer(size)?;
-            let staging_slice = staging_buffer
-                .as_slice_mut()
-                .expect("Staging buffer allocator must return a host-visible buffer!");
-            writer(staging_slice)?;
-
-            let staging_buffer = encoder.retain(staging_buffer);
-            encoder.copy_buffer_region(staging_buffer, 0, self, offset, size);
-            Ok(())
-        }
-    }
-
-    /// Async version of [`update_region`](BufferExt::update_region).
-    #[must_use]
-    fn update_region_async<'a, A: StagingBufferAllocator, E>(
-        &'a mut self,
-        writer: impl AsyncFnOnce(&mut [u8]) -> Result<(), E>,
-        encoder: &mut CommandEncoder<'a>,
-        staging_allocator: &mut A,
-        offset: u64,
-        size: u64,
-    ) -> impl Future<Output = Result<(), E>>
-    where
-        E: From<vk::Result> + Send + Sync,
-    {
-        async move {
-            if let Some(slice) = self.as_slice_mut() {
-                writer(&mut slice[offset as usize..(offset + size) as usize]).await?;
-                Ok(())
-            } else {
-                let mut staging_buffer = staging_allocator.allocate_staging_buffer(self.size())?;
-                let staging_slice = staging_buffer
-                    .as_slice_mut()
-                    .expect("Staging buffer allocator must return a host-visible buffer!");
-                writer(staging_slice).await?;
-
-                let staging_buffer = encoder.retain(staging_buffer);
-                encoder.copy_buffer_region(staging_buffer, 0, self, offset, size);
-                Ok(())
-            }
-        }
-    }
-}
-impl<T> BufferExt for T where T: BufferLike {}

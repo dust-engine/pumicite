@@ -42,8 +42,8 @@ use bevy_ecs::{
 
 use pumicite::{
     ash::{self, VkResult, vk},
-    buffer::{RingBuffer, RingBufferSuballocation},
-    command::{CommandEncoderRenderPassState, CommandPool},
+    buffer::{RingBuffer, RingBufferSuballocation, StagingBufferAllocator},
+    command::{CommandEncoderRenderPassState, CommandPool, GPURefMut},
     device::DeviceBuilder,
     prelude::*,
     sync::Timeline,
@@ -230,7 +230,7 @@ impl UniformRingBuffer {
     }
 }
 impl UniformRingBuffer {
-    /// Creates a uniform buffer with the given data.
+    /// Creates a **small** uniform buffer with the given data.
     ///
     /// If the memory is host-visible, writes directly. Otherwise, uses
     /// `vkCmdUpdateBuffer` to copy the data inline in the command buffer.
@@ -241,7 +241,7 @@ impl UniformRingBuffer {
         &mut self,
         encoder: &mut CommandEncoder<'a>,
         data: &[u8],
-    ) -> &'a RingBufferSuballocation {
+    ) -> GPURefMut<'a, RingBufferSuballocation> {
         let alignment = self
             .0
             .device()
@@ -343,7 +343,7 @@ impl BufferInitializer<'_> {
                 writer(host_buffer.as_slice_mut().unwrap());
                 let host_buffer = encoder.retain(host_buffer);
                 let locked_buffer = encoder.lock(&buffer, vk::PipelineStageFlags2::COPY);
-                encoder.copy_buffer(host_buffer, locked_buffer);
+                encoder.copy_buffer(host_buffer.as_ref(), locked_buffer);
             }
             buffer
         }
@@ -358,7 +358,7 @@ impl BufferInitializer<'_> {
         ctx: &mut CommandEncoder<'a>,
         layout: Layout,
         writer: impl FnOnce(&mut [u8]),
-    ) -> &'a RingBufferSuballocation {
+    ) -> GPURefMut<'a, RingBufferSuballocation> {
         debug_assert!(matches!(
             ctx.render_pass_state(),
             CommandEncoderRenderPassState::OutsideRenderPass
@@ -380,7 +380,7 @@ impl BufferInitializer<'_> {
                 writer(host_buffer.as_slice_mut().unwrap());
 
                 let host_buffer = ctx.retain(host_buffer);
-                ctx.copy_buffer(host_buffer, buffer);
+                ctx.copy_buffer(host_buffer.as_ref(), buffer);
             }
             buffer
         }
@@ -403,6 +403,27 @@ impl BufferInitializer<'_> {
 /// ```
 #[derive(Clone, Resource)]
 pub struct AsyncTransfer(Arc<AsyncTransferInner>);
+impl FromWorld for AsyncTransfer {
+    fn from_world(world: &mut bevy_ecs::world::World) -> Self {
+        let queue = world.make_shared_queue::<TransferQueue>();
+        let device = world.resource::<Device>().clone();
+        let mut command_pool = CommandPool::new(device.clone(), queue.family_index()).unwrap();
+        let mut timeline = Timeline::new(device).unwrap();
+        let mut command_buffer = command_pool.alloc().unwrap();
+        timeline.schedule(&mut command_buffer);
+        command_pool.begin(&mut command_buffer);
+
+        Self(Arc::new(AsyncTransferInner {
+            queue,
+            command_pool: Mutex::new(AsyncTransferCommandContext {
+                timeline,
+                command_pool,
+                current_command_buffer: command_buffer,
+            }),
+        }))
+    }
+}
+
 struct AsyncTransferInner {
     queue: SharedQueue,
     command_pool: Mutex<AsyncTransferCommandContext>,
@@ -410,8 +431,9 @@ struct AsyncTransferInner {
 struct AsyncTransferCommandContext {
     command_pool: CommandPool,
     timeline: Timeline,
-}
 
+    current_command_buffer: CommandBuffer,
+}
 
 /// Guard for an active async transfer batch.
 ///
@@ -424,16 +446,85 @@ pub struct AsyncTransferGuard<'a> {
     inner: &'a Arc<AsyncTransferInner>,
 }
 
-impl AsyncTransferGuard<'_> {
-    /// Submits recorded work so far to free staging memory.
-    ///
-    /// This is a hint to the implementation - it may submit all work, some work,
-    /// or nothing at all depending on whether previous work has completed.
-    /// Call this periodically during long upload sequences to avoid exhausting
-    /// staging buffer space.
-    pub async fn flush(&mut self) -> VkResult<()> {
-    }
+impl<'a> AsyncTransferGuard<'a> {
+    pub async fn update_image<A: StagingBufferAllocator, E: From<vk::Result>>(
+        &mut self,
+        image: &'a mut impl ImageLike,
+        writer: impl AsyncFnOnce(&mut [u8]) -> Result<(), E>,
+        staging_allocator: &mut A,
+        target_layout: vk::ImageLayout,
+    ) -> Result<(), E> {
+        let format_properties = pumicite_types::format::Format::from(image.format()).properties();
+        let bytes_required = format_properties
+            .bytes_required_for_texture(image.extent(), image.mip_level_count())
+            * image.array_layer_count() as u64;
+        let mut staging_buffer = staging_allocator.allocate_staging_buffer(bytes_required)?;
+        let staging_slice = staging_buffer
+            .as_slice_mut()
+            .expect("Staging buffer allocator must return a host-visible buffer!");
+        writer(staging_slice).await?;
 
+        let command_ctx = &mut *self.inner.command_pool.lock().await;
+        command_ctx
+            .command_pool
+            .record(&mut command_ctx.current_command_buffer, |encoder| {
+                let staging_buffer = encoder.retain(staging_buffer);
+                encoder.image_barrier(
+                    unsafe { GPURefMut::new_unchecked(image) },
+                    Access::NONE,
+                    Access::COPY_WRITE,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    0..image.mip_level_count(),
+                    0..image.array_layer_count(),
+                );
+                encoder.emit_barriers();
+                let mut buffer_offset = 0;
+                let mut mip_size = image.extent();
+                let regions: smallvec::SmallVec<[vk::BufferImageCopy; 1]> = (0..image
+                    .mip_level_count())
+                    .map(|i| {
+                        let copy = vk::BufferImageCopy {
+                            buffer_offset,
+                            image_subresource: vk::ImageSubresourceLayers {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                mip_level: i,
+                                base_array_layer: 0,
+                                layer_count: image.array_layer_count(),
+                            },
+                            image_extent: vk::Extent3D {
+                                width: mip_size.x,
+                                height: mip_size.y,
+                                depth: mip_size.z,
+                            },
+                            ..Default::default()
+                        };
+                        buffer_offset += format_properties.bytes_required_for_texture(mip_size, 1);
+                        mip_size.x = mip_size.x.div_ceil(2);
+                        mip_size.y = mip_size.y.div_ceil(2);
+                        mip_size.z = mip_size.z.div_ceil(2);
+                        copy
+                    })
+                    .collect();
+                encoder.copy_buffer_to_image_with_layout(
+                    staging_buffer.as_ref(),
+                    unsafe { GPURefMut::new_unchecked(image) },
+                    &regions,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                );
+                encoder.image_barrier(
+                    unsafe { GPURefMut::new_unchecked(image) },
+                    Access::COPY_WRITE,
+                    Access::NONE,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    target_layout,
+                    0..image.mip_level_count(),
+                    0..image.array_layer_count(),
+                );
+            });
+
+        Ok(())
+    }
     /// Submits all remaining work and waits for completion.
     ///
     /// This finalizes the transfer batch, submits the command buffer to the
@@ -457,8 +548,6 @@ impl AsyncTransfer {
     /// batch.submit().await?;
     /// ```
     pub async fn batch(&self) -> VkResult<AsyncTransferGuard<'_>> {
-        Ok(AsyncTransferGuard {
-            inner: &self.0,
-        })
+        Ok(AsyncTransferGuard { inner: &self.0 })
     }
 }

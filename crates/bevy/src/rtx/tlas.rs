@@ -252,13 +252,14 @@ pub fn tlas_build_system<T: Send + Sync + 'static>(
         return;
     };
     let num_instances = referenced_blas.len() as u32;
-    let geometry = vk::AccelerationStructureGeometryKHR {
+    let mut geometry = vk::AccelerationStructureGeometryKHR {
         geometry_type: vk::GeometryTypeKHR::INSTANCES,
         flags: vk::GeometryFlagsKHR::empty(),
         geometry: vk::AccelerationStructureGeometryDataKHR {
             instances: vk::AccelerationStructureGeometryInstancesDataKHR {
                 data: vk::DeviceOrHostAddressConstKHR {
-                    device_address: buffer.device_address(),
+                    // Filled in once the buffer is locked on the encoder.
+                    device_address: 0,
                 },
                 ..Default::default()
             },
@@ -309,10 +310,11 @@ pub fn tlas_build_system<T: Send + Sync + 'static>(
         _referenced_blas: referenced_blas,
     });
     ctx.record(|encoder| {
-        encoder.lock(
+        let locked_buffer = encoder.lock(
             &buffer,
             vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
         );
+        geometry.geometry.instances.data.device_address = locked_buffer.device_address();
         encoder.lock(
             &tlas_inner,
             vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,

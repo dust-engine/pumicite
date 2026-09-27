@@ -8,6 +8,7 @@ use ash::{VkResult, vk, vk::TaggedStructure};
 use glam::UVec3;
 
 use crate::buffer::StagingBufferAllocator;
+use crate::command::{GPURef, GPURefMut};
 use crate::prelude::*;
 use vk_mem::Alloc;
 
@@ -34,6 +35,56 @@ pub trait ImageLike: AsVkHandle<Handle = vk::Image> + Send + Sync + 'static {
 
     /// Returns the image type (1D, 2D, or 3D).
     fn ty(&self) -> vk::ImageType;
+}
+impl<T: ImageLike + ?Sized> GPURef<'_, T> {
+    pub fn aspects(&self) -> vk::ImageAspectFlags {
+        unsafe { self.unwrap().aspects() }
+    }
+
+    pub fn array_layer_count(&self) -> u32 {
+        unsafe { self.unwrap().array_layer_count() }
+    }
+
+    pub fn mip_level_count(&self) -> u32 {
+        unsafe { self.unwrap().mip_level_count() }
+    }
+
+    pub fn extent(&self) -> UVec3 {
+        unsafe { self.unwrap().extent() }
+    }
+
+    pub fn format(&self) -> vk::Format {
+        unsafe { self.unwrap().format() }
+    }
+
+    pub fn ty(&self) -> vk::ImageType {
+        unsafe { self.unwrap().ty() }
+    }
+}
+impl<T: ImageLike + ?Sized> GPURefMut<'_, T> {
+    pub fn aspects(&self) -> vk::ImageAspectFlags {
+        unsafe { self.unwrap().aspects() }
+    }
+
+    pub fn array_layer_count(&self) -> u32 {
+        unsafe { self.unwrap().array_layer_count() }
+    }
+
+    pub fn mip_level_count(&self) -> u32 {
+        unsafe { self.unwrap().mip_level_count() }
+    }
+
+    pub fn extent(&self) -> UVec3 {
+        unsafe { self.unwrap().extent() }
+    }
+
+    pub fn format(&self) -> vk::Format {
+        unsafe { self.unwrap().format() }
+    }
+
+    pub fn ty(&self) -> vk::ImageType {
+        unsafe { self.unwrap().ty() }
+    }
 }
 
 /// Common interface for Vulkan image view types.
@@ -799,97 +850,6 @@ pub trait ImageExt: ImageLike {
                 },
                 image: self,
             })
-        }
-    }
-
-    /// Uploads data to the image asynchronously via a staging buffer.
-    ///
-    /// This method handles the complete upload workflow:
-    /// 1. Allocates a staging buffer from the provided allocator
-    /// 2. Calls the async writer to fill the staging buffer
-    /// 3. Transitions the image to `TRANSFER_DST_OPTIMAL`
-    /// 4. Copies data for all mip levels
-    /// 5. Transitions the image to the target layout
-    ///
-    /// The staging buffer is retained by the command encoder until the commands complete.
-    #[must_use]
-    fn update_contents_async<'a, A: StagingBufferAllocator, E>(
-        &'a mut self,
-        writer: impl AsyncFnOnce(&mut [u8]) -> Result<(), E>,
-        encoder: &mut CommandEncoder<'a>,
-        staging_allocator: &mut A,
-        target_layout: vk::ImageLayout,
-    ) -> impl Future<Output = Result<(), E>>
-    where
-        E: From<vk::Result>,
-        Self: Sized,
-    {
-        async move {
-            let format_properties =
-                pumicite_types::format::Format::from(self.format()).properties();
-            let bytes_required = format_properties
-                .bytes_required_for_texture(self.extent(), self.mip_level_count())
-                * self.array_layer_count() as u64;
-            let mut staging_buffer = staging_allocator.allocate_staging_buffer(bytes_required)?;
-            let staging_slice = staging_buffer
-                .as_slice_mut()
-                .expect("Staging buffer allocator must return a host-visible buffer!");
-            writer(staging_slice).await?;
-
-            let staging_buffer = encoder.retain(staging_buffer);
-            encoder.image_barrier(
-                self,
-                Access::NONE,
-                Access::COPY_WRITE,
-                vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                0..self.mip_level_count(),
-                0..self.array_layer_count(),
-            );
-            encoder.emit_barriers();
-            let mut buffer_offset = 0;
-            let mut mip_size = self.extent();
-            let regions: smallvec::SmallVec<[vk::BufferImageCopy; 1]> = (0..self.mip_level_count())
-                .map(|i| {
-                    let copy = vk::BufferImageCopy {
-                        buffer_offset,
-                        image_subresource: vk::ImageSubresourceLayers {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            mip_level: i,
-                            base_array_layer: 0,
-                            layer_count: self.array_layer_count(),
-                        },
-                        image_extent: vk::Extent3D {
-                            width: mip_size.x,
-                            height: mip_size.y,
-                            depth: mip_size.z,
-                        },
-                        ..Default::default()
-                    };
-                    buffer_offset += format_properties.bytes_required_for_texture(mip_size, 1);
-                    mip_size.x = mip_size.x.div_ceil(2);
-                    mip_size.y = mip_size.y.div_ceil(2);
-                    mip_size.z = mip_size.z.div_ceil(2);
-                    copy
-                })
-                .collect();
-            encoder.copy_buffer_to_image_with_layout(
-                staging_buffer,
-                self,
-                &regions,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            );
-            encoder.image_barrier(
-                self,
-                Access::COPY_WRITE,
-                Access::NONE,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                target_layout,
-                0..self.mip_level_count(),
-                0..self.array_layer_count(),
-            );
-
-            Ok(())
         }
     }
 }

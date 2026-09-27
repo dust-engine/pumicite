@@ -5,7 +5,7 @@
 use ash::vk;
 
 use crate::{
-    HasDevice, buffer::BufferLike, command::CommandEncoderRenderPassState, image::ImageLike,
+    HasDevice, buffer::BufferLike, command::{CommandEncoderRenderPassState, GPURef, GPURefMut}, image::ImageLike, utils::AsVkHandle,
 };
 
 use super::CommandEncoder;
@@ -15,7 +15,7 @@ impl<'a> CommandEncoder<'a> {
     ///
     /// This is a convenience method for small updates (≤64KB) that embeds the data
     /// directly in the command stream, avoiding the need for a staging buffer.
-    pub fn update_buffer(&mut self, buffer: &'a impl BufferLike, data: &[u8]) {
+    pub fn update_buffer(&mut self, buffer: GPURefMut<'a, impl BufferLike>, data: &[u8]) {
         debug_assert!(matches!(
             self.render_pass_state(),
             CommandEncoderRenderPassState::OutsideRenderPass
@@ -35,16 +35,17 @@ impl<'a> CommandEncoder<'a> {
     /// Copies the entire contents of one buffer to another.
     ///
     /// The copy size is the minimum of the source and destination buffer sizes.
-    pub fn copy_buffer(&mut self, src: &'a impl BufferLike, dst: &'a impl BufferLike) {
-        self.copy_buffer_region(src, 0, dst, 0, src.size().min(dst.size()));
+    pub fn copy_buffer(&mut self, src: GPURef<'a, impl BufferLike>, dst: GPURefMut<'a, impl BufferLike>) {
+        let size = src.size().min(dst.size());
+        self.copy_buffer_region(src, 0, dst, 0, size);
     }
 
     /// Copies a region from one buffer to another.
     pub fn copy_buffer_region(
         &mut self,
-        src: &'a impl BufferLike,
+        src: GPURef<'a, impl BufferLike>,
         src_offset: u64,
-        dst: &'a impl BufferLike,
+        dst: GPURefMut<'a, impl BufferLike>,
         dst_offset: u64,
         size: u64,
     ) {
@@ -67,8 +68,8 @@ impl<'a> CommandEncoder<'a> {
     }
     pub fn copy_buffer_to_image_with(
         &mut self,
-        buffer: &'a impl BufferLike,
-        image: &'a impl ImageLike,
+        buffer: GPURef<'a, impl BufferLike>,
+        image: GPURefMut<'a, impl ImageLike>,
         copies: &[vk::BufferImageCopy],
     ) {
         self.copy_buffer_to_image_with_layout(buffer, image, copies, vk::ImageLayout::GENERAL);
@@ -77,8 +78,8 @@ impl<'a> CommandEncoder<'a> {
     /// Copies data from a buffer to an image.
     pub fn copy_buffer_to_image_with_layout(
         &mut self,
-        buffer: &'a impl BufferLike,
-        image: &'a impl ImageLike,
+        buffer: GPURef<'a, impl BufferLike>,
+        image: GPURefMut<'a, impl ImageLike>,
         copies: &[vk::BufferImageCopy],
         image_layout: vk::ImageLayout,
     ) {

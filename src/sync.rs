@@ -54,13 +54,6 @@ pub struct GPUMutex<T: Send> {
     ptr: AtomicU128,
     pub(crate) inner: ManuallyDrop<Box<T>>,
 }
-impl<T: Send> Deref for GPUMutex<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
 
 /// Packs a semaphore pointer and a timestamp into a single `u128`.
 ///

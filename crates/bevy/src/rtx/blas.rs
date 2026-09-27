@@ -452,7 +452,7 @@ fn build_blas_system<T: BLASBuilder>(
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
         )
         .unwrap();
-        let scratch_buffer = recorder.retain(Box::new(scratch_buffer));
+        let scratch_buffer = recorder.retain(scratch_buffer);
 
         // Second pass to patch up infos
         let mut geometry_i: u32 = 0;

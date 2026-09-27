@@ -145,6 +145,77 @@ pub enum CommandEncoderRenderPassState {
     },
 }
 
+pub struct GPURef<'a, T: ?Sized>(&'a T);
+impl<T: ?Sized> Clone for GPURef<'_, T> {
+    fn clone(&self) -> Self {
+        Self(self.0)
+    }
+}
+impl<T: ?Sized> Copy for GPURef<'_, T> {
+}
+
+pub struct GPURefMut<'a, T: ?Sized>(&'a T);
+impl<T: ?Sized> Clone for GPURefMut<'_, T> {
+    fn clone(&self) -> Self {
+        Self(self.0)
+    }
+}
+impl<T: ?Sized> Copy for GPURefMut<'_, T> {
+}
+
+pub unsafe auto trait NoHostMapping {}
+impl<'a, T: ?Sized> GPURef<'a, T> {
+    // Safety: The caller must ensure not to modify the underlying resource on GPU timeline.
+    pub unsafe fn unwrap(&self) -> &T {
+        self.0
+    }
+    pub unsafe fn new_unchecked(value: &T) -> Self {
+        unsafe {
+            Self(&*(value as *const T))
+        }
+    }
+}
+impl<T: NoHostMapping + ?Sized> Deref for GPURef<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+impl<'a, T: ?Sized> GPURefMut<'a, T> {
+    // Safety: The caller must ensure not to modify the underlying resource on GPU timeline.
+    pub unsafe fn unwrap(&self) -> &T {
+        self.0
+    }
+    pub fn as_ref(self) -> GPURef<'a, T> {
+        GPURef(self.0)
+    }
+    pub unsafe fn new_unchecked(value: &T) -> Self {
+        unsafe {
+            Self(&*(value as *const T))
+        }
+    }
+}
+impl<T: NoHostMapping + ?Sized> Deref for GPURefMut<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+/// VKHandle can always be projected
+impl<T: AsVkHandle + ?Sized> AsVkHandle for GPURef<'_, T> {
+    type Handle = T::Handle;
+    fn vk_handle(&self) -> Self::Handle {
+        unsafe { self.unwrap().vk_handle() }
+    }
+}
+/// VKHandle can always be projected
+impl<T: AsVkHandle + ?Sized> AsVkHandle for GPURefMut<'_, T> {
+    type Handle = T::Handle;
+    fn vk_handle(&self) -> Self::Handle {
+        unsafe { self.unwrap().vk_handle() }
+    }
+}
+
 impl CommandEncoder<'_> {
     /// Creates a new command encoder with no associated command buffer.
     ///
@@ -299,13 +370,13 @@ impl<'a> CommandEncoder<'a> {
     /// # queue.submit(&mut cmd).unwrap();
     /// # cmd.block_until_completion().unwrap();
     /// ```
-    pub fn retain<T: Sized>(&mut self, arc: T) -> &'a T {
+    pub fn retain<T: Sized>(&mut self, arc: T) -> GPURefMut<'a, T> {
         unsafe {
             let ptr = self.buffer_mut().retainer.add(arc);
 
             // Safety: It's safe to dereference here because we guarantee that the retainer
             // won't be cleared until the command encoder finishes execution on the GPU.
-            &*ptr
+            GPURefMut(&*ptr)
         }
     }
 
@@ -348,12 +419,12 @@ impl<'a> CommandEncoder<'a> {
         &mut self,
         res: &GPUMutex<T>,
         stages: vk::PipelineStageFlags2,
-    ) -> &'a T {
+    ) -> GPURefMut<'a, T> {
         self.buffer_mut().lock_inner(res, stages);
         unsafe {
             // Safety: The lifetime extension is safe because the GPUMutex ensures
             // the resource remains valid until the command buffer completes execution.
-            &*Box::as_ptr(&res.inner)
+            GPURefMut(&*Box::as_ptr(&res.inner))
         }
     }
 
@@ -365,7 +436,7 @@ impl<'a> CommandEncoder<'a> {
     /// taken by one command buffer says nothing about what another command buffer waits on,
     /// even a later one on the same timeline, so that command buffer must take its own lock.
     #[track_caller]
-    pub fn get_locked<T>(&self, guard: &GPUMutexGuard<T>) -> &'a T {
+    pub fn get_locked<T>(&self, guard: &GPUMutexGuard<T>) -> GPURefMut<'a, T> {
         let buffer = self.buffer();
         let semaphore = buffer
             .semaphore
@@ -394,7 +465,7 @@ impl<'a> CommandEncoder<'a> {
             // which is when this command buffer finishes executing. Timestamps on a timeline
             // are never reused, and the guard's strong count on the semaphore rules out
             // address reuse, so no other command buffer can match this identity.
-            &*guard.ptr
+            GPURefMut(&*guard.ptr)
         }
     }
 
@@ -426,7 +497,7 @@ impl<'a> CommandEncoder<'a> {
     /// - Transition the image layout from `old_layout` to `new_layout`
     pub fn image_barrier(
         &mut self,
-        image: &'a impl ImageLike,
+        image: GPURefMut<'a, impl ImageLike>,
         before: Access,
         after: Access,
         old_layout: vk::ImageLayout,
@@ -1647,7 +1718,7 @@ mod tests {
         pool.record(&mut cb, |encoder| {
             let value = encoder.get_locked(&guard);
             assert_eq!(*value, 42);
-            assert!(std::ptr::eq(value, &**moved));
+            assert!(std::ptr::eq(&*value, &**moved));
         });
         pool.finish(&mut cb).unwrap();
         queue.submit(&mut cb).unwrap();
