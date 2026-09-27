@@ -81,7 +81,7 @@ use crate::{
     Device, HasDevice,
     buffer::BufferLike,
     image::ImageLike,
-    sync::{GPUMutex, SharedSemaphore},
+    sync::{GPUMutex, SharedSemaphore, Timestamp},
     tracking::{Access, MemoryBarrier, ResourceState},
     utils::AsVkHandle,
 };
@@ -156,7 +156,6 @@ impl<T: ?Sized> Copy for GPURef<'_, T> {
 
 
 pub unsafe auto trait NoHostMapping {}
-// Raw pointers opt out of `NoHostMapping`, so these smart pointers need to opt back in.
 unsafe impl<T: NoHostMapping + ?Sized> NoHostMapping for std::sync::Arc<T> {}
 unsafe impl NoHostMapping for crate::Device {}
 impl<'a, T: ?Sized> GPURef<'a, T> {
@@ -418,12 +417,14 @@ impl<'a> CommandEncoder<'a> {
     #[track_caller]
     pub fn get_locked<T>(&self, guard: &GPUMutexGuard<T>) -> GPURef<'a, T> {
         let buffer = self.buffer();
-        let semaphore = buffer
-            .semaphore
+        let timestamp = buffer
+            .timestamp
             .as_ref()
             .expect("Command buffer must be scheduled on a timeline first");
-        if !std::ptr::eq(semaphore.as_ptr(), guard.semaphore.as_ptr())
-            || buffer.timestamp != guard.timestamp
+        if !std::ptr::eq(
+            timestamp.semaphore().as_ptr(),
+            guard.timestamp.semaphore().as_ptr(),
+        ) || timestamp.value() != guard.timestamp.value()
         {
             panic!(
                 "GPUMutexGuard<{ty}> was taken by the command buffer scheduled at timestamp \
@@ -432,16 +433,16 @@ impl<'a> CommandEncoder<'a> {
                 {cb_handle:?}. A guard is only valid for the command buffer that took the lock. \
                 Call CommandBuffer::lock or CommandEncoder::lock for this command buffer instead.",
                 ty = std::any::type_name::<T>(),
-                guard_ts = guard.timestamp,
-                guard_handle = guard.semaphore.vk_handle(),
-                cb_ts = buffer.timestamp,
-                cb_handle = semaphore.vk_handle(),
+                guard_ts = guard.timestamp.value(),
+                guard_handle = guard.timestamp.semaphore().vk_handle(),
+                cb_ts = timestamp.value(),
+                cb_handle = timestamp.semaphore().vk_handle(),
             );
         }
         unsafe {
             // Safety: this encoder is recording the command buffer identified by
-            // (guard.semaphore, guard.timestamp). That command buffer locked the mutex, so the
-            // resource stays alive at least until the timeline reaches `guard.timestamp`,
+            // `guard.timestamp`. That command buffer locked the mutex, so the resource stays
+            // alive at least until the timeline reaches `guard.timestamp`,
             // which is when this command buffer finishes executing. Timestamps on a timeline
             // are never reused, and the guard's strong count on the semaphore rules out
             // address reuse, so no other command buffer can match this identity.
@@ -798,16 +799,12 @@ pub struct CommandBuffer {
     /// Current state in the command buffer lifecycle.
     pub(crate) state: CommandBufferState,
 
-    /// Timeline semaphore that will be signaled upon command buffer completion.
+    /// Timestamp signaled upon command buffer completion.
     ///
-    /// This is set when the command buffer is scheduled onto a timeline and
-    /// cleared when execution completes.
-    pub(crate) semaphore: Option<SharedSemaphore>,
-
-    /// Timestamp at which the semaphore will be signaled.
-    ///
-    /// This corresponds to the command buffer's position in the timeline that it was [scheduled](CommandPool::schedule) on
-    pub(crate) timestamp: u64,
+    /// This corresponds to the command buffer's position in the timeline that it was
+    /// [scheduled](crate::sync::Timeline::schedule) on. It is set when the command buffer is
+    /// scheduled and cleared when execution completes.
+    pub(crate) timestamp: Option<Timestamp>,
 
     /// Semaphores that this command buffer must wait for before execution.
     ///
@@ -866,8 +863,7 @@ impl CommandBuffer {
         self.lock_inner(res, stages);
         GPUMutexGuard {
             ptr: Box::as_ptr(&res.inner),
-            semaphore: self.semaphore.clone().unwrap(),
-            timestamp: self.timestamp,
+            timestamp: self.timestamp.clone().unwrap(),
         }
     }
 
@@ -883,13 +879,13 @@ impl CommandBuffer {
             "Cannot lock a GPUMutex for a command buffer in state {:?}",
             self.state
         );
-        let semaphore = self
-            .semaphore
+        let timestamp = self
+            .timestamp
             .as_ref()
             .expect("Command buffer must be scheduled on a timeline before locking a GPUMutex");
         let (wait_semaphore, wait_value) = unsafe {
-            // This GPUMutex is locked until self.semaphore had its value set to self.timestamp
-            res.lock_until(semaphore, self.timestamp)
+            // This GPUMutex is locked until the timeline reaches self.timestamp
+            res.lock_until(timestamp.semaphore(), timestamp.value())
         };
 
         if let Some(wait_semaphore) = wait_semaphore {
@@ -945,17 +941,13 @@ impl CommandBuffer {
         }
 
         // Wait for the timeline semaphore to reach our timestamp
-        self.semaphore
-            .as_ref()
-            .unwrap()
-            .wait_blocked(self.timestamp, !0)?;
+        self.timestamp.as_ref().unwrap().wait_blocked(!0)?;
 
         // Clean up and transition to invalid state
         self.state = CommandBufferState::Invalid;
-        self.semaphore = None;
+        self.timestamp = None;
         self.retainer.clear();
         self.wait_semaphores.clear();
-        self.timestamp = 0;
         Ok(())
     }
 
@@ -966,18 +958,13 @@ impl CommandBuffer {
             _ => panic!("Command buffer must be recorded and submitted for execution first"),
         }
         // Wait for the timeline semaphore to reach our timestamp
-        self.semaphore
-            .as_ref()
-            .unwrap()
-            .wait_async(self.timestamp)
-            .await?;
+        self.timestamp.as_ref().unwrap().wait_async().await?;
 
         // Clean up and transition to invalid state
         self.state = CommandBufferState::Invalid;
-        self.semaphore = None;
+        self.timestamp = None;
         self.retainer.clear();
         self.wait_semaphores.clear();
-        self.timestamp = 0;
         Ok(())
     }
 
@@ -1019,14 +1006,14 @@ impl CommandBuffer {
             return false;
         }
 
-        let completed = self.semaphore.as_ref().unwrap().is_signaled(self.timestamp);
+        let timestamp = self.timestamp.as_ref().unwrap();
+        let completed = timestamp.semaphore().is_signaled(timestamp.value());
         if completed {
             // Clean up and transition to invalid state
             self.state = CommandBufferState::Invalid;
-            self.semaphore = None;
+            self.timestamp = None;
             self.retainer.clear();
             self.wait_semaphores.clear();
-            self.timestamp = 0;
         }
         completed
     }
@@ -1085,11 +1072,9 @@ impl CommandBuffer {
 pub struct GPUMutexGuard<T> {
     /// Pointer to the resource inside the mutex's box. Stable across moves of the mutex.
     ptr: *const T,
-    /// Timeline semaphore of the command buffer that took the lock. The strong count keeps
-    /// the semaphore alive, so its address cannot be reused while a guard exists.
-    semaphore: SharedSemaphore,
-    /// Timestamp of the command buffer that took the lock.
-    timestamp: u64,
+    /// Timestamp of the command buffer that took the lock. Its strong count keeps the
+    /// semaphore alive, so the semaphore's address cannot be reused while a guard exists.
+    timestamp: Timestamp,
 }
 // Safety: the guard only ever hands out `&T`, so sharing or sending it between threads is
 // exactly as safe as sharing `&T`, which requires `T: Sync`.
@@ -1099,8 +1084,7 @@ impl<T> Clone for GPUMutexGuard<T> {
     fn clone(&self) -> Self {
         Self {
             ptr: self.ptr,
-            semaphore: self.semaphore.clone(),
-            timestamp: self.timestamp,
+            timestamp: self.timestamp.clone(),
         }
     }
 }
@@ -1122,7 +1106,7 @@ impl Drop for CommandBuffer {
                 );
             }
             CommandBufferState::Freed => (),
-            _ if self.semaphore.is_some() => {
+            _ if self.timestamp.is_some() => {
                 // Scheduled on a Timeline but never submitted. The reserved timestamp can only
                 // be signaled by GPU execution, so everything waiting on it would wedge forever.
                 if std::thread::panicking() {
@@ -1268,6 +1252,9 @@ impl CommandPool {
     }
     /// Record commands using the provided [`CommandEncoder`].
     ///
+    /// Barriers still pending when `callback` returns are emitted before this returns, so they
+    /// aren't lost with the encoder.
+    ///
     /// This method is defined on the CommandPool to ensure that the caller has a mutable reference to the pool.
     pub fn record<T>(
         &mut self,
@@ -1280,7 +1267,7 @@ impl CommandPool {
             "Must call CommandPool::begin before recording a command buffer"
         );
         assert!(
-            command_buffer.semaphore.is_some(),
+            command_buffer.timestamp.is_some(),
             "Must call Timeline::schedule before recording a command buffer"
         );
         assert!(
@@ -1296,9 +1283,14 @@ impl CommandPool {
             render_pass_state: CommandEncoderRenderPassState::OutsideRenderPass,
         };
 
-        (callback)(&mut encoder)
+        let result = (callback)(&mut encoder);
+        encoder.emit_barriers();
+        result
     }
     /// Experimental. Record commands using the provided [`CommandEncoder`] in a Future.
+    ///
+    /// Like [`record`](Self::record), barriers still pending when the future completes are
+    /// emitted before this returns.
     ///
     /// This method is defined on the CommandPool to ensure that the caller has a mutable reference to the pool.
     pub fn record_future<T: Send>(
@@ -1312,7 +1304,7 @@ impl CommandPool {
             "Must call CommandPool::begin before recording a command buffer"
         );
         assert!(
-            command_buffer.semaphore.is_some(),
+            command_buffer.timestamp.is_some(),
             "Must call Timeline::schedule before recording a command buffer"
         );
         assert!(
@@ -1320,8 +1312,7 @@ impl CommandPool {
             "Command buffer recorded on the wrong pool!"
         );
 
-        let semaphore = command_buffer.semaphore.as_ref().unwrap().clone();
-        let timestamp = command_buffer.timestamp;
+        let timestamp = command_buffer.timestamp.clone().unwrap();
 
         self.record(command_buffer, move |mut encoder| {
             // Safety: casting `encoder` so that we can borrow it later for `encoder.emit_barriers()`
@@ -1338,7 +1329,7 @@ impl CommandPool {
                     }
                 }
             };
-            GPUMutex::new_locked(Box::new(result), semaphore, timestamp)
+            GPUMutex::new_locked(Box::new(result), timestamp)
         })
     }
     /// Allocate a new command buffer from the pool.
@@ -1360,8 +1351,7 @@ impl CommandPool {
                 pool: self.inner.clone(),
                 buffer: command_buffer,
                 state: CommandBufferState::Initial,
-                semaphore: None,
-                timestamp: 0,
+                timestamp: None,
                 wait_semaphores: BTreeMap::new(),
                 retainer: self.retainer_pool.pop().unwrap_or_default(),
             })
@@ -1417,7 +1407,7 @@ impl CommandPool {
             "Command buffer is still being executed!"
         );
         assert!(
-            command_buffer.semaphore.is_none(),
+            command_buffer.timestamp.is_none(),
             "Command buffer was scheduled on a Timeline but never submitted. \
              Once scheduled, a command buffer must be submitted."
         );
@@ -1449,7 +1439,7 @@ impl CommandPool {
             "Command buffer is still being executed!"
         );
         assert!(
-            command_buffer.semaphore.is_none(),
+            command_buffer.timestamp.is_none(),
             "Command buffer was scheduled on a Timeline but never submitted. \
              Once scheduled, a command buffer must be submitted."
         );
@@ -1539,7 +1529,7 @@ mod tests {
         let mut cb2 = pool.alloc().unwrap();
         timeline.schedule(&mut cb1); // timestamp 1
         timeline.schedule(&mut cb2); // timestamp 2
-        let semaphore = cb2.semaphore.clone().unwrap();
+        let semaphore = cb2.timestamp.as_ref().unwrap().semaphore().clone();
 
         cb2.lock(&mutex, vk::PipelineStageFlags2::ALL_COMMANDS);
         let strong_count = Arc::strong_count(&*semaphore);
@@ -1585,8 +1575,8 @@ mod tests {
         timeline_a.schedule(&mut a1); // timestamp 1 on A
         timeline_a.schedule(&mut a2); // timestamp 2 on A
         timeline_b.schedule(&mut b1); // timestamp 1 on B
-        let a = a1.semaphore.clone().unwrap();
-        let b = b1.semaphore.clone().unwrap();
+        let a = a1.timestamp.as_ref().unwrap().semaphore().clone();
+        let b = b1.timestamp.as_ref().unwrap().semaphore().clone();
         let counts = || (Arc::strong_count(&*a), Arc::strong_count(&*b));
         let (a0, b0) = counts();
 

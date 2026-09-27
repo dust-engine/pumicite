@@ -17,8 +17,6 @@ ComputePipeline(
                                 ty: UniformBuffer,
                                 count: 1,
                                 stages: [Compute],
-                                update_after_bind_pool: false,
-                                push_descriptor: true,
                             ),
                             (
                                 binding: 1,

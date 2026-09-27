@@ -27,6 +27,7 @@
 
 use std::{
     alloc::Layout,
+    collections::VecDeque,
     ops::{Deref, DerefMut},
     sync::Arc,
 };
@@ -36,7 +37,7 @@ use bevy_app::{Plugin, Startup};
 use bevy_ecs::{
     resource::Resource,
     schedule::IntoScheduleConfigs,
-    system::{ResMut, SystemParam},
+    system::{Res, ResMut, SystemParam},
     world::{FromWorld, World},
 };
 
@@ -46,7 +47,7 @@ use pumicite::{
     command::{CommandEncoderRenderPassState, CommandPool, GPURef},
     device::DeviceBuilder,
     prelude::*,
-    sync::Timeline,
+    sync::{Timeline, Timestamp},
 };
 
 use crate::{
@@ -392,14 +393,28 @@ impl BufferInitializer<'_> {
 /// Uses a separate transfer queue (when available) to overlap data uploads with
 /// rendering work. Manages its own command pool and timeline for synchronization.
 ///
+/// Transfers from every batch are recorded into one shared command buffer.
+/// [`async_transfer_submission_system`] submits it once per frame. If the staging data recorded
+/// since the last submission exceeds [`submit_threshold`](Self::submit_threshold), the
+/// recording batch submits it immediately instead, so large uploads don't wait for the frame.
+///
 /// # Usage
 ///
 /// ```ignore
-/// async fn upload_data(transfer: Res<AsyncTransfer>) {
-///     let mut batch = transfer.batch().await?;
-///     // Record transfer commands...
-///     batch.submit().await?;
-/// }
+/// let mut batch = transfer.batch().await?;
+/// batch
+///     .update_image(
+///         &mut image,
+///         async |staging| {
+///             // Fill `staging` with the image's contents.
+///             Ok::<(), vk::Result>(())
+///         },
+///         &mut allocator,
+///         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+///     )
+///     .await?;
+/// // Waits until the upload has completed on the GPU.
+/// batch.submit().await?;
 /// ```
 #[derive(Clone, Resource)]
 pub struct AsyncTransfer(Arc<AsyncTransferInner>);
@@ -407,18 +422,24 @@ impl FromWorld for AsyncTransfer {
     fn from_world(world: &mut bevy_ecs::world::World) -> Self {
         let queue = world.make_shared_queue::<TransferQueue>();
         let device = world.resource::<Device>().clone();
-        let mut command_pool = CommandPool::new(device.clone(), queue.family_index()).unwrap();
+        let mut command_pool =
+            CommandPool::new_resettable(device.clone(), queue.family_index()).unwrap();
         let mut timeline = Timeline::new(device).unwrap();
         let mut command_buffer = command_pool.alloc().unwrap();
-        timeline.schedule(&mut command_buffer);
-        command_pool.begin(&mut command_buffer);
+        let current_timestamp = timeline.schedule(&mut command_buffer);
+        command_pool.begin(&mut command_buffer).unwrap();
 
         Self(Arc::new(AsyncTransferInner {
             queue,
+            submit_threshold: AsyncTransfer::DEFAULT_SUBMIT_THRESHOLD,
             command_pool: Mutex::new(AsyncTransferCommandContext {
                 timeline,
                 command_pool,
                 current_command_buffer: command_buffer,
+                current_timestamp,
+                pending_bytes: 0,
+                in_flight: VecDeque::new(),
+                free: Vec::new(),
             }),
         }))
     }
@@ -426,27 +447,130 @@ impl FromWorld for AsyncTransfer {
 
 struct AsyncTransferInner {
     queue: SharedQueue,
+    /// Staging bytes recorded into the current command buffer that trigger an immediate
+    /// submission.
+    submit_threshold: u64,
     command_pool: Mutex<AsyncTransferCommandContext>,
 }
+impl Drop for AsyncTransferInner {
+    fn drop(&mut self) {
+        // This would only run during application shutdown. A scheduled command buffer must be
+        // submitted, so submit the current one even if it's empty, then wait for everything.
+        // `command_pool` is declared first in the context, so it drops before
+        // `current_command_buffer`, which then doesn't need to be freed.
+        let ctx = self.command_pool.get_mut();
+        let cb = &mut ctx.current_command_buffer;
+        ctx.command_pool.finish(cb).unwrap();
+        self.queue.lock().unwrap().submit(cb).unwrap();
+        cb.block_until_completion().unwrap();
+        while let Some(mut cb) = ctx.in_flight.pop_front() {
+            cb.block_until_completion().unwrap();
+            ctx.command_pool.free(cb);
+        }
+        for cb in ctx.free.drain(..) {
+            ctx.command_pool.free(cb);
+        }
+    }
+}
+
 struct AsyncTransferCommandContext {
     command_pool: CommandPool,
     timeline: Timeline,
 
     current_command_buffer: CommandBuffer,
+    /// Timestamp `current_command_buffer` signals when it completes execution.
+    current_timestamp: Timestamp,
+    /// Staging bytes recorded into `current_command_buffer`. Zero means it has no work.
+    pending_bytes: u64,
+    /// Submitted command buffers that may still be executing, oldest first. Each one retains
+    /// the staging buffers of the transfers it contains until it's reclaimed.
+    in_flight: VecDeque<CommandBuffer>,
+    /// Completed command buffers, reset and ready for reuse.
+    free: Vec<CommandBuffer>,
+}
+impl AsyncTransferCommandContext {
+    /// Reclaims completed command buffers, then, if anything has been recorded, submits the
+    /// current command buffer and starts recording a new one.
+    fn submit_current(&mut self, queue: &SharedQueue) -> VkResult<()> {
+        // Every command buffer waits for the previous one on the timeline, so they complete in
+        // submission order.
+        while let Some(oldest) = self.in_flight.front_mut()
+            && oldest.try_complete()
+        {
+            let mut cb = self.in_flight.pop_front().unwrap();
+            self.command_pool.reset(&mut cb);
+            self.free.push(cb);
+        }
+
+        if self.pending_bytes == 0 {
+            return Ok(());
+        }
+
+        let mut next = match self.free.pop() {
+            Some(cb) => cb,
+            None => self.command_pool.alloc()?,
+        };
+
+        let next_timestamp = self.timeline.schedule(&mut next);
+        self.command_pool.begin(&mut next)?;
+
+        let mut cb = std::mem::replace(&mut self.current_command_buffer, next);
+        self.current_timestamp = next_timestamp;
+        self.pending_bytes = 0;
+
+        self.command_pool.finish(&mut cb)?;
+        queue.lock().unwrap().submit(&mut cb)?;
+        self.in_flight.push_back(cb);
+        Ok(())
+    }
+}
+
+/// Submits the transfers recorded through [`AsyncTransfer`] since the last submission, and
+/// reclaims command buffers whose transfers have completed, releasing their staging memory.
+///
+/// Runs once per frame. If a batch is recording at the moment, the frame is skipped and the work
+/// is picked up next frame, rather than blocking the frame on the recording task.
+pub fn async_transfer_submission_system(transfer: Res<AsyncTransfer>) {
+    let inner = &*transfer.0;
+    let Some(mut ctx) = inner.command_pool.try_lock() else {
+        return;
+    };
+    ctx.submit_current(&inner.queue).unwrap();
 }
 
 /// Guard for an active async transfer batch.
 ///
-/// Derefs to [`CommandEncoder`] for recording transfer commands. When finished,
-/// call [`submit`](Self::submit) to execute the transfers asynchronously.
+/// Transfers are recorded into a command buffer shared by all batches, which is submitted once
+/// per frame by [`async_transfer_submission_system`], or immediately once enough staging data
+/// has accumulated (see [`AsyncTransfer::submit_threshold`]). Call [`submit`](Self::submit) to
+/// wait until the transfers recorded through this guard have completed on the GPU.
 ///
-/// Optionally call [`flush`](Self::flush) to submit partial work and free staging
-/// memory during long upload sequences.
+/// If the guard is dropped before [`submit`](Self::submit) completes (for example because
+/// the enclosing future was cancelled), its destructor blocks the current thread until those
+/// transfers complete. This keeps resources borrowed by [`update_image`](Self::update_image)
+/// alive for as long as the GPU uses them.
+///
+/// # Leaking
+///
+/// The guard must not be leaked (e.g. with [`std::mem::forget`]) while it has transfers
+/// pending. A leaked guard never waits, so the borrows it holds end while the GPU may still
+/// be using the borrowed resources, and dropping one of them causes undefined behavior. This
+/// is the same limitation the pre-1.0 `thread::scoped` API had; Rust has no way to express
+/// types that cannot be leaked.
 pub struct AsyncTransferGuard<'a> {
     inner: &'a Arc<AsyncTransferInner>,
+    /// Latest timeline point of the shared command buffer recorded into through this guard.
+    pending: Option<Timestamp>,
 }
 
 impl<'a> AsyncTransferGuard<'a> {
+    /// Uploads data to `image` through a staging buffer, then transitions it to `target_layout`.
+    ///
+    /// `writer` fills the staging buffer with the contents of every mip level, tightly packed.
+    ///
+    /// The copy runs when the shared command buffer is submitted. `image` stays borrowed until
+    /// the guard is consumed by [`submit`](Self::submit) or dropped, both of which wait for the
+    /// copy to complete. See [Leaking](Self#leaking) for the one case this doesn't cover.
     pub async fn update_image<A: StagingBufferAllocator, E: From<vk::Result>>(
         &mut self,
         image: &'a mut impl ImageLike,
@@ -522,32 +646,90 @@ impl<'a> AsyncTransferGuard<'a> {
                     0..image.array_layer_count(),
                 );
             });
+        self.record_pending(&command_ctx.current_timestamp);
+        command_ctx.pending_bytes += bytes_required;
+        if command_ctx.pending_bytes >= self.inner.submit_threshold {
+            command_ctx.submit_current(&self.inner.queue)?;
+        }
 
         Ok(())
     }
-    /// Submits all remaining work and waits for completion.
+
+    fn record_pending(&mut self, timestamp: &Timestamp) {
+        // Every command buffer comes from the same timeline, so later ones have larger values.
+        if self
+            .pending
+            .as_ref()
+            .is_none_or(|pending| pending.value() < timestamp.value())
+        {
+            self.pending = Some(timestamp.clone());
+        }
+    }
+    /// Waits until the transfers recorded through this guard have completed on the GPU.
     ///
-    /// This finalizes the transfer batch, submits the command buffer to the
-    /// transfer queue, and asynchronously waits until all transfers complete.
+    /// This doesn't submit anything itself: the shared command buffer is submitted by
+    /// [`async_transfer_submission_system`], or earlier once
+    /// [`submit_threshold`](AsyncTransfer::submit_threshold) is exceeded.
     pub async fn submit(mut self) -> VkResult<()> {
+        if let Some(timestamp) = &self.pending {
+            // `pending` is only cleared once the wait completes, so if this future is
+            // cancelled mid-wait, `Drop` still waits.
+            timestamp.wait_async().await?;
+        }
+        self.pending = None;
         Ok(())
     }
 }
 
+impl Drop for AsyncTransferGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(timestamp) = self.pending.take() {
+            // Resources borrowed by this guard must outlive the GPU's use of them. There's no
+            // way to report an error from here, and returning early would end those borrows.
+            if let Err(err) = timestamp.wait_blocked(u64::MAX) {
+                tracing::error!("Failed to wait for pending async transfers: {err:?}");
+            }
+        }
+    }
+}
+
 impl AsyncTransfer {
+    /// Default for [`submit_threshold`](Self::submit_threshold): 64 MiB.
+    pub const DEFAULT_SUBMIT_THRESHOLD: u64 = 64 * 1024 * 1024;
+
+    /// Amount of staging data, in bytes, that can be recorded before the recording batch
+    /// submits it immediately instead of waiting for [`async_transfer_submission_system`].
+    pub fn submit_threshold(&self) -> u64 {
+        self.0.submit_threshold
+    }
+
     /// Begins a new async transfer batch.
     ///
-    /// Returns a guard that can be used to record transfer commands. The guard
-    /// derefs to [`CommandEncoder`] for convenient command recording.
+    /// Returns a guard for recording uploads, such as
+    /// [`update_image`](AsyncTransferGuard::update_image).
     ///
     /// # Example
     ///
     /// ```ignore
-    /// let mut batch = async_transfer.batch().await?;
-    /// batch.copy_buffer(src, dst);
+    /// let mut batch = transfer.batch().await?;
+    /// batch
+    ///     .update_image(
+    ///         &mut image,
+    ///         async |staging| {
+    ///             // Fill `staging` with the image's contents.
+    ///             Ok::<(), vk::Result>(())
+    ///         },
+    ///         &mut allocator,
+    ///         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+    ///     )
+    ///     .await?;
+    /// // Waits until the upload has completed on the GPU.
     /// batch.submit().await?;
     /// ```
     pub async fn batch(&self) -> VkResult<AsyncTransferGuard<'_>> {
-        Ok(AsyncTransferGuard { inner: &self.0 })
+        Ok(AsyncTransferGuard {
+            inner: &self.0,
+            pending: None,
+        })
     }
 }

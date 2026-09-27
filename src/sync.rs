@@ -82,11 +82,12 @@ impl<T: Send> GPUMutex<T> {
 
     /// Creates a new GPU mutex that is already locked.
     ///
-    /// The mutex will be considered locked until the given semaphore reaches the specified value.
-    pub fn new_locked(item: Box<T>, semaphore: SharedSemaphore, value: u64) -> Self
+    /// The mutex will be considered locked until `timestamp` is reached.
+    pub fn new_locked(item: Box<T>, timestamp: Timestamp) -> Self
     where
         T: Sized,
     {
+        let Timestamp { semaphore, value } = timestamp;
         let semaphore_ptr = semaphore.into_raw();
         GPUMutex {
             ptr: AtomicU128::new(encode_semaphore(semaphore_ptr, value)),
@@ -203,7 +204,7 @@ impl<T: Send> GPUMutex<T> {
             // returning the error drops `self`, and `<GPUMutex as Drop>::drop` releases that
             // count once.
             let semaphore = ManuallyDrop::new(unsafe { Arc::from_raw(semaphore_ptr) });
-            semaphore.wait_blocked(wait_value, !0)?;
+            semaphore.timestamp(wait_value).wait_blocked(!0)?;
         }
         // Safety: the semaphore has reached `wait_value`, so the GPU is done with the resource.
         let (inner, _semaphore, _) = unsafe { self.into_inner() };
@@ -220,7 +221,7 @@ impl<T: Send> GPUMutex<T> {
             // the semaphore and the resource stays with `self` until the wait resolves, so
             // dropping this future mid-wait goes through `<GPUMutex as Drop>::drop`.
             let semaphore = ManuallyDrop::new(unsafe { Arc::from_raw(semaphore_ptr) });
-            semaphore.wait_async(wait_value).await?;
+            semaphore.timestamp(wait_value).wait_async().await?;
         }
         // Safety: the semaphore has reached `wait_value`, so the GPU is done with the resource.
         let (inner, _semaphore, _) = unsafe { self.into_inner() };
@@ -480,43 +481,72 @@ impl Semaphore {
         }
     }
 
-    /// Blocks until the semaphore reaches the specified value.
+    /// Returns the point at which this semaphore reaches `value`.
+    pub fn timestamp(self: &Arc<Self>, value: u64) -> Timestamp {
+        Timestamp {
+            semaphore: SharedSemaphore(self.clone()),
+            value,
+        }
+    }
+}
+
+/// A point on a semaphore's timeline: the moment the semaphore reaches `value`.
+///
+/// For binary semaphores the value is ignored, and waiting waits for the semaphore's fence.
+#[derive(Clone)]
+pub struct Timestamp {
+    semaphore: SharedSemaphore,
+    value: u64,
+}
+impl Timestamp {
+    pub fn semaphore(&self) -> &SharedSemaphore {
+        &self.semaphore
+    }
+    pub fn value(&self) -> u64 {
+        self.value
+    }
+    /// Blocks until the semaphore reaches this timestamp.
     ///
     /// For binary semaphores, waits on the fence and resets it.
     /// For timeline semaphores, returns early if already signaled.
-    pub fn wait_blocked(&self, value: u64, timeout: u64) -> VkResult<()> {
-        if self.is_binary() {
+    pub fn wait_blocked(&self, timeout: u64) -> VkResult<()> {
+        let semaphore = &self.semaphore.0;
+        if semaphore.is_binary() {
             unsafe {
-                self.device.wait_for_fences(&[self.fence], false, timeout)?;
-                self.device.reset_fences(&[self.fence])?;
+                semaphore
+                    .device
+                    .wait_for_fences(&[semaphore.fence], false, timeout)?;
+                semaphore.device.reset_fences(&[semaphore.fence])?;
             }
             Ok(())
         } else {
-            if self.value.load(std::sync::atomic::Ordering::Relaxed) >= value {
+            if semaphore.value.load(std::sync::atomic::Ordering::Relaxed) >= self.value {
                 return Ok(());
             }
             unsafe {
-                self.device.wait_semaphores(
+                semaphore.device.wait_semaphores(
                     &vk::SemaphoreWaitInfo {
                         semaphore_count: 1,
-                        p_semaphores: &self.handle,
-                        p_values: &value,
+                        p_semaphores: &semaphore.handle,
+                        p_values: &self.value,
                         ..Default::default()
                     },
                     timeout,
                 )?;
             }
-            self.value
-                .fetch_max(value, std::sync::atomic::Ordering::Relaxed);
+            semaphore
+                .value
+                .fetch_max(self.value, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         }
     }
 
     /// Async version of [`wait_blocked`](Self::wait_blocked).
-    pub async fn wait_async(self: &Arc<Self>, value: u64) -> VkResult<()> {
-        if self.is_binary() {
-            let fence = self.fence;
-            let device = self.device.clone();
+    pub async fn wait_async(&self) -> VkResult<()> {
+        let semaphore = &self.semaphore.0;
+        if semaphore.is_binary() {
+            let fence = semaphore.fence;
+            let device = semaphore.device.clone();
             blocking::unblock(move || unsafe {
                 device.wait_for_fences(&[fence], false, !0)?;
                 device.reset_fences(&[fence])?;
@@ -525,7 +555,7 @@ impl Semaphore {
             .await?;
             Ok(())
         } else {
-            if self.is_signaled(value) {
+            if semaphore.is_signaled(self.value) {
                 return Ok(());
             }
 
@@ -536,10 +566,11 @@ impl Semaphore {
                 let event: event_listener::Event = unsafe { std::mem::transmute(event) };
                 event.notify_relaxed(1);
             }
-            self.device
+            semaphore
+                .device
                 .schedule_resource_for_deferred_drop(RetiredGPUMutex {
-                    semaphore: SharedSemaphore(self.clone()),
-                    value,
+                    semaphore: self.semaphore.clone(),
+                    value: self.value,
                     resource: unsafe {
                         std::mem::transmute::<event_listener::Event, *mut ()>(event)
                     },
@@ -550,6 +581,7 @@ impl Semaphore {
         }
     }
 }
+
 impl HasDevice for Semaphore {
     fn device(&self) -> &Device {
         &self.device
@@ -629,6 +661,13 @@ impl SharedSemaphore {
     }
     pub fn as_ptr(&self) -> *const Semaphore {
         Arc::as_ptr(&self.0)
+    }
+    /// Returns the point at which this semaphore reaches `value`.
+    pub fn timestamp(&self, value: u64) -> Timestamp {
+        Timestamp {
+            semaphore: self.clone(),
+            value,
+        }
     }
     pub fn into_raw(self) -> *const Semaphore {
         Arc::into_raw(self.0)
@@ -724,14 +763,17 @@ impl Timeline {
     /// Every command buffer scheduled after it on this timeline, and every [`GPUMutex`]
     /// it locks, waits for that timestamp. Dropping, freeing, or resetting a scheduled
     /// command buffer without submitting it panics.
-    pub fn schedule(&mut self, cb: &mut crate::command::CommandBuffer) {
+    ///
+    /// Returns the timestamp the command buffer signals when it completes execution.
+    pub fn schedule(&mut self, cb: &mut crate::command::CommandBuffer) -> Timestamp {
         assert!(
-            cb.semaphore.is_none(),
+            cb.timestamp.is_none(),
             "CommandBuffer was already scheduled"
         );
         self.value += 1;
-        cb.timestamp = self.value;
-        cb.semaphore = Some(self.semaphore.clone());
+        let timestamp = self.semaphore.timestamp(self.value);
+        cb.timestamp = Some(timestamp.clone());
+        timestamp
     }
 }
 impl HasDevice for Timeline {
@@ -948,7 +990,7 @@ mod tests {
     fn unwrap_block_releases_semaphore_once() {
         let (device, _queue) = Device::create_system_default().unwrap();
         let semaphore = SharedSemaphore::new(device, 0).unwrap();
-        let mutex = GPUMutex::new_locked(Box::new(7u32), semaphore.clone(), 1);
+        let mutex = GPUMutex::new_locked(Box::new(7u32), semaphore.timestamp(1));
         assert_eq!(Arc::strong_count(&semaphore), 2);
         semaphore.signal(1);
         assert_eq!(*mutex.unwrap_block().unwrap(), 7);

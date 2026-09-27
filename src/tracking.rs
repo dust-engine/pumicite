@@ -123,9 +123,10 @@
 //!
 //! ```no_run
 //! use pumicite::prelude::*;
+//! use pumicite::command::GPURef;
 //! use pumicite::tracking::{ResourceState, Access};
 //!
-//! fn example<'a>(encoder: &mut CommandEncoder<'a>, image: &'a Image, state: &mut ResourceState) {
+//! fn example<'a>(encoder: &mut CommandEncoder<'a>, image: GPURef<'a, Image>, state: &mut ResourceState) {
 //!     // Transition from TRANSFER_DST_OPTIMAL to SHADER_READ_ONLY_OPTIMAL
 //!     encoder.use_image_resource(
 //!         image,

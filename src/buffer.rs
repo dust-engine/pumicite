@@ -9,8 +9,9 @@
 //!   buffers, and any data generated entirely on the GPU.
 //!
 //! - **[`Buffer::new_upload`]**: Device-local memory that may be directly writable.
-//!   Avoids staging copies on GPUs with resizable bars or integrated GPUs. Always use
-//!   [`BufferExt::update_contents`] which handles both paths transparently.
+//!   Avoids staging copies on GPUs with resizable bars or integrated GPUs. Write through
+//!   [`as_slice_mut`](BufferLike::as_slice_mut) when it returns `Some`, and copy from a
+//!   staging buffer otherwise.
 //!
 //! - **[`Buffer::new_host`]**: CPU-accessible memory in system RAM. Use for staging
 //!   buffers or data that the GPU reads infrequently.
@@ -39,7 +40,11 @@ use ash::{
 };
 use vk_mem::Alloc;
 
-use crate::{Allocator, Device, HasDevice, command::{CommandEncoder, GPURef}, utils::AsVkHandle};
+use crate::{
+    Allocator, Device, HasDevice,
+    command::{CommandEncoder, GPURef, NoHostMapping},
+    utils::AsVkHandle,
+};
 
 /// Common interface for Vulkan buffer types.
 ///
@@ -53,8 +58,8 @@ use crate::{Allocator, Device, HasDevice, command::{CommandEncoder, GPURef}, uti
 /// Use [`as_slice`](BufferLike::as_slice) and [`as_slice_mut`](BufferLike::as_slice_mut)
 /// to access mapped memory when available.
 ///
-/// For non-coherent memory, call [`flush`](BufferLike::flush) after writes and
-/// [`invalidate`](BufferLike::invalidate) before reads to ensure visibility.
+/// Mapped memory isn't flushed or invalidated for you. Memory from [`Buffer::new_host`] is
+/// always host-coherent; other host-visible allocations may not be.
 pub trait BufferLike: AsVkHandle<Handle = vk::Buffer> + Send + Sync + 'static {
     /// Returns the offset within the underlying buffer.
     ///
@@ -125,6 +130,8 @@ impl HasDevice for Buffer {
 }
 unsafe impl Send for Buffer {}
 unsafe impl Sync for Buffer {}
+// Hands out host-mapped memory through `as_slice`.
+impl !NoHostMapping for Buffer {}
 impl Debug for Buffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Buffer")
@@ -326,7 +333,8 @@ impl Buffer {
     /// uploads can be done directly. On discrete GPUs without resizable BAR, a staging
     /// buffer is required.
     ///
-    /// Call [`BufferExt::update_contents`] to update its content transparently.
+    /// If [`as_slice_mut`](BufferLike::as_slice_mut) returns `None`, the buffer isn't
+    /// host-visible and has to be written through a staging buffer.
     ///
     /// Uses the pre-calculated `upload` memory type from [`MemoryTypeMap`](crate::physical_device::MemoryTypeMap).
     pub fn new_upload(
@@ -438,6 +446,8 @@ impl Drop for RingBufferChunk {
 }
 unsafe impl Send for RingBufferChunk {}
 unsafe impl Sync for RingBufferChunk {}
+// Owns the host mapping its suballocations point into.
+impl !NoHostMapping for RingBufferChunk {}
 impl RingBufferChunk {
     fn new(
         device: Device,
@@ -668,6 +678,8 @@ pub struct RingBufferSuballocation {
 }
 unsafe impl Send for RingBufferSuballocation {}
 unsafe impl Sync for RingBufferSuballocation {}
+// Hands out host-mapped memory through `as_slice`.
+impl !NoHostMapping for RingBufferSuballocation {}
 impl AsVkHandle for RingBufferSuballocation {
     type Handle = vk::Buffer;
     fn vk_handle(&self) -> Self::Handle {
@@ -726,6 +738,8 @@ pub enum ManagedBuffer {
         buffer: Arc<Buffer>,
     },
 }
+// Hands out host-mapped memory through `as_slice`.
+impl !NoHostMapping for ManagedBuffer {}
 
 impl ManagedBuffer {
     pub fn new(
@@ -852,7 +866,7 @@ impl BufferLike for ManagedBuffer {
 /// to device-local memory. This trait is implemented by [`RingBuffer`] (for
 /// efficient transient allocations) and [`Allocator`] (for standalone buffers).
 ///
-/// Used by [`BufferExt::update_contents`] and [`ImageExt::update_contents_async`](crate::image::ImageExt::update_contents_async).
+/// Used by `AsyncTransferGuard::update_image` in `bevy_pumicite`.
 pub trait StagingBufferAllocator {
     /// The buffer type returned by this allocator.
     type Buffer: BufferLike;

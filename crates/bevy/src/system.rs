@@ -27,12 +27,13 @@
 //!         // Record transfer, compute, or setup commands
 //!     });
 //!
-//!     ctx.render(|render_pass| {
+//!     ctx.render(|mut render_pass| {
 //!         // Record rendering commands inside an active render pass
 //!         render_pass.draw(0..3, 0..1);
 //!     });
 //! }
 //!
+//! # let mut app = App::new();
 //! // Add to a submission set
 //! app.add_systems(PostUpdate, my_render_system.in_set(DefaultRenderSet));
 //! ```
@@ -158,12 +159,13 @@ unsafe impl Sync for RenderSetSharedState {}
 ///         // Record transfer, compute, or setup commands
 ///     });
 ///
-///     ctx.render(|render_pass| {
+///     ctx.render(|mut render_pass| {
 ///         // Record rendering commands inside an active render pass
 ///         render_pass.draw(0..3, 0..1);
 ///     });
 /// }
 ///
+/// # let mut app = App::new();
 /// // Add to a submission set
 /// app.add_systems(PostUpdate, my_render_system.in_set(DefaultRenderSet));
 /// ```

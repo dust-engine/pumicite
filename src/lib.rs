@@ -114,6 +114,7 @@
 #![feature(ptr_metadata)]
 #![feature(async_fn_traits, unboxed_closures)]
 #![feature(auto_traits)]
+#![feature(negative_impls)]
 
 mod alloc;
 pub mod buffer;

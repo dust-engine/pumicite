@@ -339,16 +339,16 @@ impl Swapchain {
             };
 
             let mut image = self.images[indice as usize].take().unwrap();
-            image.acquire_semaphore.wait_blocked(0, !0)?;
+            image.acquire_semaphore.timestamp(0).wait_blocked(!0)?;
             std::mem::swap(
                 &mut image.acquire_semaphore,
                 &mut self.extra_acquire_semaphore,
             );
 
-            let acquire_semaphore = image.acquire_semaphore.clone();
-            image.present_semaphore.wait_blocked(0, !0).unwrap();
+            let acquire_timestamp = image.acquire_semaphore.timestamp(0);
+            image.present_semaphore.timestamp(0).wait_blocked(!0).unwrap();
             Ok((
-                GPUMutex::new_locked(image, acquire_semaphore, 0),
+                GPUMutex::new_locked(image, acquire_timestamp),
                 suboptimal,
             ))
         }
@@ -509,8 +509,8 @@ impl SwapchainImageInner {
 
 impl Drop for SwapchainImageInner {
     fn drop(&mut self) {
-        self.acquire_semaphore.wait_blocked(0, !0).unwrap();
-        self.present_semaphore.wait_blocked(0, !0).unwrap();
+        self.acquire_semaphore.timestamp(0).wait_blocked(!0).unwrap();
+        self.present_semaphore.timestamp(0).wait_blocked(!0).unwrap();
         if !self.linear_view.0.is_null() {
             unsafe {
                 self.swapchain

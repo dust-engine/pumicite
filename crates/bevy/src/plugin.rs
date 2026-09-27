@@ -308,6 +308,12 @@ impl Plugin for PumicitePlugin {
         )
         .unwrap();
 
+        app.add_systems(
+            PostUpdate,
+            crate::staging::async_transfer_submission_system
+                .run_if(resource_exists::<crate::staging::AsyncTransfer>),
+        );
+
         // Add build pass
         app.get_schedule_mut(PostUpdate)
             .as_mut()
@@ -666,7 +672,7 @@ pub trait PumiciteApp {
     ///
     /// ```no_run
     ///# use bevy::prelude::*;
-    ///# use bevy_pumicite::{SubmissionState, DefaultRenderSet};
+    ///# use bevy_pumicite::{PumiciteApp, SubmissionState, DefaultRenderSet};
     ///# #[derive(Debug, SystemSet, Hash, PartialEq, Eq, Clone, Copy)]
     ///# struct MyRenderSet;
     ///# fn begin_my_render_pass(ctx: SubmissionState) {}

@@ -173,7 +173,8 @@ impl Image {
     /// and uploads can be done directly. On GPUs without resizable BAR, a staging buffer
     /// is necessary.
     ///
-    /// Always use [`ImageExt::update_contents_async`] to update its content.
+    /// Upload its contents through a staging buffer, for example with
+    /// `AsyncTransferGuard::update_image` in `bevy_pumicite`.
     ///
     /// Uses the pre-calculated `upload` memory type from [`MemoryTypeMap`](crate::physical_device::MemoryTypeMap).
     ///

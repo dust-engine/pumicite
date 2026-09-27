@@ -89,6 +89,10 @@ impl Queue {
         );
         unsafe {
             assert!(self.reused_semaphore_submit_info.is_empty());
+            let timestamp = cb
+                .timestamp
+                .as_ref()
+                .expect("Command buffer must be scheduled on a timeline before submission");
             let waits = cb
                 .wait_semaphores
                 .iter()
@@ -99,8 +103,8 @@ impl Queue {
                     ..Default::default()
                 })
                 .chain(std::iter::once(vk::SemaphoreSubmitInfo {
-                    semaphore: cb.semaphore.as_ref().unwrap().vk_handle(),
-                    value: cb.timestamp - 1,
+                    semaphore: timestamp.semaphore().vk_handle(),
+                    value: timestamp.value() - 1,
                     ..Default::default()
                 }));
             self.reused_semaphore_submit_info.extend(waits);
@@ -113,9 +117,9 @@ impl Queue {
                     }])
                     .wait_semaphore_infos(&self.reused_semaphore_submit_info)
                     .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo {
-                        semaphore: cb.semaphore.as_ref().unwrap().vk_handle(),
+                        semaphore: timestamp.semaphore().vk_handle(),
                         stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-                        value: cb.timestamp,
+                        value: timestamp.value(),
                         ..Default::default()
                     }])],
                 vk::Fence::null(),
