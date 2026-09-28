@@ -107,6 +107,17 @@ pub trait ImageViewLike: AsVkHandle<Handle = vk::ImageView> + Send + Sync {
 
 /// A GPU-allocated image fully backed by device memory.
 pub struct Image {
+    // # Host access
+    //
+    // `Image` gives the host no access to its memory, which makes it
+    // [`NoHostMapping`](crate::command::NoHostMapping).
+    // That is what makes [`GPURef<Arc<Image>>::deref`](crate::command::GPURef) sound:
+    // other clones of the `Arc` only get metadata and handles while the GPU uses the image.
+    //
+    // `Image` must never gain an API that reads or writes its memory from the host, such as
+    // `VK_EXT_host_image_copy` (`vkCopyImageToMemory` needs only `&self`). The auto trait would
+    // not notice, since such an API stores no pointer. Host-copyable images belong on a separate
+    // type that opts out with `impl !NoHostMapping`.
     allocator: Allocator,
     handle: vk::Image,
     allocation: vk_mem::Allocation,

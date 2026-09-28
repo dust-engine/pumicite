@@ -499,7 +499,10 @@ pub struct Timestamp {
     value: u64,
 }
 impl Timestamp {
-    pub fn semaphore(&self) -> &SharedSemaphore {
+    /// Not public: for a [`Timeline`] this is the timeline's own semaphore, and
+    /// [`Semaphore::signal`] on it would mark scheduled command buffers as complete while the
+    /// GPU may still be executing them.
+    pub(crate) fn semaphore(&self) -> &SharedSemaphore {
         &self.semaphore
     }
     pub fn value(&self) -> u64 {

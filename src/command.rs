@@ -169,8 +169,23 @@ impl<'a, T: ?Sized> GPURef<'a, T> {
         }
     }
 }
-impl<'a, T: ?Sized> GPURef<'a, std::sync::Arc<T>> {
+impl<'a, T: NoHostMapping + ?Sized> GPURef<'a, std::sync::Arc<T>> {
     /// Projects through the `Arc`, e.g. `GPURef<Arc<Image>>` to `GPURef<Image>`.
+    ///
+    /// Requires `T: NoHostMapping`. Other clones of the `Arc` still hand out `&T` while the
+    /// GPU uses the resource, so `&T` must not give the host access to memory the GPU may
+    /// be writing. Share host-visible resources such as buffers through a
+    /// [`GPUMutex`] instead.
+    ///
+    /// ```compile_fail
+    /// # use std::sync::Arc;
+    /// # use pumicite::prelude::*;
+    /// fn write<'a>(encoder: &mut CommandEncoder<'a>, buffer: &Arc<Buffer>) {
+    ///     // `Buffer` exposes its mapped memory through `as_slice(&self)`.
+    ///     let buffer = encoder.retain(buffer.clone()).deref();
+    ///     encoder.update_buffer(buffer, &[0; 4]);
+    /// }
+    /// ```
     pub fn deref(self) -> GPURef<'a, T> {
         GPURef(&**self.0)
     }
@@ -349,7 +364,16 @@ impl<'a> CommandEncoder<'a> {
     /// # queue.submit(&mut cmd).unwrap();
     /// # cmd.block_until_completion().unwrap();
     /// ```
-    pub fn retain<T: Sized>(&mut self, arc: T) -> GPURef<'a, T> {
+    ///
+    /// The object is dropped on whichever thread completes the command buffer, so it must
+    /// be [`Send`]:
+    /// ```compile_fail
+    /// # use pumicite::command::CommandEncoder;
+    /// fn retain_rc(encoder: &mut CommandEncoder<'_>) {
+    ///     encoder.retain(std::rc::Rc::new(0u32));
+    /// }
+    /// ```
+    pub fn retain<T: Send + 'static>(&mut self, arc: T) -> GPURef<'a, T> {
         unsafe {
             let ptr = self.buffer_mut().retainer.add(arc);
 
@@ -630,6 +654,8 @@ struct ArcRetainer {
     chunks: Vec<*mut u8>,
     free_chunk: usize,
 }
+// Safety: `add` only accepts `T: Send`, so moving the retainer moves only `Send` values, and
+// dropping them on another thread is fine. Shared access hands out no references to them.
 unsafe impl Send for ArcRetainer {}
 unsafe impl Sync for ArcRetainer {}
 
@@ -643,36 +669,34 @@ impl ArcRetainer {
             self.free_chunk += 1;
             chunk_ptr
         } else {
-            let new_ptr = unsafe {
-                std::alloc::alloc(
-                    Layout::from_size_align(Self::CHUNK_SIZE, Self::MAX_ALIGNMENT).unwrap(),
-                )
-            };
+            let layout = Layout::from_size_align(Self::CHUNK_SIZE, Self::MAX_ALIGNMENT).unwrap();
+            let new_ptr = unsafe { std::alloc::alloc(layout) };
+            if new_ptr.is_null() {
+                std::alloc::handle_alloc_error(layout);
+            }
             self.chunks.push(new_ptr);
             self.free_chunk += 1;
             new_ptr
         }
     }
     fn reserve_space(&mut self, layout: Layout) -> *mut u8 {
-        let padding_needed = self.size.next_multiple_of(layout.align()) - self.size;
-        let new_size = self.size + padding_needed + layout.size();
-        if self.ptr.is_null() || new_size > Self::CHUNK_SIZE {
-            // realloc
-            unsafe {
-                let new_ptr = self.alloc_chunk();
-                self.ptr = new_ptr;
-                self.size = 0;
-            }
+        debug_assert!(layout.align() <= Self::MAX_ALIGNMENT);
+        debug_assert!(layout.size() <= Self::CHUNK_SIZE);
+        let mut offset = self.size.next_multiple_of(layout.align());
+        if self.ptr.is_null() || offset + layout.size() > Self::CHUNK_SIZE {
+            // Start a new chunk. Chunks are aligned to MAX_ALIGNMENT, so offset 0 satisfies
+            // any alignment `add` accepts.
+            self.ptr = unsafe { self.alloc_chunk() };
+            offset = 0;
         }
-        let ptr = unsafe { self.ptr.add(self.size + padding_needed) };
-        self.size = new_size;
-        ptr
+        self.size = offset + layout.size();
+        unsafe { self.ptr.add(offset) }
     }
     /// Adds a retainable object to the storage.
     ///
     /// The object will be kept alive until [`clear()`](Self::clear) is called
     /// or the retainer is dropped.
-    pub fn add<T: Sized>(&mut self, item: T) -> *mut T {
+    pub fn add<T: Send>(&mut self, item: T) -> *mut T {
         assert!(std::mem::align_of::<T>() <= Self::MAX_ALIGNMENT);
         assert!(std::mem::size_of::<T>() <= Self::CHUNK_SIZE);
         let ptr = self.reserve_space(Layout::new::<T>());
@@ -1485,6 +1509,99 @@ pub(crate) fn gpu_future_poll<T: Future>(gpu_future: Pin<&mut T>) -> Poll<T::Out
 mod tests {
     use super::*;
     use crate::sync::Timeline;
+
+    /// Checks that `ptr` is aligned for `T` and that the whole `T` lies inside one chunk.
+    fn assert_placed<T>(retainer: &ArcRetainer, ptr: *mut T) {
+        let addr = ptr as usize;
+        assert_eq!(addr % std::mem::align_of::<T>(), 0, "misaligned object");
+        let end = addr + std::mem::size_of::<T>();
+        assert!(
+            retainer.chunks.iter().any(|&chunk| {
+                let chunk = chunk as usize;
+                addr >= chunk && end <= chunk + ArcRetainer::CHUNK_SIZE
+            }),
+            "object is not inside a chunk"
+        );
+    }
+
+    // CPU-only: run under Miri with `cargo miri test -p pumicite --lib arc_retainer`.
+    #[test]
+    fn arc_retainer_placement() {
+        #[repr(align(64))]
+        struct Aligned64(u8);
+
+        let mut retainer = ArcRetainer::default();
+        for _ in 0..2 {
+            // Nearly fill a chunk, then add something that needs padding and doesn't fit.
+            let bytes = retainer.add([7u8; 4093]);
+            assert_placed(&retainer, bytes);
+            let word = retainer.add(0x0123_4567_89ab_cdefu64);
+            assert_placed(&retainer, word);
+
+            // A chunk-sized object after a 1-byte one must start at the next chunk's base.
+            let byte = retainer.add(1u8);
+            assert_placed(&retainer, byte);
+            let full = retainer.add([3u64; ArcRetainer::CHUNK_SIZE / 8]);
+            assert_placed(&retainer, full);
+
+            let aligned = retainer.add(Aligned64(9));
+            assert_placed(&retainer, aligned);
+            let zst = retainer.add(());
+            assert_placed(&retainer, zst);
+
+            unsafe {
+                assert!((*bytes).iter().all(|&b| b == 7));
+                assert_eq!(*word, 0x0123_4567_89ab_cdef);
+                assert_eq!(*byte, 1);
+                assert!((*full).iter().all(|&w| w == 3));
+                assert_eq!((*aligned).0, 9);
+            }
+            // Clearing and refilling reuses the chunks allocated on the first pass.
+            retainer.clear();
+        }
+        assert_eq!(retainer.chunks.len(), 4);
+    }
+
+    #[test]
+    fn arc_retainer_packs_small_objects() {
+        let mut retainer = ArcRetainer::default();
+        for i in 0..ArcRetainer::CHUNK_SIZE / 8 {
+            let ptr = retainer.add(i as u64);
+            assert_placed(&retainer, ptr);
+        }
+        assert_eq!(retainer.chunks.len(), 1);
+        // The next object doesn't fit and starts exactly one new chunk.
+        retainer.add(0u64);
+        retainer.add(0u64);
+        assert_eq!(retainer.chunks.len(), 2);
+    }
+
+    #[test]
+    fn arc_retainer_drops_each_object_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // The array pads each object so ten of them span several chunks.
+        struct CountDrop<'a>(&'a AtomicUsize, #[allow(dead_code)] [u8; 1000]);
+        impl Drop for CountDrop<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let drops = AtomicUsize::new(0);
+        let mut retainer = ArcRetainer::default();
+        for _ in 0..10 {
+            retainer.add(CountDrop(&drops, [0; 1000]));
+        }
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        retainer.clear();
+        assert_eq!(drops.load(Ordering::Relaxed), 10);
+
+        for _ in 0..3 {
+            retainer.add(CountDrop(&drops, [0; 1000]));
+        }
+        drop(retainer);
+        assert_eq!(drops.load(Ordering::Relaxed), 13);
+    }
     #[test]
     #[should_panic(expected = "locked out of order")]
     fn out_of_order_recording() {
