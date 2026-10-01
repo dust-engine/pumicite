@@ -97,6 +97,7 @@ impl AssetLoader for DdsLoader {
                     tiling: vk::ImageTiling::OPTIMAL,
                     usage: vk::ImageUsageFlags::SAMPLED,
                     initial_layout: vk::ImageLayout::UNDEFINED,
+                    sharing_mode: vk::SharingMode::CONCURRENT,
                     ..Default::default()
                 },
             )?;

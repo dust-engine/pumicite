@@ -72,6 +72,7 @@ fn setup(
                 array_layers: 1,
                 samples: vk::SampleCountFlags::TYPE_1,
                 usage: vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
+                sharing_mode: vk::SharingMode::CONCURRENT,
                 ..Default::default()
             },
         )?;

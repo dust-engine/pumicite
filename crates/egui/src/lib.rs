@@ -326,6 +326,7 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
                 tiling: vk::ImageTiling::OPTIMAL,
                 usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
                 initial_layout: vk::ImageLayout::UNDEFINED,
+                sharing_mode: vk::SharingMode::CONCURRENT,
                 ..Default::default()
             };
             let image = Image::new_private(allocator.clone(), &create_info)

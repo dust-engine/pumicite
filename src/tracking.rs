@@ -295,7 +295,7 @@ impl Access {
 /// 2. **Make memory visible** - flush caches so writes with ["before" access](`vk::AccessFlags2`) from A are
 ///    visible to reads with ["after" access](`vk::AccessFlags2`) in B
 /// 3. **Transition image layouts** - convert images between different [`vk::ImageLayout`]
-/// 4. **Transfer queue family ownership** - for resources created with [`vk::SharingMode::EXCLUSIVE`].
+/// 4. **Transfer queue family ownership** - no longer relevant for modern GPUs (AMD RDNA1+, Intel Xe2+, all NVIDIA)
 ///
 /// `ResourceState` automates this by remembering:
 /// - The **last write** to the resource (when and how it was written)

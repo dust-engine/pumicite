@@ -84,7 +84,6 @@ use pumicite::{
     physical_device::PhysicalDevice,
     swapchain::{Swapchain, SwapchainCreateInfo},
     sync::GPUMutex,
-    utils::SharingMode,
 };
 
 /// System set for rendering to the swapchain image.
@@ -226,11 +225,6 @@ pub struct SwapchainConfig {
     /// Required format feature flags for the selected format.
     pub required_feature_flags: vk::FormatFeatureFlags,
 
-    /// Queue family sharing mode for multi-queue access.
-    ///
-    /// Default: `Exclusive`
-    pub sharing_mode: SharingMode<Vec<u32>>,
-
     /// Surface transform to apply (rotation, mirroring).
     ///
     /// Default: `IDENTITY`
@@ -264,7 +258,6 @@ impl Default for SwapchainConfig {
             image_array_layers: 1,
             image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
             required_feature_flags: vk::FormatFeatureFlags::empty(),
-            sharing_mode: SharingMode::Exclusive,
             pre_transform: vk::SurfaceTransformFlagsKHR::IDENTITY,
             clipped: true,
             color_mode: SwapchainColorMode::SDR8Bit,
@@ -355,12 +348,12 @@ pub(super) fn extract_swapchains(
     }
 }
 
-fn get_create_info<'a>(
-    surface: &'_ Surface,
-    pdevice: &'_ PhysicalDevice,
-    window: &'_ Window,
-    config: &'a SwapchainConfig,
-) -> SwapchainCreateInfo<'a> {
+fn get_create_info(
+    surface: &Surface,
+    pdevice: &PhysicalDevice,
+    window: &Window,
+    config: &SwapchainConfig,
+) -> SwapchainCreateInfo {
     let surface_capabilities = pdevice.get_surface_capabilities(surface).unwrap();
     let supported_present_modes = pdevice.get_surface_present_modes(surface).unwrap();
     let image_format = config.image_format.unwrap_or_else(|| {
@@ -409,14 +402,6 @@ fn get_create_info<'a>(
         image_extent,
         image_array_layers: config.image_array_layers,
         image_usage: config.image_usage,
-        image_sharing_mode: match &config.sharing_mode {
-            SharingMode::Exclusive => SharingMode::Exclusive,
-            SharingMode::Concurrent {
-                queue_family_indices,
-            } => SharingMode::Concurrent {
-                queue_family_indices,
-            },
-        },
         pre_transform: config.pre_transform,
         composite_alpha: match window.composite_alpha_mode {
             bevy_window::CompositeAlphaMode::Auto => {

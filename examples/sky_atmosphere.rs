@@ -365,6 +365,7 @@ fn create_lut_image(
             tiling: vk::ImageTiling::OPTIMAL,
             usage: vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
             initial_layout: vk::ImageLayout::UNDEFINED,
+            sharing_mode: vk::SharingMode::CONCURRENT,
             ..Default::default()
         },
     )

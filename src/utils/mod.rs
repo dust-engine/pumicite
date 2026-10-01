@@ -7,42 +7,6 @@ use glam::Affine3A;
 pub use idalloc::IdAlloc;
 use std::{collections::BTreeMap, ffi::c_void, fmt::Debug, ops::Deref, ptr::NonNull};
 
-/// Queue-family sharing mode for resources that can be owned by one queue family or
-/// shared across several.
-#[derive(Debug, Clone)]
-pub enum SharingMode<T>
-where
-    T: Deref<Target = [u32]>,
-{
-    /// The resource is owned by a single queue family at a time.
-    Exclusive,
-    /// The resource can be accessed concurrently by the listed queue families.
-    Concurrent {
-        /// Queue family indices that will share access to the resource.
-        queue_family_indices: T,
-    },
-}
-
-impl<T: Deref<Target = [u32]>> SharingMode<T> {
-    /// Returns the raw Vulkan sharing mode.
-    pub fn as_raw(&self) -> vk::SharingMode {
-        match self {
-            Self::Exclusive => vk::SharingMode::EXCLUSIVE,
-            Self::Concurrent { .. } => vk::SharingMode::CONCURRENT,
-        }
-    }
-
-    /// Returns the queue family indices used for concurrent sharing.
-    pub fn queue_family_indices(&self) -> &[u32] {
-        match self {
-            Self::Exclusive => &[],
-            Self::Concurrent {
-                queue_family_indices,
-            } => queue_family_indices.deref(),
-        }
-    }
-}
-
 /// Type-erased object representing a tagged Vulkan structure.
 /// It is basically a [`Box<dyn Any>`], but for types implementing [`ash::vk::TaggedStructure`].
 #[repr(C)]

@@ -44,6 +44,7 @@ pub fn main() {
             tiling: vk::ImageTiling::LINEAR,
             usage: vk::ImageUsageFlags::TRANSFER_DST,
             initial_layout: vk::ImageLayout::UNDEFINED,
+            sharing_mode: vk::SharingMode::CONCURRENT,
             ..Default::default()
         },
     )

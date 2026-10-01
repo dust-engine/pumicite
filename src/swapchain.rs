@@ -9,7 +9,7 @@ use crate::command::{GPURef};
 use crate::image::{ImageLike, ImageViewLike};
 use crate::physical_device::PhysicalDevice;
 use crate::tracking::ResourceState;
-use crate::{Device, Surface, utils::SharingMode};
+use crate::{Device, Surface};
 use crate::{HasDevice, Queue, sync::GPUMutex};
 use crate::{sync::SharedSemaphore, utils::AsVkHandle};
 use ash::khr::swapchain::Meta as KhrSwapchain;
@@ -88,7 +88,7 @@ impl SwapchainInner {
             },
             image_array_layers: info.image_array_layers,
             image_usage: info.image_usage,
-            image_sharing_mode: vk::SharingMode::EXCLUSIVE,
+            image_sharing_mode: vk::SharingMode::CONCURRENT,
             pre_transform: info.pre_transform,
             composite_alpha: info.composite_alpha,
             present_mode: info.present_mode,
@@ -103,15 +103,6 @@ impl SwapchainInner {
         {
             // A spec workaround so that a view can always be created, even if the swapchain was only created with TRANSFER_DST.
             create_info.image_usage |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
-        }
-        match &info.image_sharing_mode {
-            SharingMode::Exclusive => (),
-            SharingMode::Concurrent {
-                queue_family_indices,
-            } => {
-                create_info.image_sharing_mode = vk::SharingMode::CONCURRENT;
-                create_info.p_queue_family_indices = queue_family_indices.as_ptr();
-            }
         }
         let swapchain_loader = device.extension::<KhrSwapchain>();
         let new_swapchain = unsafe { swapchain_loader.create_swapchain(&create_info, None)? };
@@ -249,7 +240,7 @@ impl Drop for SwapchainInner {
     }
 }
 
-pub struct SwapchainCreateInfo<'a> {
+pub struct SwapchainCreateInfo {
     pub flags: vk::SwapchainCreateFlagsKHR,
     pub min_image_count: u32,
     pub image_format: vk::Format,
@@ -257,7 +248,6 @@ pub struct SwapchainCreateInfo<'a> {
     pub image_extent: UVec2,
     pub image_array_layers: u32,
     pub image_usage: vk::ImageUsageFlags,
-    pub image_sharing_mode: SharingMode<&'a [u32]>,
     pub pre_transform: vk::SurfaceTransformFlagsKHR,
     pub composite_alpha: vk::CompositeAlphaFlagsKHR,
     pub present_mode: vk::PresentModeKHR,

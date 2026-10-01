@@ -174,6 +174,7 @@ mod img_loader {
                         tiling: vk::ImageTiling::OPTIMAL,
                         usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
                         initial_layout: vk::ImageLayout::UNDEFINED,
+                        sharing_mode: vk::SharingMode::CONCURRENT,
                         ..Default::default()
                     },
                 )?;
