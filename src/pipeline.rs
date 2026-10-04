@@ -45,7 +45,9 @@ use ash::{
     vk::{self, Handle},
 };
 
-use crate::{Device, HasDevice, descriptor::DescriptorSetLayout, utils::AsVkHandle};
+use crate::{
+    Device, HasDevice, command::NoHostMapping, descriptor::DescriptorSetLayout, utils::AsVkHandle,
+};
 
 /// A compiled Vulkan pipeline state object (PSO).
 ///
@@ -57,6 +59,7 @@ pub struct Pipeline {
     handle: vk::Pipeline,
     layout: Arc<PipelineLayout>,
 }
+unsafe impl NoHostMapping for Pipeline {}
 impl HasDevice for Pipeline {
     fn device(&self) -> &Device {
         &self.device

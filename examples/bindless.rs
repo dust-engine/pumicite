@@ -119,7 +119,7 @@ fn clear(
             return;
         };
 
-        let target_image = encoder.retain(example.image.clone()).deref();
+        let target_image = encoder.retain(example.image.clone()).deref_inner();
 
         encoder.use_image_resource(
             target_image,
@@ -133,8 +133,8 @@ fn clear(
         encoder.emit_barriers();
 
         heap.bind(encoder, vk::PipelineBindPoint::COMPUTE);
-        let pipeline = encoder.retain(pipeline.clone().into_inner());
-        encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, pipeline.deref());
+        let pipeline = encoder.retain(pipeline.clone().into_inner()).deref_inner();
+        encoder.bind_pipeline(vk::PipelineBindPoint::COMPUTE, pipeline);
         encoder.push_constants(
             pipeline.layout(),
             vk::ShaderStageFlags::ALL,

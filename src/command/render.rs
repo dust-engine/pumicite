@@ -51,7 +51,7 @@ use crate::{
     utils::{AsVkHandle, Version},
 };
 
-use super::{CommandEncoder, GPURef};
+use super::{CommandEncoder, GPURef, GPURefMut};
 
 impl<'a> CommandEncoder<'a> {
     /// Begins a new dynamic render pass.
@@ -257,7 +257,8 @@ impl HasDevice for RenderPassAttachmentBuilder<'_, '_> {
 }
 impl<'a> RenderPassAttachmentBuilder<'_, 'a> {
     /// Sets the image view for this attachment.
-    pub fn view(&mut self, image: GPURef<'a, impl ImageViewLike>) -> &mut Self {
+    pub fn view<V: ImageViewLike + 'a>(&mut self, image: impl Into<GPURefMut<'a, V>>) -> &mut Self {
+        let image = image.into();
         self.attachment.image_view = image.vk_handle();
         self
     }
@@ -275,7 +276,11 @@ impl<'a> RenderPassAttachmentBuilder<'_, 'a> {
     }
 
     /// Sets the resolve target image view for MSAA attachments.
-    pub fn resolve_view(&mut self, image: GPURef<'a, impl ImageViewLike>) -> &mut Self {
+    pub fn resolve_view<V: ImageViewLike + 'a>(
+        &mut self,
+        image: impl Into<GPURefMut<'a, V>>,
+    ) -> &mut Self {
+        let image = image.into();
         self.attachment.resolve_image_view = image.vk_handle();
         self
     }
@@ -399,7 +404,8 @@ impl<'a, 'b> DerefMut for RenderPass<'a, 'b> {
 
 impl<'a> RenderPass<'_, 'a> {
     /// Binds a graphics pipeline for subsequent draw commands.
-    pub fn bind_pipeline(&mut self, pipeline: GPURef<'a, Pipeline>) {
+    pub fn bind_pipeline(&mut self, pipeline: impl Into<GPURef<'a, Pipeline>>) {
+        let pipeline = pipeline.into();
         unsafe {
             self.encoder.device().cmd_bind_pipeline(
                 self.encoder.buffer().buffer,
@@ -410,16 +416,17 @@ impl<'a> RenderPass<'_, 'a> {
     }
 
     /// Binds vertex buffers starting at the specified binding index.
-    pub fn bind_vertex_buffers(
+    pub fn bind_vertex_buffers<B: BufferLike>(
         &mut self,
         first_binding: u32,
-        buffers: impl IntoIterator<Item = GPURef<'a, impl BufferLike>>,
+        buffers: impl IntoIterator<Item: Into<GPURef<'a, B>>>,
     ) {
         // most devices have up to 32 vertex bindings.
         let mut handles: smallvec::SmallVec<[vk::Buffer; 4]> = Default::default();
         let mut offsets: smallvec::SmallVec<[u64; 4]> = Default::default();
         let mut sizes: smallvec::SmallVec<[u64; 4]> = Default::default();
         for i in buffers.into_iter() {
+            let i = i.into();
             handles.push(i.vk_handle());
             offsets.push(i.offset());
             sizes.push(i.size());
@@ -450,12 +457,13 @@ impl<'a> RenderPass<'_, 'a> {
     }
 
     /// Binds an index buffer for indexed drawing.
-    pub fn bind_index_buffer(
+    pub fn bind_index_buffer<B: BufferLike>(
         &mut self,
-        buffer: GPURef<'a, impl BufferLike>,
+        buffer: impl Into<GPURef<'a, B>>,
         offset: u64,
         index_type: vk::IndexType,
     ) {
+        let buffer = buffer.into();
         unsafe {
             self.encoder.device().cmd_bind_index_buffer(
                 self.encoder.buffer().buffer,
@@ -619,12 +627,13 @@ impl<'a> RenderPass<'_, 'a> {
     /// Draws non-indexed primitives with draw parameters read from an indirect buffer on GPU timeline.
     ///
     /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndirectCommand`] structs.
-    pub fn draw_indirect(
+    pub fn draw_indirect<B: BufferLike>(
         &mut self,
-        indirect_buffer: GPURef<'a, impl BufferLike>,
+        indirect_buffer: impl Into<GPURef<'a, B>>,
         draw_count: u32,
         stride: u32,
     ) {
+        let indirect_buffer = indirect_buffer.into();
         unsafe {
             self.encoder.device().cmd_draw_indirect(
                 self.encoder.buffer().buffer,
@@ -639,12 +648,13 @@ impl<'a> RenderPass<'_, 'a> {
     /// Draws indexed primitives with draw parameters read from an indirect buffer on GPU timeline.
     ///
     /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndexedIndirectCommand`] structs.
-    pub fn draw_indexed_indirect(
+    pub fn draw_indexed_indirect<B: BufferLike>(
         &mut self,
-        indirect_buffer: GPURef<'a, impl BufferLike>,
+        indirect_buffer: impl Into<GPURef<'a, B>>,
         draw_count: u32,
         stride: u32,
     ) {
+        let indirect_buffer = indirect_buffer.into();
         unsafe {
             self.encoder.device().cmd_draw_indexed_indirect(
                 self.encoder.buffer().buffer,
@@ -660,13 +670,15 @@ impl<'a> RenderPass<'_, 'a> {
     ///
     /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndirectCommand`] structs.
     /// `count_buffer` contains a `u32` specifying the actual number of draws.
-    pub fn draw_indirect_count(
+    pub fn draw_indirect_count<B: BufferLike, C: BufferLike>(
         &mut self,
-        indirect_buffer: GPURef<'a, impl BufferLike>,
-        count_buffer: GPURef<'a, impl BufferLike>,
+        indirect_buffer: impl Into<GPURef<'a, B>>,
+        count_buffer: impl Into<GPURef<'a, C>>,
         max_draw_count: u32,
         stride: u32,
     ) {
+        let indirect_buffer = indirect_buffer.into();
+        let count_buffer = count_buffer.into();
         unsafe {
             self.encoder.device().cmd_draw_indirect_count(
                 self.encoder.buffer().buffer,
@@ -684,13 +696,15 @@ impl<'a> RenderPass<'_, 'a> {
     ///
     /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndexedIndirectCommand`] structs.
     /// `count_buffer` contains a `u32` specifying the actual number of draws.
-    pub fn draw_indexed_indirect_count(
+    pub fn draw_indexed_indirect_count<B: BufferLike, C: BufferLike>(
         &mut self,
-        indirect_buffer: GPURef<'a, impl BufferLike>,
-        count_buffer: GPURef<'a, impl BufferLike>,
+        indirect_buffer: impl Into<GPURef<'a, B>>,
+        count_buffer: impl Into<GPURef<'a, C>>,
         max_draw_count: u32,
         stride: u32,
     ) {
+        let indirect_buffer = indirect_buffer.into();
+        let count_buffer = count_buffer.into();
         unsafe {
             self.encoder.device().cmd_draw_indexed_indirect_count(
                 self.encoder.buffer().buffer,
@@ -734,12 +748,13 @@ impl<'a> RenderPass<'_, 'a> {
     /// Uses `VK_EXT_mesh_shader` if available, otherwise panics.
     ///
     /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndirectCommand`] structs.
-    pub fn draw_mesh_tasks_indirect(
+    pub fn draw_mesh_tasks_indirect<B: BufferLike>(
         &mut self,
-        indirect_buffer: GPURef<'a, impl BufferLike>,
+        indirect_buffer: impl Into<GPURef<'a, B>>,
         draw_count: u32,
         stride: u32,
     ) {
+        let indirect_buffer = indirect_buffer.into();
         if let Ok(extension) = self
             .encoder
             .device()
@@ -768,13 +783,15 @@ impl<'a> RenderPass<'_, 'a> {
     ///
     /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawMeshTasksIndirectCommandEXT`] structs.
     /// `count_buffer` contains a `u32` specifying the actual number of draws.
-    pub fn draw_mesh_tasks_indirect_count(
+    pub fn draw_mesh_tasks_indirect_count<B: BufferLike, C: BufferLike>(
         &mut self,
-        indirect_buffer: GPURef<'a, impl BufferLike>,
-        count_buffer: GPURef<'a, impl BufferLike>,
+        indirect_buffer: impl Into<GPURef<'a, B>>,
+        count_buffer: impl Into<GPURef<'a, C>>,
         max_draw_count: u32,
         stride: u32,
     ) {
+        let indirect_buffer = indirect_buffer.into();
+        let count_buffer = count_buffer.into();
         if let Ok(extension) = self
             .encoder
             .device()

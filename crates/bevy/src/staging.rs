@@ -44,7 +44,7 @@ use bevy_ecs::{
 use pumicite::{
     ash::{self, VkResult, vk},
     buffer::{RingBuffer, RingBufferSuballocation, StagingBufferAllocator},
-    command::{CommandEncoderRenderPassState, CommandPool, GPURef},
+    command::{CommandEncoderRenderPassState, CommandPool, GPURefMut},
     device::DeviceBuilder,
     prelude::*,
     sync::{Timeline, Timestamp},
@@ -242,7 +242,7 @@ impl UniformRingBuffer {
         &mut self,
         encoder: &mut CommandEncoder<'a>,
         data: &[u8],
-    ) -> GPURef<'a, RingBufferSuballocation> {
+    ) -> GPURefMut<'a, RingBufferSuballocation> {
         let alignment = self
             .0
             .device()
@@ -359,7 +359,7 @@ impl BufferInitializer<'_> {
         ctx: &mut CommandEncoder<'a>,
         layout: Layout,
         writer: impl FnOnce(&mut [u8]),
-    ) -> GPURef<'a, RingBufferSuballocation> {
+    ) -> GPURefMut<'a, RingBufferSuballocation> {
         debug_assert!(matches!(
             ctx.render_pass_state(),
             CommandEncoderRenderPassState::OutsideRenderPass
@@ -594,7 +594,7 @@ impl<'a> AsyncTransferGuard<'a> {
             .record(&mut command_ctx.current_command_buffer, |encoder| {
                 let staging_buffer = encoder.retain(staging_buffer);
                 encoder.image_barrier(
-                    unsafe { GPURef::new_unchecked(image) },
+                    unsafe { GPURefMut::new_unchecked(image) },
                     Access::NONE,
                     Access::COPY_WRITE,
                     vk::ImageLayout::UNDEFINED,
@@ -632,12 +632,12 @@ impl<'a> AsyncTransferGuard<'a> {
                     .collect();
                 encoder.copy_buffer_to_image_with_layout(
                     staging_buffer,
-                    unsafe { GPURef::new_unchecked(image) },
+                    unsafe { GPURefMut::new_unchecked(image) },
                     &regions,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 );
                 encoder.image_barrier(
-                    unsafe { GPURef::new_unchecked(image) },
+                    unsafe { GPURefMut::new_unchecked(image) },
                     Access::COPY_WRITE,
                     Access::NONE,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,

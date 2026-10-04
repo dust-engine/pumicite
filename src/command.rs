@@ -145,65 +145,130 @@ pub enum CommandEncoderRenderPassState {
     },
 }
 
+/// A readonly reference borrowed to the GPU for duration `'a`.
 pub struct GPURef<'a, T: ?Sized>(&'a T);
 impl<T: ?Sized> Clone for GPURef<'_, T> {
     fn clone(&self) -> Self {
         Self(self.0)
     }
 }
-impl<T: ?Sized> Copy for GPURef<'_, T> {
-}
+impl<T: ?Sized> Copy for GPURef<'_, T> {}
 
-
-pub unsafe auto trait NoHostMapping {}
-unsafe impl<T: NoHostMapping + ?Sized> NoHostMapping for std::sync::Arc<T> {}
-unsafe impl NoHostMapping for crate::Device {}
 impl<'a, T: ?Sized> GPURef<'a, T> {
     // Safety: The caller must ensure not to modify the underlying resource on GPU timeline.
     pub unsafe fn unwrap(&self) -> &T {
         self.0
     }
     pub unsafe fn new_unchecked(value: &T) -> Self {
-        unsafe {
-            Self(&*(value as *const T))
-        }
+        unsafe { Self(&*(value as *const T)) }
     }
 }
-impl<'a, T: NoHostMapping + ?Sized> GPURef<'a, std::sync::Arc<T>> {
-    /// Projects through the `Arc`, e.g. `GPURef<Arc<Image>>` to `GPURef<Image>`.
-    ///
-    /// Requires `T: NoHostMapping`. Other clones of the `Arc` still hand out `&T` while the
-    /// GPU uses the resource, so `&T` must not give the host access to memory the GPU may
-    /// be writing. Share host-visible resources such as buffers through a
-    /// [`GPUMutex`] instead.
-    ///
-    /// ```compile_fail
-    /// # use std::sync::Arc;
-    /// # use pumicite::prelude::*;
-    /// fn write<'a>(encoder: &mut CommandEncoder<'a>, buffer: &Arc<Buffer>) {
-    ///     // `Buffer` exposes its mapped memory through `as_slice(&self)`.
-    ///     let buffer = encoder.retain(buffer.clone()).deref();
-    ///     encoder.update_buffer(buffer, &[0; 4]);
-    /// }
-    /// ```
-    pub fn deref(self) -> GPURef<'a, T> {
-        GPURef(&**self.0)
+
+/// A mutable reference borrowed to the GPU for duration `'a`.
+pub struct GPURefMut<'a, T: ?Sized>(&'a T);
+impl<T: ?Sized> Clone for GPURefMut<'_, T> {
+    fn clone(&self) -> Self {
+        Self(self.0)
     }
 }
-impl<'a, T: ?Sized> GPURef<'a, Box<T>> {
-    /// Projects through the `Box`, e.g. `GPURef<Box<Image>>` to `GPURef<Image>`.
-    pub fn deref(self) -> GPURef<'a, T> {
-        GPURef(&**self.0)
+impl<T: ?Sized> Copy for GPURefMut<'_, T> {}
+
+impl<'a, T: ?Sized> GPURefMut<'a, T> {
+    /// Downgrades to a token that only lets the GPU read `T`.
+    pub fn readonly(self) -> GPURef<'a, T> {
+        GPURef(self.0)
+    }
+    // Safety: The caller must ensure not to modify the underlying resource on GPU timeline.
+    pub unsafe fn unwrap(&self) -> &T {
+        self.0
+    }
+    pub unsafe fn new_unchecked(value: &T) -> Self {
+        unsafe { Self(&*(value as *const T)) }
     }
 }
+
+/// By default, GPURef<T> does not allow the host to access any fields of the underlying resource,
+/// being pessimistic that the GPU will access everything about the property.
+///
+/// Types can implement [`NoHostMapping`] to indicate that the GPU has exclusive access to the resource
+/// and the host has all but a handle and some metadata.
+///
+/// Types that do not implement [`NoHostMapping`] will have to implement projections to metadata and properties
+/// that can always be safely accessed by the host. For example, a buffer might allow reading its size from the
+/// host even if the GPU has exclusive access to its contents. In that case, project the size without projecting
+/// the contents.
+pub unsafe trait NoHostMapping {}
 impl<T: NoHostMapping + ?Sized> Deref for GPURef<'_, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         self.0
     }
 }
+impl<T: NoHostMapping + ?Sized> Deref for GPURefMut<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+unsafe impl NoHostMapping for u8 {}
+unsafe impl NoHostMapping for u16 {}
+unsafe impl NoHostMapping for u32 {}
+unsafe impl NoHostMapping for u64 {}
+unsafe impl NoHostMapping for usize {}
+unsafe impl NoHostMapping for i8 {}
+unsafe impl NoHostMapping for i16 {}
+unsafe impl NoHostMapping for i32 {}
+unsafe impl NoHostMapping for i64 {}
+unsafe impl NoHostMapping for isize {}
+
+impl<'a, T: ?Sized> From<GPURefMut<'a, T>> for GPURef<'a, T> {
+    fn from(value: GPURefMut<'a, T>) -> Self {
+        value.readonly()
+    }
+}
+
+/*
+This cannot work. Not all Deref Ts are created equal; Box can deref_inner to GPURefMut; Arc
+can only deref_inner to GPURef.
+impl<'a, T: ?Sized> GPURef<'a, T> where T: Deref {
+    pub fn deref_inner(&self) -> GPURef<'a, T::Target> {
+        GPURef(self.0.deref())
+    }
+}
+Instead, we need...
+*/
+
+impl<'a, T: ?Sized> GPURef<'a, Arc<T>> {
+    pub fn deref_inner(self) -> GPURef<'a, T> {
+        GPURef(self.0.deref())
+    }
+}
+impl<'a, T: ?Sized> GPURefMut<'a, Arc<T>> {
+    pub fn deref_inner(self) -> GPURef<'a, T> {
+        GPURef(self.0.deref())
+    }
+}
+impl<'a, T: ?Sized> GPURef<'a, Box<T>> {
+    pub fn deref_inner(self) -> GPURef<'a, T> {
+        GPURef(self.0.deref())
+    }
+}
+impl<'a, T: ?Sized> GPURefMut<'a, Box<T>> {
+    pub fn deref_inner(self) -> GPURefMut<'a, T> {
+        GPURefMut(self.0.deref())
+    }
+}
+
 /// VKHandle can always be projected
 impl<T: AsVkHandle + ?Sized> AsVkHandle for GPURef<'_, T> {
+    type Handle = T::Handle;
+    fn vk_handle(&self) -> Self::Handle {
+        unsafe { self.unwrap().vk_handle() }
+    }
+}
+
+/// VKHandle can always be projected
+impl<T: AsVkHandle + ?Sized> AsVkHandle for GPURefMut<'_, T> {
     type Handle = T::Handle;
     fn vk_handle(&self) -> Self::Handle {
         unsafe { self.unwrap().vk_handle() }
@@ -373,13 +438,14 @@ impl<'a> CommandEncoder<'a> {
     ///     encoder.retain(std::rc::Rc::new(0u32));
     /// }
     /// ```
-    pub fn retain<T: Send + 'static>(&mut self, arc: T) -> GPURef<'a, T> {
+    pub fn retain<T: Send + 'static>(&mut self, arc: T) -> GPURefMut<'a, T> {
         unsafe {
             let ptr = self.buffer_mut().retainer.add(arc);
 
             // Safety: It's safe to dereference here because we guarantee that the retainer
             // won't be cleared until the command encoder finishes execution on the GPU.
-            GPURef(&*ptr)
+            // Also, T is owned so we're allowed to give out GPURefMut here.
+            GPURefMut(&*ptr)
         }
     }
 
@@ -422,12 +488,12 @@ impl<'a> CommandEncoder<'a> {
         &mut self,
         res: &GPUMutex<T>,
         stages: vk::PipelineStageFlags2,
-    ) -> GPURef<'a, T> {
+    ) -> GPURefMut<'a, T> {
         self.buffer_mut().lock_inner(res, stages);
         unsafe {
             // Safety: The lifetime extension is safe because the GPUMutex ensures
             // the resource remains valid until the command buffer completes execution.
-            GPURef(&*Box::as_ptr(&res.inner))
+            GPURefMut(&*Box::as_ptr(&res.inner))
         }
     }
 
@@ -500,9 +566,9 @@ impl<'a> CommandEncoder<'a> {
     /// - Creates a memory dependency such that memory regions touched by `before.access` are flushed,
     ///   and memory regions that will be touched by `after.access` are invalidated.
     /// - Transition the image layout from `old_layout` to `new_layout`
-    pub fn image_barrier(
+    pub fn image_barrier<I: ImageLike>(
         &mut self,
-        image: GPURef<'a, impl ImageLike>,
+        image: impl Into<GPURefMut<'a, I>>,
         before: Access,
         after: Access,
         old_layout: vk::ImageLayout,
@@ -510,6 +576,7 @@ impl<'a> CommandEncoder<'a> {
         mip_level_range: Range<u32>,
         array_layer_range: Range<u32>,
     ) {
+        let image = image.into();
         self.pending_image_barrier.push(vk::ImageMemoryBarrier2 {
             src_stage_mask: before.stage,
             src_access_mask: before.access,
@@ -553,10 +620,11 @@ impl<'a> CommandEncoder<'a> {
     /// - `access`: The new access pattern for the resource
     pub fn use_buffer_resource<T: BufferLike>(
         &mut self,
-        resource: GPURef<'a, T>,
+        resource: impl Into<GPURef<'a, T>>,
         state: &mut ResourceState,
         access: Access,
     ) {
+        let resource = resource.into();
         let memory_barrier = state.transition(access, false);
         self.pending_buffer_barrier.push(vk::BufferMemoryBarrier2 {
             src_access_mask: memory_barrier.src.access,
@@ -591,7 +659,7 @@ impl<'a> CommandEncoder<'a> {
     ///   and avoiding unneeded cache flush operations.
     pub fn use_image_resource<T: ImageLike>(
         &mut self,
-        resource: GPURef<'a, T>,
+        resource: impl Into<GPURefMut<'a, T>>,
         state: &mut ResourceState,
         access: Access,
         layout: vk::ImageLayout,
@@ -599,6 +667,7 @@ impl<'a> CommandEncoder<'a> {
         array_layer_range: Range<u32>,
         discard_content: bool,
     ) {
+        let resource = resource.into();
         let with_layout_transition = state.layout != layout;
         let memory_barrier = state.transition(access, with_layout_transition);
         if with_layout_transition {

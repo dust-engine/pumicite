@@ -42,7 +42,7 @@ use vk_mem::Alloc;
 
 use crate::{
     Allocator, Device, HasDevice,
-    command::{CommandEncoder, GPURef, NoHostMapping},
+    command::{CommandEncoder, GPURef, GPURefMut, NoHostMapping},
     utils::AsVkHandle,
 };
 
@@ -86,22 +86,26 @@ pub trait BufferLike: AsVkHandle<Handle = vk::Buffer> + Send + Sync + 'static {
     /// Returns `None` if the buffer is not host-visible or not mapped.
     fn as_slice_mut(&mut self) -> Option<&mut [u8]>;
 }
-impl<T: BufferLike> GPURef<'_, T> {
+impl<T: BufferLike + ?Sized> GPURef<'_, T> {
     pub fn offset(&self) -> vk::DeviceSize {
-        unsafe {
-            self.unwrap().offset()
-        }
+        unsafe { self.unwrap().offset() }
     }
     pub fn device_address(&self) -> vk::DeviceAddress {
-        unsafe {
-            self.unwrap().device_address()
-        }
+        unsafe { self.unwrap().device_address() }
     }
-
     pub fn size(&self) -> vk::DeviceSize {
-        unsafe {
-            self.unwrap().size()
-        }
+        unsafe { self.unwrap().size() }
+    }
+}
+impl<T: BufferLike + ?Sized> GPURefMut<'_, T> {
+    pub fn offset(&self) -> vk::DeviceSize {
+        unsafe { self.unwrap().offset() }
+    }
+    pub fn device_address(&self) -> vk::DeviceAddress {
+        unsafe { self.unwrap().device_address() }
+    }
+    pub fn size(&self) -> vk::DeviceSize {
+        unsafe { self.unwrap().size() }
     }
 }
 /// A buffer fully bound to a memory allocation.
@@ -131,7 +135,6 @@ impl HasDevice for Buffer {
 unsafe impl Send for Buffer {}
 unsafe impl Sync for Buffer {}
 // Hands out host-mapped memory through `as_slice`.
-impl !NoHostMapping for Buffer {}
 impl Debug for Buffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Buffer")
@@ -447,7 +450,6 @@ impl Drop for RingBufferChunk {
 unsafe impl Send for RingBufferChunk {}
 unsafe impl Sync for RingBufferChunk {}
 // Owns the host mapping its suballocations point into.
-impl !NoHostMapping for RingBufferChunk {}
 impl RingBufferChunk {
     fn new(
         device: Device,
@@ -679,7 +681,6 @@ pub struct RingBufferSuballocation {
 unsafe impl Send for RingBufferSuballocation {}
 unsafe impl Sync for RingBufferSuballocation {}
 // Hands out host-mapped memory through `as_slice`.
-impl !NoHostMapping for RingBufferSuballocation {}
 impl AsVkHandle for RingBufferSuballocation {
     type Handle = vk::Buffer;
     fn vk_handle(&self) -> Self::Handle {
@@ -738,8 +739,6 @@ pub enum ManagedBuffer {
         buffer: Arc<Buffer>,
     },
 }
-// Hands out host-mapped memory through `as_slice`.
-impl !NoHostMapping for ManagedBuffer {}
 
 impl ManagedBuffer {
     pub fn new(

@@ -4,8 +4,8 @@ use smallvec::SmallVec;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::command::{GPURef, GPURefMut};
 use crate::debug::DebugObject;
-use crate::command::{GPURef};
 use crate::image::{ImageLike, ImageViewLike};
 use crate::physical_device::PhysicalDevice;
 use crate::tracking::ResourceState;
@@ -336,11 +336,12 @@ impl Swapchain {
             );
 
             let acquire_timestamp = image.acquire_semaphore.timestamp(0);
-            image.present_semaphore.timestamp(0).wait_blocked(!0).unwrap();
-            Ok((
-                GPUMutex::new_locked(image, acquire_timestamp),
-                suboptimal,
-            ))
+            image
+                .present_semaphore
+                .timestamp(0)
+                .wait_blocked(!0)
+                .unwrap();
+            Ok((GPUMutex::new_locked(image, acquire_timestamp), suboptimal))
         }
     }
     pub fn present(
@@ -499,8 +500,14 @@ impl SwapchainImageInner {
 
 impl Drop for SwapchainImageInner {
     fn drop(&mut self) {
-        self.acquire_semaphore.timestamp(0).wait_blocked(!0).unwrap();
-        self.present_semaphore.timestamp(0).wait_blocked(!0).unwrap();
+        self.acquire_semaphore
+            .timestamp(0)
+            .wait_blocked(!0)
+            .unwrap();
+        self.present_semaphore
+            .timestamp(0)
+            .wait_blocked(!0)
+            .unwrap();
         if !self.linear_view.0.is_null() {
             unsafe {
                 self.swapchain
@@ -608,6 +615,18 @@ impl<'a> GPURef<'a, SwapchainImageInner> {
     }
     pub fn srgb_view(self) -> Option<GPURef<'a, SwapchainImageView>> {
         unsafe { self.unwrap().srgb_view().map(|v| GPURef::new_unchecked(v)) }
+    }
+}
+impl<'a> GPURefMut<'a, SwapchainImageInner> {
+    pub fn linear_view(self) -> GPURefMut<'a, SwapchainImageView> {
+        unsafe { GPURefMut::new_unchecked(self.unwrap().linear_view()) }
+    }
+    pub fn srgb_view(self) -> Option<GPURefMut<'a, SwapchainImageView>> {
+        unsafe {
+            self.unwrap()
+                .srgb_view()
+                .map(|v| GPURefMut::new_unchecked(v))
+        }
     }
 }
 /// Specifies the desired swapchain color output mode.

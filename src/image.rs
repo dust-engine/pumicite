@@ -8,7 +8,7 @@ use ash::{VkResult, vk, vk::TaggedStructure};
 use glam::UVec3;
 
 use crate::buffer::StagingBufferAllocator;
-use crate::command::{GPURef};
+use crate::command::{GPURef, GPURefMut};
 use crate::prelude::*;
 use vk_mem::Alloc;
 
@@ -37,6 +37,31 @@ pub trait ImageLike: AsVkHandle<Handle = vk::Image> + Send + Sync + 'static {
     fn ty(&self) -> vk::ImageType;
 }
 impl<T: ImageLike + ?Sized> GPURef<'_, T> {
+    pub fn aspects(&self) -> vk::ImageAspectFlags {
+        unsafe { self.unwrap().aspects() }
+    }
+
+    pub fn array_layer_count(&self) -> u32 {
+        unsafe { self.unwrap().array_layer_count() }
+    }
+
+    pub fn mip_level_count(&self) -> u32 {
+        unsafe { self.unwrap().mip_level_count() }
+    }
+
+    pub fn extent(&self) -> UVec3 {
+        unsafe { self.unwrap().extent() }
+    }
+
+    pub fn format(&self) -> vk::Format {
+        unsafe { self.unwrap().format() }
+    }
+
+    pub fn ty(&self) -> vk::ImageType {
+        unsafe { self.unwrap().ty() }
+    }
+}
+impl<T: ImageLike + ?Sized> GPURefMut<'_, T> {
     pub fn aspects(&self) -> vk::ImageAspectFlags {
         unsafe { self.unwrap().aspects() }
     }
@@ -107,17 +132,6 @@ pub trait ImageViewLike: AsVkHandle<Handle = vk::ImageView> + Send + Sync {
 
 /// A GPU-allocated image fully backed by device memory.
 pub struct Image {
-    // # Host access
-    //
-    // `Image` gives the host no access to its memory, which makes it
-    // [`NoHostMapping`](crate::command::NoHostMapping).
-    // That is what makes [`GPURef<Arc<Image>>::deref`](crate::command::GPURef) sound:
-    // other clones of the `Arc` only get metadata and handles while the GPU uses the image.
-    //
-    // `Image` must never gain an API that reads or writes its memory from the host, such as
-    // `VK_EXT_host_image_copy` (`vkCopyImageToMemory` needs only `&self`). The auto trait would
-    // not notice, since such an API stores no pointer. Host-copyable images belong on a separate
-    // type that opts out with `impl !NoHostMapping`.
     allocator: Allocator,
     handle: vk::Image,
     allocation: vk_mem::Allocation,
@@ -345,6 +359,12 @@ macro_rules! image_view_wrapper {
             $(#[$accessor_meta])*
             pub fn $accessor(self) -> GPURef<'a, ImageViewItem> {
                 unsafe { GPURef::new_unchecked(&self.unwrap().$field) }
+            }
+        }
+        impl<'a, T: ImageLike + HasDevice> GPURefMut<'a, $name<T>> {
+            $(#[$accessor_meta])*
+            pub fn $accessor(self) -> GPURefMut<'a, ImageViewItem> {
+                unsafe { GPURefMut::new_unchecked(&self.unwrap().$field) }
             }
         }
         impl<T: ImageLike + HasDevice> HasDevice for $name<T> {

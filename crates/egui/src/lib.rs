@@ -24,6 +24,7 @@ use pumicite::{
 use pumicite::{HasDevice, Sampler, debug::DebugObject, utils::AsVkHandle};
 use std::alloc::Layout;
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Deref;
 use std::sync::Arc;
 
 #[derive(SystemSet, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone)]
@@ -486,9 +487,9 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
             pass.retain(sampler.clone());
         }
 
-        let pipeline = pass.retain(pipeline.into_inner());
+        let pipeline = pass.retain(pipeline.into_inner()).deref_inner();
 
-        pass.bind_pipeline(pipeline.deref());
+        pass.bind_pipeline(pipeline);
 
         pass.bind_vertex_buffers(0, [vertex_buffer].into_iter());
         pass.bind_index_buffer(index_buffer, 0, vk::IndexType::UINT32);
@@ -509,7 +510,7 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
             }],
         );
         pass.push_constants(
-            pipeline.layout(),
+            pipeline.deref().layout(),
             vk::ShaderStageFlags::VERTEX,
             0,
             bytemuck::cast_slice(&[viewport_logical_size.x, viewport_logical_size.y]),
@@ -550,7 +551,7 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
             let sampler = buffers.samplers.get(options).unwrap();
 
             pass.push_descriptor_set(
-                pipeline.layout(),
+                pipeline.deref().layout(),
                 0,
                 &[vk::WriteDescriptorSet {
                     dst_binding: 0,

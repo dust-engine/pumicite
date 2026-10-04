@@ -3,7 +3,6 @@
 //! This module extends [`CommandEncoder`] with methods for binding pipelines,
 //! descriptor sets, push constants, and dispatching compute work.
 
-
 use ash::vk;
 use glam::UVec3;
 
@@ -21,14 +20,12 @@ impl<'a> CommandEncoder<'a> {
     pub fn bind_pipeline(
         &mut self,
         bind_point: vk::PipelineBindPoint,
-        pipeline: GPURef<'a, Pipeline>,
+        pipeline: impl Into<GPURef<'a, Pipeline>>,
     ) {
+        let pipeline = pipeline.into();
         unsafe {
-            self.device().cmd_bind_pipeline(
-                self.buffer().buffer,
-                bind_point,
-                pipeline.vk_handle(),
-            );
+            self.device()
+                .cmd_bind_pipeline(self.buffer().buffer, bind_point, pipeline.vk_handle());
         }
     }
     /// Binds descriptor sets to the command buffer.
@@ -123,11 +120,12 @@ impl<'a> CommandEncoder<'a> {
     ///   [`vk::BufferUsageFlags::INDIRECT_BUFFER`].
     /// - `args_offset`: The byte offset within the buffer where the
     ///   `vk::DispatchIndirectCommand` is located.
-    pub fn dispatch_indirect(
+    pub fn dispatch_indirect<B: BufferLike>(
         &mut self,
-        args: GPURef<'a, impl BufferLike>,
+        args: impl Into<GPURef<'a, B>>,
         args_offset: vk::DeviceSize,
     ) {
+        let args = args.into();
         unsafe {
             self.device().cmd_dispatch_indirect(
                 self.buffer().buffer,
