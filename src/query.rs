@@ -29,7 +29,7 @@ use std::{fmt::Debug, ops::Range};
 
 use ash::{VkResult, vk};
 
-use crate::{Device, HasDevice, command::CommandEncoder, utils::AsVkHandle};
+use crate::{Device, HasDevice, command::{CommandEncoder, GPURef, GPURefMut}, utils::AsVkHandle};
 
 /// A pool of GPU queries.
 ///
@@ -40,6 +40,22 @@ pub struct QueryPool {
     handle: vk::QueryPool,
     ty: vk::QueryType,
     len: u32,
+}
+impl<'a> GPURef<'a, QueryPool> {
+    pub fn len(&self) -> u32 {
+        unsafe { self.unwrap().len } 
+    }
+    pub fn ty(&self) -> u32 {
+        unsafe { self.unwrap().len } 
+    }
+}
+impl<'a> GPURefMut<'a, QueryPool> {
+    pub fn len(&self) -> u32 {
+        unsafe { self.unwrap().len } 
+    }
+    pub fn ty(&self) -> vk::QueryType {
+        unsafe { self.unwrap().ty } 
+    }
 }
 impl Debug for QueryPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -143,12 +159,13 @@ impl Drop for QueryPool {
 impl<'a> CommandEncoder<'a> {
     /// Resets queries in `range` so they can be written. Every query must be
     /// reset before it is written to.
-    pub fn reset_query_pool(&mut self, pool: &QueryPool, range: Range<u32>) {
-        assert!(range.end <= pool.len, "query range out of bounds");
+    pub fn reset_query_pool(&mut self, pool: impl Into<GPURefMut<'a, QueryPool>>, range: Range<u32>) {
+        let pool = pool.into();
+        assert!(range.end <= pool.len(), "query range out of bounds");
         unsafe {
             self.device().cmd_reset_query_pool(
                 self.buffer().buffer,
-                pool.handle,
+                pool.vk_handle(),
                 range.start,
                 range.end - range.start,
             );
@@ -168,19 +185,20 @@ impl<'a> CommandEncoder<'a> {
     /// nanoseconds, provided no counter overflow occurs.
     pub fn write_timestamp(
         &mut self,
-        pool: &QueryPool,
+        pool: impl Into<GPURefMut<'a, QueryPool>>,
         stage: vk::PipelineStageFlags2,
         query: u32,
     ) {
-        assert!(query < pool.len, "query index out of bounds");
+        let pool = pool.into();
+        assert!(query < pool.len(), "query index out of bounds");
         debug_assert_eq!(
-            pool.ty,
+            pool.ty(),
             vk::QueryType::TIMESTAMP,
             "write_timestamp requires a TIMESTAMP query pool",
         );
         unsafe {
             self.device()
-                .cmd_write_timestamp2(self.buffer().buffer, stage, pool.handle, query);
+                .cmd_write_timestamp2(self.buffer().buffer, stage, pool.vk_handle(), query);
         }
     }
 
@@ -195,11 +213,12 @@ impl<'a> CommandEncoder<'a> {
     pub fn write_acceleration_structures_properties(
         &mut self,
         acceleration_structures: &[vk::AccelerationStructureKHR],
-        pool: &QueryPool,
+        pool: impl Into<GPURefMut<'a, QueryPool>>,
         first_query: u32,
     ) {
+        let pool = pool.into();
         assert!(
-            first_query + acceleration_structures.len() as u32 <= pool.len,
+            first_query + acceleration_structures.len() as u32 <= pool.len(),
             "query range out of bounds",
         );
         unsafe {
@@ -208,8 +227,8 @@ impl<'a> CommandEncoder<'a> {
                 .cmd_write_acceleration_structures_properties(
                     self.buffer().buffer,
                     acceleration_structures,
-                    pool.ty,
-                    pool.handle,
+                    pool.ty(),
+                    pool.vk_handle(),
                     first_query,
                 );
         }

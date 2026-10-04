@@ -199,7 +199,7 @@ impl Image {
     /// is necessary.
     ///
     /// Upload its contents through a staging buffer, for example with
-    /// `AsyncTransferGuard::update_image` in `bevy_pumicite`.
+    /// `AsyncTransfer::update_image` in `bevy_pumicite`.
     ///
     /// Uses the pre-calculated `upload` memory type from [`MemoryTypeMap`](crate::physical_device::MemoryTypeMap).
     ///
@@ -498,6 +498,28 @@ impl<T: ImageLike + HasDevice> MipImageViews<T> {
     /// If `level >= mip_level_count()`.
     pub fn mip_view(&self, level: u32) -> &ImageViewItem {
         &self.views[level as usize]
+    }
+}
+impl<'a, T: ImageLike + HasDevice> GPURef<'a, MipImageViews<T>> {
+    /// Returns the view covering exactly mip level `level`.
+    ///
+    /// # Panics
+    /// If `level >= mip_level_count()`.
+    pub fn mip_view(self, level: u32) -> GPURef<'a, ImageViewItem> {
+        // The views are owned by the `MipImageViews`, so they live as long as it does and
+        // share its access.
+        unsafe { GPURef::new_unchecked(&self.unwrap().views[level as usize]) }
+    }
+}
+impl<'a, T: ImageLike + HasDevice> GPURefMut<'a, MipImageViews<T>> {
+    /// Returns the view covering exactly mip level `level`.
+    ///
+    /// # Panics
+    /// If `level >= mip_level_count()`.
+    pub fn mip_view(self, level: u32) -> GPURefMut<'a, ImageViewItem> {
+        // The views are owned by the `MipImageViews`, so they live as long as it does and
+        // share its access.
+        unsafe { GPURefMut::new_unchecked(&self.unwrap().views[level as usize]) }
     }
 }
 impl<T: ImageLike + HasDevice> HasDevice for MipImageViews<T> {

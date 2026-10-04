@@ -15,8 +15,8 @@ use bevy_ecs::{
 
 use crate::CreateDevice;
 use pumicite::{
-    ash::khr::acceleration_structure::Meta as AccelerationStructureKhr, prelude::*,
-    query::QueryPool, rtx::AccelStruct, sync::Timeline,
+    ash::khr::acceleration_structure::Meta as AccelerationStructureKhr, command::GPURef,
+    prelude::*, query::QueryPool, rtx::AccelStruct, sync::{GPUMutex, Timeline},
 };
 use smallvec::SmallVec;
 
@@ -149,18 +149,18 @@ pub trait BLASBuilder:
 pub enum BLASBuildGeometry<'a, A: BufferLike> {
     Triangles {
         vertex_format: vk::Format,
-        vertex_data: &'a A,
+        vertex_data: GPURef<'a, A>,
         vertex_stride: vk::DeviceSize,
         max_vertex: u32,
         index_type: vk::IndexType,
-        index_data: &'a A,
+        index_data: GPURef<'a, A>,
         transform_data: Option<vk::TransformMatrixKHR>,
         flags: vk::GeometryFlagsKHR,
         /// Number of triangles to be built, where each triangle is treated as 3 vertices
         primitive_count: u32,
     },
     Aabbs {
-        buffer: &'a A,
+        buffer: GPURef<'a, A>,
         stride: vk::DeviceSize,
         flags: vk::GeometryFlagsKHR,
         /// Number of AABBs to be built, where each triangle is treated as 3 vertices
@@ -171,7 +171,7 @@ pub enum BLASBuildGeometry<'a, A: BufferLike> {
 struct QueuedBuild {
     command_buffer: CommandBuffer,
     accel_structs: Vec<(Entity, AccelStruct)>,
-    query_pool: Option<QueryPool>,
+    query_pool: Option<GPUMutex<QueryPool>>,
 }
 
 /// Shared command pool, timeline, and in-flight-build queue used by every
@@ -218,7 +218,10 @@ fn drain_built_blas_system(mut commands: Commands, mut cmd_pool: ResMut<ASBuildC
             "BLAS build completed for {} entities",
             build.accel_structs.len()
         );
-        let compacted_sizes = if let Some(query_pool) = build.query_pool {
+        let compacted_sizes = if let Some(mut query_pool) = build.query_pool {
+            let query_pool = query_pool
+                .try_deref_mut()
+                .unwrap();
             let mut sizes = vec![0; query_pool.len() as usize];
             query_pool
                 .get_results::<u64>(0, &mut sizes, vk::QueryResultFlags::TYPE_64)
@@ -275,7 +278,7 @@ fn build_blas_system<T: BLASBuilder>(
     let batch_size = T::batch_size(builder, &mut params);
     let mut pending_accel_structs = Vec::new();
     let mut accel_structs_to_query_compaction_sizes = Vec::new();
-    let mut query_pool: Option<QueryPool> = None;
+    let mut query_pool: Option<GPUMutex<QueryPool>> = None;
 
     let mut geometry_infos = Vec::<vk::AccelerationStructureGeometryKHR>::new();
     let mut geometry_infos_primitive_counts: Vec<u32> = Vec::new();
@@ -490,6 +493,10 @@ fn build_blas_system<T: BLASBuilder>(
             )
             .unwrap();
             pool.host_reset(0..pool.len());
+            let pool = recorder.lock(
+                query_pool.insert(GPUMutex::new(pool)),
+                vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
+            );
             // The build above writes the AS; the property query below reads it.
             // No automatic dependency exists within the same command buffer.
             recorder.memory_barrier(
@@ -505,10 +512,9 @@ fn build_blas_system<T: BLASBuilder>(
             recorder.emit_barriers();
             recorder.write_acceleration_structures_properties(
                 &accel_structs_to_query_compaction_sizes,
-                &pool,
+                pool,
                 0,
             );
-            query_pool = Some(pool);
         }
     };
 

@@ -209,7 +209,7 @@ impl<'encoder, 'a> RenderPassBuilder<'encoder, 'a> {
         }
         builder(RenderPassAttachmentBuilder {
             device: self.encoder.device(),
-            attachment: self.depth_attachment.as_mut().unwrap(),
+            attachment: self.stencil_attachment.as_mut().unwrap(),
         });
         self
     }
@@ -223,7 +223,7 @@ impl<'encoder, 'a> RenderPassBuilder<'encoder, 'a> {
         index: u32,
         builder: impl FnOnce(RenderPassAttachmentBuilder<'_, 'a>),
     ) -> Self {
-        if index <= self.color_attachments.len() as u32 {
+        if index >= self.color_attachments.len() as u32 {
             self.color_attachments.extend(std::iter::repeat_n(
                 vk::RenderingAttachmentInfo {
                     load_op: vk::AttachmentLoadOp::DONT_CARE,

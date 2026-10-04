@@ -668,7 +668,6 @@ impl RingBuffer {
 /// all suballocations from it are dropped.
 ///
 /// Implements [`BufferLike`] for uniform access to buffer properties.
-#[derive(Clone)]
 pub struct RingBufferSuballocation {
     buffer: vk::Buffer,
     // The start of the suballocation block, including the alignment padding
@@ -685,6 +684,15 @@ impl AsVkHandle for RingBufferSuballocation {
     type Handle = vk::Buffer;
     fn vk_handle(&self) -> Self::Handle {
         self.buffer
+    }
+}
+impl RingBufferSuballocation {
+    /// Converts this suballocation into a cloneable, read-only handle.
+    ///
+    /// Behaves like `Arc<RingBufferSuballocation>`, but reuses the reference count
+    /// already held on the parent chunk instead of making a new allocation.
+    pub fn shared(self) -> SharedRingBufferSuballocation {
+        SharedRingBufferSuballocation(self)
     }
 }
 impl BufferLike for RingBufferSuballocation {
@@ -713,6 +721,47 @@ impl BufferLike for RingBufferSuballocation {
     }
 }
 
+/// A shared, read-only [`RingBufferSuballocation`]. Behaves like [`Arc<RingBufferSuballocation>`]
+///
+/// Created by [`RingBufferSuballocation::shared`]. Cloning only bumps the parent
+/// chunk's reference count. Since clones alias the same memory,
+/// [`BufferLike::as_slice_mut`] always returns `None`.
+pub struct SharedRingBufferSuballocation(RingBufferSuballocation);
+impl Clone for SharedRingBufferSuballocation {
+    fn clone(&self) -> Self {
+        let inner = &self.0;
+        SharedRingBufferSuballocation(RingBufferSuballocation {
+            buffer: inner.buffer,
+            offset: inner.offset,
+            size: inner.size,
+            ptr: inner.ptr,
+            device_address: inner.device_address,
+            _chunk: inner._chunk.clone(),
+        })
+    }
+}
+impl AsVkHandle for SharedRingBufferSuballocation {
+    type Handle = vk::Buffer;
+    fn vk_handle(&self) -> Self::Handle {
+        self.0.buffer
+    }
+}
+impl<'a> GPURef<'a, SharedRingBufferSuballocation> {
+    pub fn deref_inner(self) -> GPURef<'a, RingBufferSuballocation> {
+        unsafe {
+            let this = self.unwrap();
+            GPURef::new_unchecked(&this.0)
+        }
+    }
+}
+impl<'a> GPURefMut<'a, SharedRingBufferSuballocation> {
+    pub fn deref_inner(self) -> GPURef<'a, RingBufferSuballocation> {
+        unsafe {
+            let this = self.unwrap();
+            GPURef::new_unchecked(&this.0)
+        }
+    }
+}
 /// A buffer that abstracts over the differences between integrated and discrete GPUs.
 /// On integrated GPUs, memory is unified so a single buffer
 /// serves both CPU and GPU access. On discrete GPUs, this uses a host buffer for CPU
@@ -865,7 +914,7 @@ impl BufferLike for ManagedBuffer {
 /// to device-local memory. This trait is implemented by [`RingBuffer`] (for
 /// efficient transient allocations) and [`Allocator`] (for standalone buffers).
 ///
-/// Used by `AsyncTransferGuard::update_image` in `bevy_pumicite`.
+/// Used by `AsyncTransfer::update_image` in `bevy_pumicite`.
 pub trait StagingBufferAllocator {
     /// The buffer type returned by this allocator.
     type Buffer: BufferLike;

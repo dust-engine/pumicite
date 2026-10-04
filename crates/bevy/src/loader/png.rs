@@ -119,11 +119,11 @@ impl AssetLoader for PngLoader {
                 format
             );
 
-            let mut batch = self.transfer.batch().await?;
             let mut allocator = self.allocator.clone();
-            batch
+            let texture = self
+                .transfer
                 .update_image(
-                    &mut texture,
+                    texture,
                     async |slice| -> Result<(), ImageLoadingError> {
                         let num_bytes_per_frame = reader.info().width as usize
                             * reader.info().height as usize
@@ -177,8 +177,9 @@ impl AssetLoader for PngLoader {
                     &mut allocator,
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 )
+                .await?
+                .wait()
                 .await?;
-            batch.submit().await?;
             Ok(TextureAsset::new(
                 texture,
                 if settings.register_bindless {

@@ -221,6 +221,25 @@ unsafe impl NoHostMapping for i32 {}
 unsafe impl NoHostMapping for i64 {}
 unsafe impl NoHostMapping for isize {}
 
+/// Whether a token passed as `impl Into<GPURef>` was a [`GPURefMut`], decided by specialization
+/// on the token's type, so APIs that only sometimes write can check this at runtime.
+trait WritableToken {
+    fn writable() -> bool;
+}
+impl<P> WritableToken for P {
+    default fn writable() -> bool {
+        false
+    }
+}
+impl<'a, T: ?Sized> WritableToken for GPURefMut<'a, T> {
+    fn writable() -> bool {
+        true
+    }
+}
+fn is_writable_token<P>(_token: &P) -> bool {
+    <P as WritableToken>::writable()
+}
+
 impl<'a, T: ?Sized> From<GPURefMut<'a, T>> for GPURef<'a, T> {
     fn from(value: GPURefMut<'a, T>) -> Self {
         value.readonly()
@@ -334,11 +353,13 @@ impl CommandEncoder<'_> {
     }
 
     /// Returns a mutable reference to the underlying command buffer.
+    /// 
+    /// This method is kept private so that external code cannot mem::swap the underlying command buffer.
     ///
     /// # Panics
     ///
     /// Panics if no command buffer has been set via [`set_buffer()`](Self::set_buffer).
-    pub fn buffer_mut(&mut self) -> &mut CommandBuffer {
+    fn buffer_mut(&mut self) -> &mut CommandBuffer {
         assert!(
             !self.buffer.is_null(),
             "CommandEncoder has no associated command buffer"
@@ -505,7 +526,7 @@ impl<'a> CommandEncoder<'a> {
     /// taken by one command buffer says nothing about what another command buffer waits on,
     /// even a later one on the same timeline, so that command buffer must take its own lock.
     #[track_caller]
-    pub fn get_locked<T>(&self, guard: &GPUMutexGuard<T>) -> GPURef<'a, T> {
+    pub fn get_locked<T>(&self, guard: &GPUMutexGuard<T>) -> GPURefMut<'a, T> {
         let buffer = self.buffer();
         let timestamp = buffer
             .timestamp
@@ -536,7 +557,7 @@ impl<'a> CommandEncoder<'a> {
             // which is when this command buffer finishes executing. Timestamps on a timeline
             // are never reused, and the guard's strong count on the semaphore rules out
             // address reuse, so no other command buffer can match this identity.
-            GPURef(&*guard.ptr)
+            GPURefMut(&*guard.ptr)
         }
     }
 
@@ -618,12 +639,17 @@ impl<'a> CommandEncoder<'a> {
     ///   Call [retain()](Self::retain) or [lock()](Self::lock) to extend the lifetime of a resource.
     /// - `state`: Mutable reference to the resource's current state
     /// - `access`: The new access pattern for the resource
+    #[track_caller]
     pub fn use_buffer_resource<T: BufferLike>(
         &mut self,
         resource: impl Into<GPURef<'a, T>>,
         state: &mut ResourceState,
         access: Access,
     ) {
+        assert!(
+            access.is_readonly() || is_writable_token(&resource),
+            "use_buffer_resource: write access {access:?} requires a GPURefMut, but got a GPURef"
+        );
         let resource = resource.into();
         let memory_barrier = state.transition(access, false);
         self.pending_buffer_barrier.push(vk::BufferMemoryBarrier2 {
@@ -657,9 +683,10 @@ impl<'a> CommandEncoder<'a> {
     /// - If the layout changes, an image memory barrier is created. Otherwise, a global memory barrier is used.
     /// - Discarding content can improve performance by saving unnecessary blits between different image layouts
     ///   and avoiding unneeded cache flush operations.
+    #[track_caller]
     pub fn use_image_resource<T: ImageLike>(
         &mut self,
-        resource: impl Into<GPURefMut<'a, T>>,
+        resource: impl Into<GPURef<'a, T>>,
         state: &mut ResourceState,
         access: Access,
         layout: vk::ImageLayout,
@@ -667,8 +694,15 @@ impl<'a> CommandEncoder<'a> {
         array_layer_range: Range<u32>,
         discard_content: bool,
     ) {
-        let resource = resource.into();
         let with_layout_transition = state.layout != layout;
+        // A layout transition or discarding content writes the image, even for read access.
+        assert!(
+            (access.is_readonly() && !with_layout_transition && !discard_content)
+                || is_writable_token(&resource),
+            "use_image_resource: {access:?} in layout {layout:?} (from {:?}, discard_content: {discard_content}) writes the image and requires a GPURefMut, but got a GPURef",
+            state.layout
+        );
+        let resource = resource.into();
         let memory_barrier = state.transition(access, with_layout_transition);
         if with_layout_transition {
             // Layout transition requires image barrier
@@ -786,16 +820,28 @@ impl ArcRetainer {
     ///
     /// This calls the drop function for each retained object in the order
     /// they were added, then clears the internal storage.
+    ///
+    /// If a destructor panics, the remaining objects are still dropped (a second panic aborts),
+    /// and every entry is removed from `meta` up front, so no object is ever dropped twice.
     pub fn clear(&mut self) {
-        unsafe {
-            for (drop_fn, ptr) in self.meta.iter().cloned() {
-                (drop_fn)(ptr as *mut ());
+        /// Drops whatever the loop below didn't reach, e.g. when a destructor unwinds.
+        struct DropRest<'a>(std::vec::Drain<'a, (unsafe fn(*mut ()), *mut u8)>);
+        impl Drop for DropRest<'_> {
+            fn drop(&mut self) {
+                for (drop_fn, ptr) in self.0.by_ref() {
+                    unsafe { (drop_fn)(ptr as *mut ()) };
+                }
             }
         }
-        self.meta.clear();
+
         self.size = 0;
         self.free_chunk = 0;
         self.ptr = std::ptr::null_mut();
+        // `drain` takes the entries out of `meta` before any destructor runs.
+        let mut rest = DropRest(self.meta.drain(..));
+        while let Some((drop_fn, ptr)) = rest.0.next() {
+            unsafe { (drop_fn)(ptr as *mut ()) };
+        }
     }
 
     pub fn is_unused(&self) -> bool {
@@ -805,16 +851,27 @@ impl ArcRetainer {
 
 impl Drop for ArcRetainer {
     fn drop(&mut self) {
-        self.clear();
-
-        for chunk in self.chunks.iter().cloned() {
-            unsafe {
-                std::alloc::dealloc(
-                    chunk,
-                    Layout::from_size_align_unchecked(Self::CHUNK_SIZE, Self::MAX_ALIGNMENT),
-                );
+        /// Frees the chunks even if `clear` unwinds.
+        struct FreeChunks<'a>(&'a [*mut u8]);
+        impl Drop for FreeChunks<'_> {
+            fn drop(&mut self) {
+                for &chunk in self.0 {
+                    unsafe {
+                        std::alloc::dealloc(
+                            chunk,
+                            Layout::from_size_align_unchecked(
+                                ArcRetainer::CHUNK_SIZE,
+                                ArcRetainer::MAX_ALIGNMENT,
+                            ),
+                        );
+                    }
+                }
             }
         }
+
+        let chunks = std::mem::take(&mut self.chunks);
+        let _free = FreeChunks(&chunks);
+        self.clear();
     }
 }
 
@@ -1671,6 +1728,42 @@ mod tests {
         drop(retainer);
         assert_eq!(drops.load(Ordering::Relaxed), 13);
     }
+
+    #[test]
+    fn arc_retainer_panicking_destructor_drops_each_object_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct PanicDrop<'a>(&'a AtomicUsize, bool);
+        impl Drop for PanicDrop<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                if self.1 {
+                    panic!("destructor panic");
+                }
+            }
+        }
+
+        let drops = AtomicUsize::new(0);
+        let mut retainer = ArcRetainer::default();
+        for i in 0..5 {
+            retainer.add(PanicDrop(&drops, i == 2));
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| retainer.clear()));
+        assert!(result.is_err());
+        // Objects after the panicking one were still dropped, and the retainer is empty.
+        assert_eq!(drops.load(Ordering::Relaxed), 5);
+        drop(retainer);
+        assert_eq!(drops.load(Ordering::Relaxed), 5);
+
+        // Panicking inside `Drop for ArcRetainer` must not re-drop anything either.
+        let drops = AtomicUsize::new(0);
+        let mut retainer = ArcRetainer::default();
+        for i in 0..5 {
+            retainer.add(PanicDrop(&drops, i == 2));
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(retainer)));
+        assert!(result.is_err());
+        assert_eq!(drops.load(Ordering::Relaxed), 5);
+    }
     #[test]
     #[should_panic(expected = "locked out of order")]
     fn out_of_order_recording() {
@@ -1880,5 +1973,19 @@ mod tests {
         queue.submit(&mut cb).unwrap();
         cb.block_until_completion().unwrap();
         pool.free(cb);
+    }
+}
+
+#[cfg(test)]
+mod writable_token_tests {
+    use super::*;
+
+    #[test]
+    fn specialization_distinguishes_token_kinds() {
+        let value = 0u32;
+        let read = unsafe { GPURef::new_unchecked(&value) };
+        let write = unsafe { GPURefMut::new_unchecked(&value) };
+        assert!(!is_writable_token(&read));
+        assert!(is_writable_token(&write));
     }
 }

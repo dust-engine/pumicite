@@ -17,7 +17,7 @@ use bevy::window::PrimaryWindow;
 
 use bevy_pumicite::prelude::*;
 use glam::{IVec2, Mat4, Vec3, Vec3Swizzles};
-use pumicite::buffer::RingBufferSuballocation;
+use pumicite::buffer::SharedRingBufferSuballocation;
 use pumicite::{
     Sampler,
     image::{FullImageView, Image},
@@ -215,7 +215,7 @@ struct AtmosphereState {
     sun_azimuth: f32,   // radians
     needs_lut_update: bool,
 
-    uniform_buffer: Option<RingBufferSuballocation>,
+    uniform_buffer: Option<SharedRingBufferSuballocation>,
 }
 
 impl Default for AtmosphereState {
@@ -629,7 +629,7 @@ fn prepare_atmosphere_uniform(
         .unwrap()
         .copy_from_slice(bytemuck::bytes_of(&atmosphere.params));
 
-    atmosphere.uniform_buffer = Some(buffer);
+    atmosphere.uniform_buffer = Some(buffer.shared());
 }
 
 fn compute_luts(
@@ -654,7 +654,7 @@ fn compute_luts(
     let atmosphere_uniform_buffer = atmosphere.uniform_buffer.as_ref().unwrap().clone();
 
     state.record(|encoder| {
-        let buffer = encoder.retain(atmosphere_uniform_buffer);
+        let buffer = encoder.retain(atmosphere_uniform_buffer).deref_inner();
 
         let buffer_info = vk::DescriptorBufferInfo {
             buffer: buffer.vk_handle(),
@@ -829,7 +829,7 @@ fn render_skyview_lut(
     let atmosphere_uniform_buffer = atmosphere.uniform_buffer.as_ref().unwrap().clone();
 
     state.record(|encoder| {
-        let buffer = encoder.retain(atmosphere_uniform_buffer);
+        let buffer = encoder.retain(atmosphere_uniform_buffer).deref_inner();
 
         let buffer_info = vk::DescriptorBufferInfo {
             buffer: buffer.vk_handle(),
@@ -1005,7 +1005,7 @@ fn render_sky(
     state.render(|mut pass| {
         // Final sky render
         {
-            let buffer = pass.retain(atmosphere_uniform_buffer);
+            let buffer = pass.retain(atmosphere_uniform_buffer).deref_inner();
             let extent = pass.render_area().extent;
 
             let pipeline = pass

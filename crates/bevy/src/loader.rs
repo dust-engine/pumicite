@@ -208,10 +208,10 @@ mod img_loader {
                     image.color(),
                     format
                 );
-                let mut batch = self.transfer.batch().await?;
-                batch
+                let texture = self
+                    .transfer
                     .update_image(
-                        &mut texture,
+                        texture,
                         async |slice| {
                             match image.color() {
                                 ColorType::Rgb8 => {
@@ -244,8 +244,9 @@ mod img_loader {
                         &mut allocator,
                         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                     )
+                    .await?
+                    .wait()
                     .await?;
-                batch.submit().await?;
                 Ok(TextureAsset::new(
                     texture,
                     if settings.register_bindless {

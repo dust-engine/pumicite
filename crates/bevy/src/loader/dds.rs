@@ -120,10 +120,10 @@ impl AssetLoader for DdsLoader {
             }
 
             let mut allocator = self.allocator.clone();
-            let mut batch = self.transfer.batch().await?;
-            batch
+            let image = self
+                .transfer
                 .update_image(
-                    &mut image,
+                    image,
                     async |slice| {
                         if dds.header10.is_some() {
                             reader.read_exact(slice).await?;
@@ -136,8 +136,9 @@ impl AssetLoader for DdsLoader {
                     &mut allocator,
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 )
+                .await?
+                .wait()
                 .await?;
-            batch.submit().await?;
 
             tracing::info!("Loading {}", load_context.path());
 

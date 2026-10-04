@@ -313,11 +313,6 @@ impl<T: Send> Drop for GPUMutex<T> {
                 ManuallyDrop::drop(&mut self.inner);
                 return;
             }
-            fn drop_box<T>(ptr_to_drop: *mut ()) {
-                let box_to_drop: Box<T> = unsafe { Box::from_raw(ptr_to_drop as *mut T) };
-                drop(box_to_drop);
-            }
-
             semaphore
                 .clone()
                 .device
@@ -329,6 +324,12 @@ impl<T: Send> Drop for GPUMutex<T> {
                 });
         }
     }
+}
+
+/// Type-erased drop function for a [`RetiredGPUMutex`] holding a `Box<T>`.
+fn drop_box<T>(ptr_to_drop: *mut ()) {
+    let box_to_drop: Box<T> = unsafe { Box::from_raw(ptr_to_drop as *mut T) };
+    drop(box_to_drop);
 }
 
 //region TimelineSemaphore
@@ -542,6 +543,27 @@ impl Timestamp {
                 .fetch_max(self.value, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         }
+    }
+
+    /// Drops `resource` once the semaphore reaches this timestamp, without blocking.
+    ///
+    /// If the timestamp has already been reached, `resource` is dropped immediately. Otherwise
+    /// it's handed to the device's deferred-drop thread. The timestamp doesn't need to have been
+    /// submitted yet: the resource is held until it's signaled, or leaked if it never is.
+    pub fn drop_after<T: Send + 'static>(&self, resource: T) {
+        let semaphore = &self.semaphore.0;
+        if semaphore.is_signaled(self.value) {
+            drop(resource);
+            return;
+        }
+        semaphore
+            .device
+            .schedule_resource_for_deferred_drop(RetiredGPUMutex {
+                semaphore: self.semaphore.clone(),
+                value: self.value,
+                resource: Box::into_raw(Box::new(resource)) as *mut (),
+                drop: drop_box::<T>,
+            });
     }
 
     /// Async version of [`wait_blocked`](Self::wait_blocked).
@@ -998,5 +1020,42 @@ mod tests {
         semaphore.signal(1);
         assert_eq!(*mutex.unwrap_block().unwrap(), 7);
         assert_eq!(Arc::strong_count(&semaphore), 1);
+    }
+
+    /// `drop_after` on an unreached timestamp returns without blocking, holds the resource
+    /// until the timestamp is signaled, then drops it on the deferred-drop thread.
+    #[test]
+    fn drop_after_defers_until_signaled() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct SetOnDrop(Arc<AtomicBool>);
+        impl Drop for SetOnDrop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let (device, _queue) = Device::create_system_default().unwrap();
+        let semaphore = SharedSemaphore::new(device, 0).unwrap();
+
+        // Already reached: dropped immediately.
+        let dropped = Arc::new(AtomicBool::new(false));
+        semaphore.timestamp(0).drop_after(SetOnDrop(dropped.clone()));
+        assert!(dropped.load(Ordering::Acquire));
+
+        // Not reached, and nothing will signal it until we do: must not block or drop.
+        let dropped = Arc::new(AtomicBool::new(false));
+        semaphore.timestamp(1).drop_after(SetOnDrop(dropped.clone()));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!dropped.load(Ordering::Acquire));
+
+        semaphore.signal(1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !dropped.load(Ordering::Acquire) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "resource was not dropped after its timestamp was signaled"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 }

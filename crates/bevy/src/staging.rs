@@ -393,18 +393,17 @@ impl BufferInitializer<'_> {
 /// Uses a separate transfer queue (when available) to overlap data uploads with
 /// rendering work. Manages its own command pool and timeline for synchronization.
 ///
-/// Transfers from every batch are recorded into one shared command buffer.
+/// Transfers from every upload are recorded into one shared command buffer.
 /// [`async_transfer_submission_system`] submits it once per frame. If the staging data recorded
 /// since the last submission exceeds [`submit_threshold`](Self::submit_threshold), the
-/// recording batch submits it immediately instead, so large uploads don't wait for the frame.
+/// recording upload submits it immediately instead, so large uploads don't wait for the frame.
 ///
 /// # Usage
 ///
 /// ```ignore
-/// let mut batch = transfer.batch().await?;
-/// batch
+/// let upload = transfer
 ///     .update_image(
-///         &mut image,
+///         image,
 ///         async |staging| {
 ///             // Fill `staging` with the image's contents.
 ///             Ok::<(), vk::Result>(())
@@ -414,7 +413,7 @@ impl BufferInitializer<'_> {
 ///     )
 ///     .await?;
 /// // Waits until the upload has completed on the GPU.
-/// batch.submit().await?;
+/// let image = upload.wait().await?;
 /// ```
 #[derive(Clone, Resource)]
 pub struct AsyncTransfer(Arc<AsyncTransferInner>);
@@ -528,7 +527,7 @@ impl AsyncTransferCommandContext {
 /// Submits the transfers recorded through [`AsyncTransfer`] since the last submission, and
 /// reclaims command buffers whose transfers have completed, releasing their staging memory.
 ///
-/// Runs once per frame. If a batch is recording at the moment, the frame is skipped and the work
+/// Runs once per frame. If an upload is recording at the moment, the frame is skipped and the work
 /// is picked up next frame, rather than blocking the frame on the recording task.
 pub fn async_transfer_submission_system(transfer: Res<AsyncTransfer>) {
     let inner = &*transfer.0;
@@ -538,46 +537,87 @@ pub fn async_transfer_submission_system(transfer: Res<AsyncTransfer>) {
     ctx.submit_current(&inner.queue).unwrap();
 }
 
-/// Guard for an active async transfer batch.
+/// An image being uploaded by [`AsyncTransfer::update_image`].
 ///
-/// Transfers are recorded into a command buffer shared by all batches, which is submitted once
-/// per frame by [`async_transfer_submission_system`], or immediately once enough staging data
-/// has accumulated (see [`AsyncTransfer::submit_threshold`]). Call [`submit`](Self::submit) to
-/// wait until the transfers recorded through this guard have completed on the GPU.
+/// Owns the image until the GPU has finished writing it. Call [`wait`](Self::wait) to get the
+/// image back once the upload has completed.
 ///
-/// If the guard is dropped before [`submit`](Self::submit) completes (for example because
-/// the enclosing future was cancelled), its destructor blocks the current thread until those
-/// transfers complete. This keeps resources borrowed by [`update_image`](Self::update_image)
-/// alive for as long as the GPU uses them.
-///
-/// # Leaking
-///
-/// The guard must not be leaked (e.g. with [`std::mem::forget`]) while it has transfers
-/// pending. A leaked guard never waits, so the borrows it holds end while the GPU may still
-/// be using the borrowed resources, and dropping one of them causes undefined behavior. This
-/// is the same limitation the pre-1.0 `thread::scoped` API had; Rust has no way to express
-/// types that cannot be leaked.
-pub struct AsyncTransferGuard<'a> {
-    inner: &'a Arc<AsyncTransferInner>,
-    /// Latest timeline point of the shared command buffer recorded into through this guard.
-    pending: Option<Timestamp>,
+/// If the handle is dropped before [`wait`](Self::wait) completes (for example because the
+/// enclosing future was cancelled), the image is handed to the device's deferred-drop thread and
+/// destroyed once the upload completes, so it's never destroyed while the GPU is writing it.
+/// Dropping never blocks, so it's safe anywhere, including in systems that run before
+/// [`async_transfer_submission_system`]. Leaking the handle is safe: the image is leaked along
+/// with it.
+pub struct ImageUpload<T: ImageLike> {
+    /// `None` once [`wait`](Self::wait) has handed the image back.
+    image: Option<T>,
+    /// Timeline point of the command buffer the upload was recorded into.
+    timestamp: Timestamp,
 }
 
-impl<'a> AsyncTransferGuard<'a> {
+impl<T: ImageLike> ImageUpload<T> {
+    /// Waits until the upload has completed on the GPU, then returns the image.
+    ///
+    /// This doesn't submit anything itself: the shared command buffer is submitted by
+    /// [`async_transfer_submission_system`], or earlier once
+    /// [`submit_threshold`](AsyncTransfer::submit_threshold) is exceeded.
+    ///
+    /// Because completion may depend on the frame loop, never block on this future from a system
+    /// (for example with `block_on`): the frame would stop before the upload is submitted.
+    pub async fn wait(mut self) -> VkResult<T> {
+        // `image` is only taken once the wait completes, so if this future is cancelled
+        // mid-wait, `Drop` still waits.
+        self.timestamp.wait_async().await?;
+        Ok(self.image.take().unwrap())
+    }
+}
+
+impl<T: ImageLike> Drop for ImageUpload<T> {
+    fn drop(&mut self) {
+        if let Some(image) = self.image.take() {
+            // The upload may not be submitted yet, and only the frame loop submits it, so
+            // blocking here could deadlock. The commands referencing the image are already
+            // recorded, so it can't be destroyed now either: defer until the upload completes.
+            self.timestamp.drop_after(image);
+        }
+    }
+}
+
+impl AsyncTransfer {
+    /// Default for [`submit_threshold`](Self::submit_threshold): 64 MiB.
+    pub const DEFAULT_SUBMIT_THRESHOLD: u64 = 64 * 1024 * 1024;
+
     /// Uploads data to `image` through a staging buffer, then transitions it to `target_layout`.
     ///
     /// `writer` fills the staging buffer with the contents of every mip level, tightly packed.
     ///
-    /// The copy runs when the shared command buffer is submitted. `image` stays borrowed until
-    /// the guard is consumed by [`submit`](Self::submit) or dropped, both of which wait for the
-    /// copy to complete. See [Leaking](Self#leaking) for the one case this doesn't cover.
-    pub async fn update_image<A: StagingBufferAllocator, E: From<vk::Result>>(
-        &mut self,
-        image: &'a mut impl ImageLike,
+    /// The copy runs when the shared command buffer is submitted. `image` is moved into the
+    /// returned [`ImageUpload`], which gives it back once the copy has completed.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let upload = transfer
+    ///     .update_image(
+    ///         image,
+    ///         async |staging| {
+    ///             // Fill `staging` with the image's contents.
+    ///             Ok::<(), vk::Result>(())
+    ///         },
+    ///         &mut allocator,
+    ///         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+    ///     )
+    ///     .await?;
+    /// // Waits until the upload has completed on the GPU.
+    /// let image = upload.wait().await?;
+    /// ```
+    pub async fn update_image<T: ImageLike, A: StagingBufferAllocator, E: From<vk::Result>>(
+        &self,
+        image: T,
         writer: impl AsyncFnOnce(&mut [u8]) -> Result<(), E>,
         staging_allocator: &mut A,
         target_layout: vk::ImageLayout,
-    ) -> Result<(), E> {
+    ) -> Result<ImageUpload<T>, E> {
         let format_properties = pumicite_types::format::Format::from(image.format()).properties();
         let bytes_required = format_properties
             .bytes_required_for_texture(image.extent(), image.mip_level_count())
@@ -588,13 +628,16 @@ impl<'a> AsyncTransferGuard<'a> {
             .expect("Staging buffer allocator must return a host-visible buffer!");
         writer(staging_slice).await?;
 
-        let command_ctx = &mut *self.inner.command_pool.lock().await;
+        let command_ctx = &mut *self.0.command_pool.lock().await;
+        // Safety: `image` moves into the returned `ImageUpload`, which keeps it alive until
+        // `current_timestamp` is reached, or forever if it's leaked.
+        let image_ref = unsafe { GPURefMut::new_unchecked(&image) };
         command_ctx
             .command_pool
             .record(&mut command_ctx.current_command_buffer, |encoder| {
                 let staging_buffer = encoder.retain(staging_buffer);
                 encoder.image_barrier(
-                    unsafe { GPURefMut::new_unchecked(image) },
+                    image_ref,
                     Access::NONE,
                     Access::COPY_WRITE,
                     vk::ImageLayout::UNDEFINED,
@@ -632,12 +675,12 @@ impl<'a> AsyncTransferGuard<'a> {
                     .collect();
                 encoder.copy_buffer_to_image_with_layout(
                     staging_buffer,
-                    unsafe { GPURefMut::new_unchecked(image) },
+                    image_ref,
                     &regions,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 );
                 encoder.image_barrier(
-                    unsafe { GPURefMut::new_unchecked(image) },
+                    image_ref,
                     Access::COPY_WRITE,
                     Access::NONE,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -646,90 +689,21 @@ impl<'a> AsyncTransferGuard<'a> {
                     0..image.array_layer_count(),
                 );
             });
-        self.record_pending(&command_ctx.current_timestamp);
+        let timestamp = command_ctx.current_timestamp.clone();
         command_ctx.pending_bytes += bytes_required;
-        if command_ctx.pending_bytes >= self.inner.submit_threshold {
-            command_ctx.submit_current(&self.inner.queue)?;
-        }
-
-        Ok(())
-    }
-
-    fn record_pending(&mut self, timestamp: &Timestamp) {
-        // Every command buffer comes from the same timeline, so later ones have larger values.
-        if self
-            .pending
-            .as_ref()
-            .is_none_or(|pending| pending.value() < timestamp.value())
-        {
-            self.pending = Some(timestamp.clone());
-        }
-    }
-    /// Waits until the transfers recorded through this guard have completed on the GPU.
-    ///
-    /// This doesn't submit anything itself: the shared command buffer is submitted by
-    /// [`async_transfer_submission_system`], or earlier once
-    /// [`submit_threshold`](AsyncTransfer::submit_threshold) is exceeded.
-    pub async fn submit(mut self) -> VkResult<()> {
-        if let Some(timestamp) = &self.pending {
-            // `pending` is only cleared once the wait completes, so if this future is
-            // cancelled mid-wait, `Drop` still waits.
-            timestamp.wait_async().await?;
-        }
-        self.pending = None;
-        Ok(())
-    }
-}
-
-impl Drop for AsyncTransferGuard<'_> {
-    fn drop(&mut self) {
-        if let Some(timestamp) = self.pending.take() {
-            // Resources borrowed by this guard must outlive the GPU's use of them. There's no
-            // way to report an error from here, and returning early would end those borrows.
-            if let Err(err) = timestamp.wait_blocked(u64::MAX) {
-                tracing::error!("Failed to wait for pending async transfers: {err:?}");
+        if command_ctx.pending_bytes >= self.0.submit_threshold {
+            if let Err(err) = command_ctx.submit_current(&self.0.queue) {
+                // Depending on where submission failed, the copy may still be submitted later,
+                // or `timestamp` may never be reached. Leak the image rather than destroy it
+                // while it may be in use, or wait for a timestamp that never comes.
+                std::mem::forget(image);
+                return Err(err.into());
             }
         }
-    }
-}
 
-impl AsyncTransfer {
-    /// Default for [`submit_threshold`](Self::submit_threshold): 64 MiB.
-    pub const DEFAULT_SUBMIT_THRESHOLD: u64 = 64 * 1024 * 1024;
-
-    /// Amount of staging data, in bytes, that can be recorded before the recording batch
-    /// submits it immediately instead of waiting for [`async_transfer_submission_system`].
-    pub fn submit_threshold(&self) -> u64 {
-        self.0.submit_threshold
-    }
-
-    /// Begins a new async transfer batch.
-    ///
-    /// Returns a guard for recording uploads, such as
-    /// [`update_image`](AsyncTransferGuard::update_image).
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let mut batch = transfer.batch().await?;
-    /// batch
-    ///     .update_image(
-    ///         &mut image,
-    ///         async |staging| {
-    ///             // Fill `staging` with the image's contents.
-    ///             Ok::<(), vk::Result>(())
-    ///         },
-    ///         &mut allocator,
-    ///         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-    ///     )
-    ///     .await?;
-    /// // Waits until the upload has completed on the GPU.
-    /// batch.submit().await?;
-    /// ```
-    pub async fn batch(&self) -> VkResult<AsyncTransferGuard<'_>> {
-        Ok(AsyncTransferGuard {
-            inner: &self.0,
-            pending: None,
+        Ok(ImageUpload {
+            image: Some(image),
+            timestamp,
         })
     }
 }

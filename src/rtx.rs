@@ -51,6 +51,7 @@ use crate::{
     Allocator, Device, HasDevice,
     buffer::{Buffer, BufferLike},
     command::CommandEncoder,
+    command::GPURef,
     debug::DebugObject,
     utils::AsVkHandle,
 };
@@ -705,13 +706,14 @@ impl<'a> CommandEncoder<'a> {
     /// - `raygen_shader`: Index of the ray generation shader to invoke
     /// - `buffer`: GPU buffer containing the SBT data
     /// - `size`: Dispatch dimensions (width, height, depth)
-    pub fn trace_rays(
+    pub fn trace_rays<B: BufferLike>(
         &mut self,
         shader_binding_table: &ShaderBindingTable,
         raygen_shader: u32,
-        buffer: &'a impl BufferLike,
+        buffer: impl Into<GPURef<'a, B>>,
         size: UVec3,
     ) {
+        let buffer = buffer.into();
         let [raygen, miss, hitgroup, callable] =
             Self::sbt_regions(shader_binding_table, raygen_shader, buffer);
         unsafe {
@@ -742,14 +744,16 @@ impl<'a> CommandEncoder<'a> {
     ///   `height`, `depth` as three `u32`) at `args_offset` bytes. The buffer
     ///   needs [`vk::BufferUsageFlags::INDIRECT_BUFFER`] and
     ///   [`vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS`].
-    pub fn trace_rays_indirect(
+    pub fn trace_rays_indirect<B: BufferLike, A: BufferLike>(
         &mut self,
         shader_binding_table: &ShaderBindingTable,
         raygen_shader: u32,
-        buffer: &'a impl BufferLike,
-        args: &'a impl BufferLike,
+        buffer: impl Into<GPURef<'a, B>>,
+        args: impl Into<GPURef<'a, A>>,
         args_offset: vk::DeviceSize,
     ) {
+        let buffer = buffer.into();
+        let args = args.into();
         let [raygen, miss, hitgroup, callable] =
             Self::sbt_regions(shader_binding_table, raygen_shader, buffer);
         unsafe {
@@ -771,7 +775,7 @@ impl<'a> CommandEncoder<'a> {
     fn sbt_regions(
         shader_binding_table: &ShaderBindingTable,
         raygen_shader: u32,
-        buffer: &impl BufferLike,
+        buffer: GPURef<'_, impl BufferLike>,
     ) -> [vk::StridedDeviceAddressRegionKHR; 4] {
         let raygen_stride = shader_binding_table
             .layout
