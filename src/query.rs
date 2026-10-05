@@ -45,8 +45,8 @@ impl<'a> GPURef<'a, QueryPool> {
     pub fn len(&self) -> u32 {
         unsafe { self.unwrap().len } 
     }
-    pub fn ty(&self) -> u32 {
-        unsafe { self.unwrap().len } 
+    pub fn ty(&self) -> vk::QueryType {
+        unsafe { self.unwrap().ty }
     }
 }
 impl<'a> GPURefMut<'a, QueryPool> {
@@ -108,9 +108,8 @@ impl QueryPool {
 
     /// Resets queries in `range` from the host.
     ///
-    /// Requires Vulkan 1.2 or `VK_EXT_host_query_reset`. The range must not be
-    /// in use by any submitted command buffer.
-    pub fn host_reset(&self, range: Range<u32>) {
+    /// Requires Vulkan 1.2 or `VK_EXT_host_query_reset`.
+    pub fn host_reset(&mut self, range: Range<u32>) {
         assert!(range.end <= self.len, "query range out of bounds");
         unsafe {
             self.device

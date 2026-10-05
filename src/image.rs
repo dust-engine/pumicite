@@ -17,7 +17,19 @@ use vk_mem::Alloc;
 /// This trait abstracts over different image implementations, providing access
 /// to fundamental image properties needed for operations like view creation
 /// and data transfers.
-pub trait ImageLike: AsVkHandle<Handle = vk::Image> + Send + Sync + 'static {
+///
+/// # Safety
+///
+/// Command recording relies on implementations to name only an image they own:
+///
+/// - The image returned by `vk_handle()` must be owned by this value alone. No value that
+///   isn't part of this one (the way the image inside a [`FullImageView`] is) may expose it
+///   while this one is alive. Otherwise a write token for one value would let the GPU write,
+///   or change the layout of, an image another value is using.
+/// - The image must stay valid until this value is dropped.
+/// - The other methods must describe that image accurately: barriers and copies are recorded
+///   from them.
+pub unsafe trait ImageLike: AsVkHandle<Handle = vk::Image> + Send + Sync + 'static {
     /// Returns the image aspect flags based on the image format.
     fn aspects(&self) -> vk::ImageAspectFlags;
 
@@ -116,7 +128,20 @@ impl<T: ImageLike> crate::sync::GPUMutex<T> {
 ///
 /// Image views define how an image is accessed in shaders, including the
 /// view type, mip levels, and array layers visible through the view.
-pub trait ImageViewLike: AsVkHandle<Handle = vk::ImageView> + Send + Sync {
+///
+/// # Safety
+///
+/// A write token for a view, such as a render pass attachment, lets the GPU write the
+/// image behind it. So:
+///
+/// - The image must be owned, in the sense of [`ImageLike`], by this value, or by the
+///   value this view is part of. It must be impossible to obtain the view other than
+///   through that owner, so that a token for the view can only come from a token for the
+///   owner. For example, the views inside a [`FullImageView`] aren't `Clone` and have no
+///   public constructor.
+/// - The view and its image must stay valid until that owner is dropped.
+/// - The other methods must describe the view accurately.
+pub unsafe trait ImageViewLike: AsVkHandle<Handle = vk::ImageView> + Send + Sync {
     /// Returns the image view type (1D, 2D, 3D, Cube, etc.).
     fn ty(&self) -> vk::ImageViewType;
 
@@ -250,7 +275,10 @@ impl Image {
         self.allocator.get_allocation_info2(&self.allocation)
     }
 }
-impl ImageLike for Image {
+// Safety: an `Image` exclusively owns its `VkImage` and allocation, both created by its
+// constructors and destroyed on drop. `Image` isn't `Clone`, and the metadata comes from the
+// create info.
+unsafe impl ImageLike for Image {
     fn extent(&self) -> UVec3 {
         self.extent
     }
@@ -384,7 +412,10 @@ macro_rules! image_view_wrapper {
                 self.image.vk_handle()
             }
         }
-        impl<T: ImageLike + HasDevice> ImageLike for $name<T> {
+        // Safety: the wrapper owns `image`, which uniquely owns its image since `T: ImageLike`.
+        // It only lends it out through `Deref`, which can't produce a token, and describes it
+        // by forwarding to it.
+        unsafe impl<T: ImageLike + HasDevice> ImageLike for $name<T> {
             fn aspects(&self) -> vk::ImageAspectFlags {
                 self.image.aspects()
             }
@@ -539,7 +570,9 @@ impl<T: ImageLike + HasDevice> AsVkHandle for MipImageViews<T> {
         self.image.vk_handle()
     }
 }
-impl<T: ImageLike + HasDevice> ImageLike for MipImageViews<T> {
+// Safety: as for the view wrappers. `MipImageViews` owns `image`, lends it out only through
+// `Deref`, and forwards to it.
+unsafe impl<T: ImageLike + HasDevice> ImageLike for MipImageViews<T> {
     fn aspects(&self) -> vk::ImageAspectFlags {
         self.image.aspects()
     }
@@ -587,7 +620,10 @@ impl AsVkHandle for ImageViewItem {
         self.view
     }
 }
-impl ImageViewLike for ImageViewItem {
+// Safety: `ImageViewItem`s are only created inside the view wrappers and `MipImageViews`, which
+// own the image and destroy the view on drop. They aren't `Clone` and have no public
+// constructor, so they're only reachable through their owner.
+unsafe impl ImageViewLike for ImageViewItem {
     fn ty(&self) -> vk::ImageViewType {
         self.ty
     }

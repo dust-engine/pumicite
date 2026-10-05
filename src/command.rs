@@ -155,16 +155,41 @@ impl<T: ?Sized> Clone for GPURef<'_, T> {
 impl<T: ?Sized> Copy for GPURef<'_, T> {}
 
 impl<'a, T: ?Sized> GPURef<'a, T> {
-    // Safety: The caller must ensure not to modify the underlying resource on GPU timeline.
+    /// Returns the underlying reference.
+    ///
+    /// # Safety
+    ///
+    /// The GPU may be writing `T`'s memory while this token exists: for an earlier command
+    /// buffer that still holds the [`GPUMutex`] this token came from, or for this one, if it
+    /// was downgraded from a [`GPURefMut`]. Use the reference only for handles and metadata,
+    /// never to access memory the GPU can access, such as a buffer's mapped bytes through
+    /// [`BufferLike::as_slice`].
     pub unsafe fn unwrap(&self) -> &T {
         self.0
     }
+    /// Creates a token for `value`, with any lifetime.
+    ///
+    /// # Safety
+    ///
+    /// The token must uphold what tokens from [`CommandEncoder::retain`] and
+    /// [`CommandEncoder::lock`] guarantee:
+    ///
+    /// - `value` stays valid, at its address, for as long as the token is used. It stays
+    ///   alive until the GPU has finished every command buffer recorded with the token.
+    /// - Nothing writes `value`'s memory while those command buffers may read it. Command
+    ///   buffers that write it must be ordered before or after them, and the host must not
+    ///   write it.
     pub unsafe fn new_unchecked(value: &T) -> Self {
         unsafe { Self(&*(value as *const T)) }
     }
 }
 
 /// A mutable reference borrowed to the GPU for duration `'a`.
+///
+/// Unlike `&mut T`, [`GPURefMut`] is `Copy`. The command buffer is the only GPU writer, but it may use the
+/// token in several commands, which barriers order. It comes from [`CommandEncoder::retain`]
+/// (an owned value) or [`CommandEncoder::lock`] (a [`GPUMutex`]), so nothing else accesses `T`
+/// while the command buffer may execute.
 pub struct GPURefMut<'a, T: ?Sized>(&'a T);
 impl<T: ?Sized> Clone for GPURefMut<'_, T> {
     fn clone(&self) -> Self {
@@ -178,16 +203,35 @@ impl<'a, T: ?Sized> GPURefMut<'a, T> {
     pub fn readonly(self) -> GPURef<'a, T> {
         GPURef(self.0)
     }
-    // Safety: The caller must ensure not to modify the underlying resource on GPU timeline.
+    /// Returns the underlying reference.
+    ///
+    /// # Safety
+    ///
+    /// The GPU may be writing `T`'s memory while this token exists: for an earlier command
+    /// buffer that still holds the [`GPUMutex`] this token came from, or for this one. Use the
+    /// reference only for handles and metadata, never to access memory the GPU can access,
+    /// such as a buffer's mapped bytes through [`BufferLike::as_slice`].
     pub unsafe fn unwrap(&self) -> &T {
         self.0
     }
+    /// Creates a token for `value`, with any lifetime.
+    ///
+    /// # Safety
+    ///
+    /// The token must uphold what tokens from [`CommandEncoder::retain`] and
+    /// [`CommandEncoder::lock`] guarantee:
+    ///
+    /// - `value` stays valid, at its address, for as long as the token is used. It stays
+    ///   alive until the GPU has finished every command buffer recorded with the token.
+    /// - Nothing else accesses `value`'s memory while those command buffers may write it.
+    ///   Command buffers that access it must be ordered before or after them, and the host
+    ///   must not access it.
     pub unsafe fn new_unchecked(value: &T) -> Self {
         unsafe { Self(&*(value as *const T)) }
     }
 }
 
-/// By default, GPURef<T> does not allow the host to access any fields of the underlying resource,
+/// By default, `GPURef<T>` does not allow the host to access any fields of the underlying resource,
 /// being pessimistic that the GPU will access everything about the property.
 ///
 /// Types can implement [`NoHostMapping`] to indicate that the GPU has exclusive access to the resource

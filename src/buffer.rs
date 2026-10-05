@@ -49,8 +49,14 @@ use crate::{
 /// Common interface for Vulkan buffer types.
 ///
 /// This trait abstracts over different buffer implementations ([`Buffer`],
-/// [`RingBufferSuballocation`], [`ManagedBuffer`]) providing a unified interface
+/// [`RingBufferSuballocation`]) providing a unified interface
 /// for accessing buffer properties and memory-mapped data.
+///
+/// A value of a `BufferLike` type owns its range of memory the way a `Vec<u8>` owns its
+/// bytes: reading the bytes needs `&self`, and writing them needs exclusive access, whether
+/// the writer is the host (`&mut self`) or the GPU (a [`GPURefMut`], which
+/// [`CommandEncoder::retain`] and [`CommandEncoder::lock`] hand out only for values they
+/// exclusively control).
 ///
 /// # Memory Access
 ///
@@ -58,16 +64,34 @@ use crate::{
 /// Use [`as_slice`](BufferLike::as_slice) and [`as_slice_mut`](BufferLike::as_slice_mut)
 /// to access mapped memory when available.
 ///
-/// Mapped memory isn't flushed or invalidated for you. Memory from [`Buffer::new_host`] is
-/// always host-coherent; other host-visible allocations may not be.
-pub trait BufferLike: AsVkHandle<Handle = vk::Buffer> + Send + Sync + 'static {
+/// Mapped memory is never flushed or invalidated: pumicite assumes host-visible memory is
+/// also host-coherent.
+///
+/// # Safety
+///
+/// Command recording relies on implementations to name only memory they own:
+///
+/// - The range [`offset()`](Self::offset)`..offset() + `[`size()`](Self::size) of the
+///   buffer returned by `vk_handle()` must be a valid range of that buffer, owned by this
+///   value alone. No value that isn't part of this one may expose any of that memory, through
+///   `BufferLike` or otherwise, while this one is alive. Otherwise a write token for one
+///   value would let the GPU write memory another value is reading.
+/// - The buffer and its memory must stay valid until this value is dropped.
+/// - [`as_slice`](Self::as_slice) and [`as_slice_mut`](Self::as_slice_mut) must return
+///   exactly the mapped bytes of that range, or `None`.
+/// - `vk_handle()`, `offset()`, `size()` and `device_address()` must not access the
+///   buffer's memory. They are called through tokens while the GPU may be writing it.
+pub unsafe trait BufferLike:
+    AsVkHandle<Handle = vk::Buffer> + Send + Sync + 'static
+{
     /// Returns the offset within the underlying buffer.
     ///
     /// For standalone buffers this is always 0. For suballocations (like
     /// [`RingBufferSuballocation`]), this returns the offset within the parent buffer.
     fn offset(&self) -> vk::DeviceSize;
 
-    /// Returns the buffer device address for use in shaders.
+    /// Returns the device address of the first byte of this buffer's range, for use in
+    /// shaders. It already includes [`offset()`](Self::offset).
     ///
     /// Returns 0 if the buffer was not created with `SHADER_DEVICE_ADDRESS` usage.
     fn device_address(&self) -> vk::DeviceAddress;
@@ -150,7 +174,11 @@ impl crate::utils::AsVkHandle for Buffer {
     }
     type Handle = vk::Buffer;
 }
-impl BufferLike for Buffer {
+// Safety: a `Buffer` exclusively owns its `VkBuffer` and allocation. They're created by the
+// constructors here, or handed over through `Buffer::from_raw`, whose caller guarantees it.
+// `Buffer` isn't `Clone`, and it destroys both on drop. The accessors only read fields and
+// the allocation's mapping.
+unsafe impl BufferLike for Buffer {
     fn offset(&self) -> vk::DeviceSize {
         0
     }
@@ -173,14 +201,15 @@ impl BufferLike for Buffer {
             .memory_properties
             .contains(vk::MemoryPropertyFlags::HOST_VISIBLE)
         {
-            Some(unsafe {
-                std::slice::from_raw_parts(
-                    self.allocator
-                        .get_allocation_info(&self.allocation)
-                        .mapped_data as *const u8,
-                    self.size as usize,
-                )
-            })
+            let mapped_data = self
+                .allocator
+                .get_allocation_info(&self.allocation)
+                .mapped_data as *const u8;
+            if mapped_data.is_null() {
+                None
+            } else {
+                Some(unsafe { std::slice::from_raw_parts(mapped_data, self.size as usize) })
+            }
         } else {
             None
         }
@@ -222,7 +251,16 @@ impl Buffer {
     pub fn allocator(&self) -> &Allocator {
         &self.allocator
     }
-    pub fn from_raw(
+    /// Wraps an existing buffer and its allocation.
+    ///
+    /// # Safety
+    ///
+    /// - `buffer` must be a valid buffer created from `allocator`'s device with `usage`, at
+    ///   least `size` bytes large, and bound to `allocation`, which must come from `allocator`.
+    /// - Ownership of both moves to the returned `Buffer`, which destroys them on drop.
+    ///   Nothing else may use, wrap or destroy them afterwards, so that the `Buffer` is the
+    ///   sole owner [`BufferLike`] requires.
+    pub unsafe fn from_raw(
         allocator: Allocator,
         buffer: vk::Buffer,
         allocation: vk_mem::Allocation,
@@ -695,7 +733,12 @@ impl RingBufferSuballocation {
         SharedRingBufferSuballocation(self)
     }
 }
-impl BufferLike for RingBufferSuballocation {
+// Safety: `RingBuffer::allocate_buffer` hands out non-overlapping ranges, only moving its head
+// forward within a chunk. It reuses a chunk only once the ring holds the chunk's sole `Arc`,
+// i.e. no suballocation from it is alive. Suballocations aren't `Clone`, and
+// `SharedRingBufferSuballocation`, which is, doesn't implement `BufferLike`. `ptr` points at
+// this range's mapped bytes, and the `Arc` keeps the chunk alive.
+unsafe impl BufferLike for RingBufferSuballocation {
     fn offset(&self) -> vk::DeviceSize {
         self.offset
     }
@@ -724,8 +767,9 @@ impl BufferLike for RingBufferSuballocation {
 /// A shared, read-only [`RingBufferSuballocation`]. Behaves like [`Arc<RingBufferSuballocation>`]
 ///
 /// Created by [`RingBufferSuballocation::shared`]. Cloning only bumps the parent
-/// chunk's reference count. Since clones alias the same memory,
-/// [`BufferLike::as_slice_mut`] always returns `None`.
+/// chunk's reference count. Since clones alias the same memory, it doesn't implement
+/// [`BufferLike`]: its contract requires exclusive ownership. To use it on the GPU, retain a
+/// clone and call `deref_inner` on the token, which only yields a read-only [`GPURef`].
 pub struct SharedRingBufferSuballocation(RingBufferSuballocation);
 impl Clone for SharedRingBufferSuballocation {
     fn clone(&self) -> Self {
@@ -880,33 +924,9 @@ impl AsVkHandle for ManagedBuffer {
         }
     }
 }
-impl BufferLike for ManagedBuffer {
-    fn offset(&self) -> vk::DeviceSize {
-        0
-    }
-
-    fn device_address(&self) -> vk::DeviceAddress {
-        match self {
-            ManagedBuffer::Transfer { device, .. } => device.device_address(),
-            ManagedBuffer::Direct { buffer } => buffer.device_address(),
-        }
-    }
-
-    fn size(&self) -> vk::DeviceSize {
-        match self {
-            ManagedBuffer::Transfer { device, .. } => device.size,
-            ManagedBuffer::Direct { buffer } => buffer.size,
-        }
-    }
-
-    fn as_slice(&self) -> Option<&[u8]> {
-        Some(ManagedBuffer::as_slice(self))
-    }
-
-    fn as_slice_mut(&mut self) -> Option<&mut [u8]> {
-        Some(ManagedBuffer::as_slice_mut(self))
-    }
-}
+// `ManagedBuffer` doesn't implement `BufferLike`. Its variant fields are public `Arc<Buffer>`s,
+// so several `ManagedBuffer`s can share one buffer, which breaks `BufferLike`'s exclusive
+// ownership contract.
 
 /// Trait for types that can allocate staging buffers.
 ///

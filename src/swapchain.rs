@@ -541,7 +541,10 @@ impl AsVkHandle for SwapchainImageInner {
         self.image
     }
 }
-impl ImageLike for SwapchainImageInner {
+// Safety: there's one `SwapchainImageInner` per swapchain image. `Swapchain::acquire` moves it
+// out of `images` and `Swapchain::present` moves it back, so only one value names each image.
+// It isn't `Clone`, and it keeps the swapchain alive through `swapchain`.
+unsafe impl ImageLike for SwapchainImageInner {
     fn aspects(&self) -> vk::ImageAspectFlags {
         vk::ImageAspectFlags::COLOR
     }
@@ -574,7 +577,10 @@ impl AsVkHandle for SwapchainImageView {
         self.0
     }
 }
-impl ImageViewLike for SwapchainImageView {
+// Safety: `SwapchainImageView`s only exist inside the `SwapchainImageInner` that owns their
+// image, which destroys them on drop. Their fields are private and they aren't `Clone`, so
+// they're only reachable through it.
+unsafe impl ImageViewLike for SwapchainImageView {
     fn ty(&self) -> vk::ImageViewType {
         vk::ImageViewType::TYPE_2D
     }

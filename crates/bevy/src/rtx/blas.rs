@@ -486,7 +486,7 @@ fn build_blas_system<T: BLASBuilder>(
             );
         }
         if !accel_structs_to_query_compaction_sizes.is_empty() {
-            let pool = QueryPool::new(
+            let mut pool = QueryPool::new(
                 device.clone(),
                 vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
                 accel_structs_to_query_compaction_sizes.len() as u32,
