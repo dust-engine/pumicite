@@ -64,7 +64,7 @@ impl AssetLoader for PngLoader {
                     _ => return Err(ImageLoadingError::UnknownTextureColorType),
                 }
             };
-            let mut texture = Image::new_private(
+            let mut texture = Image::new_device(
                 self.allocator.clone(),
                 &vk::ImageCreateInfo {
                     image_type: vk::ImageType::TYPE_2D,

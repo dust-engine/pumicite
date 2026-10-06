@@ -28,7 +28,7 @@ pub fn main() {
             .unwrap();
         println!("{:?}", a);
     };
-    let image = Image::new_private(
+    let image = Image::new_device(
         allocator,
         &vk::ImageCreateInfo {
             image_type: vk::ImageType::TYPE_2D,

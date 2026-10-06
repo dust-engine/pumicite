@@ -45,10 +45,10 @@
 //! Pumicite uses [`Allocator`] VMA for efficient GPU memory management. To create GPU resources,
 //! pass in the allocator as the first argument:
 //!
-//! - [`Buffer::new_private`](buffer::Buffer::new_private) - GPU-only device local buffers
+//! - [`Buffer::new_device`](buffer::Buffer::new_device) - GPU-only device local buffers
 //! - [`Buffer::new_upload`](buffer::Buffer::new_upload) - CPU-writonly device local buffers
 //! - [`Buffer::new_dynamic`](buffer::Buffer::new_dynamic) - Frequently updated data
-//! - [`Image::new_private`](image::Image::new_private) - GPU-only device local images
+//! - [`Image::new_device`](image::Image::new_device) - GPU-only device local images
 //! - [`Image::new_upload`](image::Image::new_upload) - CPU-writonly device local images
 //!
 //! ### Command Recording

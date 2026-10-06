@@ -448,7 +448,7 @@ fn build_blas_system<T: BLASBuilder>(
         }
         drop(geometry_infos_primitive_counts);
 
-        let scratch_buffer = Buffer::new_private(
+        let scratch_buffer = Buffer::new_device(
             allocator.clone(),
             total_scratch_size,
             scratch_offset_alignment as u64,

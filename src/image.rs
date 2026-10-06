@@ -188,7 +188,7 @@ impl Image {
     /// - AMD APU: [DEVICE_LOCAL](`vk::MemoryPropertyFlags::DEVICE_LOCAL`)
     /// - Intel iGPU:  [DEVICE_LOCAL](`vk::MemoryPropertyFlags::DEVICE_LOCAL`)
     /// - Apple: [DEVICE_LOCAL](`vk::MemoryPropertyFlags::DEVICE_LOCAL`)
-    pub fn new_private(allocator: Allocator, info: &vk::ImageCreateInfo) -> VkResult<Self> {
+    pub fn new_device(allocator: Allocator, info: &vk::ImageCreateInfo) -> VkResult<Self> {
         let memory_type = allocator
             .device()
             .physical_device()

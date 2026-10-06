@@ -58,7 +58,7 @@ fn setup(
     let allocator = allocator.clone();
     let heap = heap.resource_heap().clone();
     let image = asset_server.add_async(async move {
-        let image = Image::new_private(
+        let image = Image::new_device(
             allocator.clone(),
             &vk::ImageCreateInfo {
                 image_type: vk::ImageType::TYPE_2D,

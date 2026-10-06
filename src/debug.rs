@@ -286,7 +286,7 @@ pub trait DebugObject: crate::HasDevice + crate::utils::AsVkHandle {
     /// let allocator = Allocator::new(device.clone()).unwrap();
     /// #
     /// use pumicite::debug::DebugObject;
-    /// let mut buffer = Buffer::new_private(allocator, 128, 4, vk::BufferUsageFlags::VERTEX_BUFFER).unwrap();
+    /// let mut buffer = Buffer::new_device(allocator, 128, 4, vk::BufferUsageFlags::VERTEX_BUFFER).unwrap();
     /// buffer.set_name(c"MyVertexBuffer");
     /// ```
     fn set_name(&mut self, cstr: &CStr) {
@@ -317,7 +317,7 @@ pub trait DebugObject: crate::HasDevice + crate::utils::AsVkHandle {
     /// #
     ///
     /// use pumicite::debug::DebugObject;
-    /// let buffer = Buffer::new_private(allocator, 128, 4, vk::BufferUsageFlags::VERTEX_BUFFER)
+    /// let buffer = Buffer::new_device(allocator, 128, 4, vk::BufferUsageFlags::VERTEX_BUFFER)
     ///     .unwrap()
     ///     .with_name(c"MyVertexBuffer");
     /// ```

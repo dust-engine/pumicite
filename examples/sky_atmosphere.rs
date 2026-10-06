@@ -349,7 +349,7 @@ fn create_lut_image(
     height: u32,
     format: vk::Format,
 ) -> LutImage {
-    let image = Image::new_private(
+    let image = Image::new_device(
         allocator.clone(),
         &vk::ImageCreateInfo {
             image_type: vk::ImageType::TYPE_2D,

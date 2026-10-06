@@ -5,7 +5,7 @@
 //!
 //! # Choosing an Allocation Strategy
 //!
-//! - **[`Buffer::new_private`]**: GPU-exclusive memory. Use for render targets, scratch
+//! - **[`Buffer::new_device`]**: GPU-exclusive memory. Use for render targets, scratch
 //!   buffers, and any data generated entirely on the GPU.
 //!
 //! - **[`Buffer::new_upload`]**: Device-local memory that may be directly writable.
@@ -300,7 +300,7 @@ impl Buffer {
     /// Use for render targets, scratch buffers, and any data generated entirely on the GPU.
     ///
     /// Uses the pre-calculated `private` memory type from [`MemoryTypeMap`](crate::physical_device::MemoryTypeMap).
-    pub fn new_private(
+    pub fn new_device(
         allocator: Allocator,
         size: vk::DeviceSize,
         alignment: vk::DeviceSize,
@@ -858,7 +858,7 @@ impl ManagedBuffer {
                 alignment,
                 vk::BufferUsageFlags::TRANSFER_SRC,
             )?;
-            let device = Buffer::new_private(
+            let device = Buffer::new_device(
                 allocator,
                 size,
                 alignment,

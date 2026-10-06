@@ -330,7 +330,7 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
                 sharing_mode: vk::SharingMode::CONCURRENT,
                 ..Default::default()
             };
-            let image = Image::new_private(allocator.clone(), &create_info)
+            let image = Image::new_device(allocator.clone(), &create_info)
                 .unwrap()
                 .with_name(c"EGUI asset image")
                 .create_full_view()

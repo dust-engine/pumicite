@@ -939,7 +939,7 @@ impl AccelStruct {
         ty: vk::AccelerationStructureTypeKHR,
         build_flags: vk::BuildAccelerationStructureFlagsKHR,
     ) -> VkResult<Self> {
-        let mut buffer = Buffer::new_private(
+        let mut buffer = Buffer::new_device(
             allocator,
             size,
             1,

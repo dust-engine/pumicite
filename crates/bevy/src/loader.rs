@@ -158,7 +158,7 @@ mod img_loader {
                     (ColorType::Rgba32F, _) => vk::Format::R32G32B32A32_SFLOAT,
                     _ => return Err(ImageLoadingError::UnknownTextureColorType),
                 };
-                let mut texture = Image::new_private(
+                let mut texture = Image::new_device(
                     self.allocator.clone(),
                     &vk::ImageCreateInfo {
                         image_type: vk::ImageType::TYPE_2D,
@@ -416,7 +416,7 @@ impl AssetLoader for KtxLoader {
             if header.face_count == 6 {
                 image_create_info.array_layers = header.layer_count * 6;
             }
-            let device_image = Image::new_private(self.allocator.clone(), &image_create_info)?;
+            let device_image = Image::new_device(self.allocator.clone(), &image_create_info)?;
             let _device_image = GPUMutex::new(device_image);
 
             let level_indexes_size = ktx2::LevelIndex::LENGTH * header.level_count as usize;

@@ -18,7 +18,7 @@
 //! # use pumicite::{Device, Allocator, buffer::Buffer, ash::vk};
 //! # let (device, queue) = Device::create_system_default().unwrap();
 //! let allocator = Allocator::new(device.clone()).unwrap();
-//! let buffer = Buffer::new_private(allocator, 1024, 4, vk::BufferUsageFlags::STORAGE_BUFFER).unwrap();
+//! let buffer = Buffer::new_device(allocator, 1024, 4, vk::BufferUsageFlags::STORAGE_BUFFER).unwrap();
 //! ```
 
 use std::{ops::Deref, sync::Arc};

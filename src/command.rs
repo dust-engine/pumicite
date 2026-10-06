@@ -485,7 +485,7 @@ impl<'a> CommandEncoder<'a> {
     /// # timeline.schedule(&mut cmd);
     /// # pool.begin(&mut cmd).unwrap();
     /// # use std::sync::Arc;
-    /// let data = Arc::new(Buffer::new_private(allocator, 128, 4, vk::BufferUsageFlags::STORAGE_BUFFER).unwrap());
+    /// let data = Arc::new(Buffer::new_device(allocator, 128, 4, vk::BufferUsageFlags::STORAGE_BUFFER).unwrap());
     /// pool.record(&mut cmd, |encoder| {
     ///     let retained = encoder.retain(data.clone());
     ///     // retained is guaranteed to live until GPU execution completes
