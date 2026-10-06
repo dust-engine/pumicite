@@ -1039,12 +1039,16 @@ mod tests {
 
         // Already reached: dropped immediately.
         let dropped = Arc::new(AtomicBool::new(false));
-        semaphore.timestamp(0).drop_after(SetOnDrop(dropped.clone()));
+        semaphore
+            .timestamp(0)
+            .drop_after(SetOnDrop(dropped.clone()));
         assert!(dropped.load(Ordering::Acquire));
 
         // Not reached, and nothing will signal it until we do: must not block or drop.
         let dropped = Arc::new(AtomicBool::new(false));
-        semaphore.timestamp(1).drop_after(SetOnDrop(dropped.clone()));
+        semaphore
+            .timestamp(1)
+            .drop_after(SetOnDrop(dropped.clone()));
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(!dropped.load(Ordering::Acquire));
 

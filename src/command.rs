@@ -397,7 +397,7 @@ impl CommandEncoder<'_> {
     }
 
     /// Returns a mutable reference to the underlying command buffer.
-    /// 
+    ///
     /// This method is kept private so that external code cannot mem::swap the underlying command buffer.
     ///
     /// # Panics

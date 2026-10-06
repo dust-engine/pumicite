@@ -43,6 +43,7 @@ use vk_mem::Alloc;
 use crate::{
     Allocator, Device, HasDevice,
     command::{CommandEncoder, GPURef, GPURefMut, NoHostMapping},
+    tracking::Access,
     utils::AsVkHandle,
 };
 
@@ -321,7 +322,7 @@ impl Buffer {
                 },
                 &vk_mem::AllocationCreateInfo {
                     memory_type_bits: 1 << memory_type,
-                    usage: vk_mem::MemoryUsage::AutoPreferDevice,
+                    usage: vk_mem::MemoryUsage::Unknown,
                     flags: vk_mem::AllocationCreateFlags::empty(),
                     ..Default::default()
                 },
@@ -357,9 +358,8 @@ impl Buffer {
                 },
                 &vk_mem::AllocationCreateInfo {
                     memory_type_bits: 1 << memory_type,
-                    usage: vk_mem::MemoryUsage::AutoPreferHost,
-                    flags: vk_mem::AllocationCreateFlags::MAPPED
-                        | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+                    usage: vk_mem::MemoryUsage::Unknown,
+                    flags: vk_mem::AllocationCreateFlags::MAPPED,
                     ..Default::default()
                 },
                 alignment,
@@ -403,10 +403,8 @@ impl Buffer {
                 },
                 &vk_mem::AllocationCreateInfo {
                     memory_type_bits: 1 << memory_type_map.upload,
-                    usage: vk_mem::MemoryUsage::AutoPreferDevice,
-                    flags: vk_mem::AllocationCreateFlags::MAPPED
-                        | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE
-                        | vk_mem::AllocationCreateFlags::HOST_ACCESS_ALLOW_TRANSFER_INSTEAD,
+                    usage: vk_mem::MemoryUsage::Unknown,
+                    flags: vk_mem::AllocationCreateFlags::MAPPED,
                     ..Default::default()
                 },
                 alignment,
@@ -442,9 +440,8 @@ impl Buffer {
                 },
                 &vk_mem::AllocationCreateInfo {
                     memory_type_bits: 1 << memory_type,
-                    usage: vk_mem::MemoryUsage::AutoPreferHost,
-                    flags: vk_mem::AllocationCreateFlags::MAPPED
-                        | vk_mem::AllocationCreateFlags::HOST_ACCESS_RANDOM,
+                    usage: vk_mem::MemoryUsage::Unknown,
+                    flags: vk_mem::AllocationCreateFlags::MAPPED,
                     ..Default::default()
                 },
                 alignment,
@@ -807,30 +804,40 @@ impl<'a> GPURefMut<'a, SharedRingBufferSuballocation> {
     }
 }
 /// A buffer that abstracts over the differences between integrated and discrete GPUs.
-/// On integrated GPUs, memory is unified so a single buffer
-/// serves both CPU and GPU access. On discrete GPUs, this uses a host buffer for CPU
-/// writes and a device buffer for GPU access, with explicit transfers between them.
+/// On integrated GPUs, and on GPUs with memory that is both device-local and host-cached,
+/// a single buffer serves both CPU and GPU access. On other discrete GPUs, this uses a host
+/// buffer for CPU access and a device buffer for GPU access, with explicit transfers
+/// between them.
 ///
-/// Can be treated as DEVICE_LOCAL, HOST_VISBLE, HOST_CACHED, but non-coherent memory.
+/// Can be treated as DEVICE_LOCAL, HOST_VISIBLE, HOST_CACHED, but non-coherent memory.
 ///
 /// # Usage
 ///
+/// The host accesses the buffer through `&mut ManagedBuffer`, and the GPU through a
+/// [`GPURefMut`], usually by keeping the buffer in a [`GPUMutex`](crate::sync::GPUMutex):
+///
 /// 1. Write data via [`as_slice_mut`](ManagedBuffer::as_slice_mut)
-/// 2. Call [`flush`](ManagedBuffer::flush) with a command encoder to transfer to the GPU
-/// 3. GPU reads from the buffer's device address
+/// 2. Lock the buffer on a command encoder, transition it to [`Access::COPY_WRITE`] and call
+///    [`flush`](GPURefMut::<ManagedBuffer>::flush) to make the writes visible to the GPU
+/// 3. GPU reads from the buffer returned by
+///    [`device_buffer`](GPURefMut::<ManagedBuffer>::device_buffer)
 ///
-/// # Variants
+/// To read back data written by the GPU, transition the buffer to
+/// `Access::COPY_READ | Access::HOST_READ`, call
+/// [`invalidate`](GPURefMut::<ManagedBuffer>::invalidate), wait for the command buffer to
+/// complete, then read via [`as_slice`](ManagedBuffer::as_slice).
 ///
-/// - `Transfer`: Separate host and device buffers (discrete GPUs)
-/// - `Direct`: Single unified buffer (integrated GPUs)
-pub enum ManagedBuffer {
-    Transfer {
-        host: Arc<Buffer>,
-        device: Arc<Buffer>,
-    },
-    Direct {
-        buffer: Arc<Buffer>,
-    },
+/// The caller tracks the state of [`device_buffer`](GPURefMut::<ManagedBuffer>::device_buffer)
+/// with a [`ResourceState`](crate::tracking::ResourceState), as for any other buffer.
+/// `flush` and `invalidate` on the same buffer in one command buffer also need
+/// `encoder.memory_barrier(Access::COPY_WRITE, Access::COPY_READ | Access::COPY_WRITE)`
+/// between them, since both may copy through a staging buffer the caller can't track.
+pub struct ManagedBuffer {
+    /// The buffer the GPU accesses. When `staging` is `None`, it's also the host-visible,
+    /// mapped buffer the host accesses.
+    device: Buffer,
+    /// Host-visible copy of `device`, on GPUs where `device` isn't host-visible.
+    staging: Option<Buffer>,
 }
 
 impl ManagedBuffer {
@@ -844,89 +851,165 @@ impl ManagedBuffer {
             .device()
             .physical_device()
             .properties()
-            .device_type
-            == vk::PhysicalDeviceType::INTEGRATED_GPU
+            .memory_type_map()
+            .dynamic_device_local
         {
             let buffer = Buffer::new_dynamic(allocator, size, alignment, usage)?;
-            Ok(Self::Direct {
-                buffer: Arc::new(buffer),
+            Ok(Self {
+                device: buffer,
+                staging: None,
             })
         } else {
-            let host = Buffer::new_dynamic(
-                allocator.clone(),
-                size,
-                alignment,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-            )?;
-            let device = Buffer::new_device(
-                allocator,
-                size,
-                alignment,
-                usage | vk::BufferUsageFlags::TRANSFER_DST,
-            )?;
-            Ok(Self::Transfer {
-                host: Arc::new(host),
-                device: Arc::new(device),
+            let transfer = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST;
+            let staging = Buffer::new_dynamic(allocator.clone(), size, alignment, transfer)?;
+            let device = Buffer::new_device(allocator, size, alignment, usage | transfer)?;
+            Ok(Self {
+                device,
+                staging: Some(staging),
             })
         }
     }
-    pub fn as_slice(&self) -> &[u8] {
-        match self {
-            ManagedBuffer::Transfer { host, .. } => host.as_slice().unwrap(),
-            ManagedBuffer::Direct { buffer } => buffer.as_slice().unwrap(),
-        }
+    /// Returns `true` if the host and the GPU access a single buffer, so
+    /// [`flush`](GPURefMut::<ManagedBuffer>::flush) and
+    /// [`invalidate`](GPURefMut::<ManagedBuffer>::invalidate) record no copies.
+    pub fn is_direct(&self) -> bool {
+        self.staging.is_none()
     }
+    fn host(&self) -> &Buffer {
+        self.staging.as_ref().unwrap_or(&self.device)
+    }
+    fn host_mut(&mut self) -> &mut Buffer {
+        self.staging.as_mut().unwrap_or(&mut self.device)
+    }
+    /// Returns the host's view of the buffer.
+    ///
+    /// GPU writes show up here only after [`invalidate`](GPURefMut::<ManagedBuffer>::invalidate)
+    /// and the completion of the command buffer that recorded it.
+    pub fn as_slice(&self) -> &[u8] {
+        self.host().as_slice().unwrap()
+    }
+    /// Returns the host's view of the buffer.
+    ///
+    /// Writes reach the GPU only after [`flush`](GPURefMut::<ManagedBuffer>::flush).
     pub fn as_slice_mut(&mut self) -> &mut [u8] {
-        match self {
-            ManagedBuffer::Transfer { host, .. } => unsafe {
-                std::slice::from_raw_parts_mut(host.as_ptr() as *mut u8, host.size() as usize)
-            },
-            ManagedBuffer::Direct { buffer } => unsafe {
-                std::slice::from_raw_parts_mut(buffer.as_ptr() as *mut u8, buffer.size() as usize)
-            },
-        }
+        self.host_mut().as_slice_mut().unwrap()
     }
     pub fn as_mut_ptr(&mut self) -> *mut u8 {
-        match self {
-            ManagedBuffer::Transfer { host, .. } => host.as_ptr() as *mut u8,
-            ManagedBuffer::Direct { buffer } => buffer.as_ptr() as *mut u8,
-        }
+        self.host_mut().as_mut_ptr()
     }
     pub fn as_ptr(&self) -> *const u8 {
-        match self {
-            ManagedBuffer::Transfer { host, .. } => host.as_ptr(),
-            ManagedBuffer::Direct { buffer } => buffer.as_ptr(),
-        }
+        self.host().as_ptr()
     }
     pub fn allocator(&self) -> &Allocator {
-        match self {
-            ManagedBuffer::Transfer { host, .. } => host.allocator(),
-            ManagedBuffer::Direct { buffer } => buffer.allocator(),
-        }
+        self.device.allocator()
     }
     pub fn size(&self) -> u64 {
-        match self {
-            ManagedBuffer::Transfer { device, .. } => device.size(),
-            ManagedBuffer::Direct { buffer } => buffer.size(),
-        }
-    }
-    pub fn flush(&self, encoder: &mut CommandEncoder<'_>) {
-        todo!()
+        self.device.size()
     }
 }
 impl AsVkHandle for ManagedBuffer {
     type Handle = vk::Buffer;
 
     fn vk_handle(&self) -> Self::Handle {
-        match self {
-            ManagedBuffer::Transfer { device, .. } => device.vk_handle(),
-            ManagedBuffer::Direct { buffer } => buffer.vk_handle(),
-        }
+        self.device.vk_handle()
     }
 }
-// `ManagedBuffer` doesn't implement `BufferLike`. Its variant fields are public `Arc<Buffer>`s,
-// so several `ManagedBuffer`s can share one buffer, which breaks `BufferLike`'s exclusive
-// ownership contract.
+// `ManagedBuffer` doesn't implement `BufferLike`: its `as_slice` returns the staging copy,
+// not the mapped bytes of the buffer the GPU accesses. Commands use the buffer projected
+// by `device_buffer` instead.
+impl<'a> GPURef<'a, ManagedBuffer> {
+    /// Returns the buffer the GPU reads.
+    pub fn device_buffer(self) -> GPURef<'a, Buffer> {
+        // Safety: `device` is part of the `ManagedBuffer`, so this token guarantees for it
+        // what it guarantees for the whole value.
+        unsafe { GPURef::new_unchecked(&self.unwrap().device) }
+    }
+}
+impl<'a> GPURefMut<'a, ManagedBuffer> {
+    /// Returns the buffer the GPU reads and writes.
+    pub fn device_buffer(self) -> GPURefMut<'a, Buffer> {
+        // Safety: `device` is part of the `ManagedBuffer`, so this token guarantees for it
+        // what it guarantees for the whole value.
+        unsafe { GPURefMut::new_unchecked(&self.unwrap().device) }
+    }
+
+    /// Makes host writes through [`as_slice_mut`](ManagedBuffer::as_slice_mut) visible to
+    /// the GPU commands recorded after this call.
+    ///
+    /// On discrete GPUs, this copies the staging buffer into
+    /// [`device_buffer`](Self::device_buffer). On integrated GPUs, it records nothing: the
+    /// host writes the buffer the GPU reads, and submitting the command buffer makes those
+    /// writes visible.
+    ///
+    /// # Synchronization
+    ///
+    /// The caller synchronizes [`device_buffer`](Self::device_buffer) as for any copy into
+    /// it: call [`use_resource`](CommandEncoder::use_resource) with [`Access::COPY_WRITE`]
+    /// before this, and with the access of the commands that read the buffer after it. The
+    /// barriers may stay pending: this emits them before the copy.
+    ///
+    /// The caller also orders this against [`invalidate`](Self::invalidate) on the same
+    /// buffer in the same command buffer, whose copy writes the staging buffer this copy
+    /// reads. Record this between them:
+    ///
+    /// ```ignore
+    /// encoder.memory_barrier(Access::COPY_WRITE, Access::COPY_READ | Access::COPY_WRITE);
+    /// ```
+    ///
+    /// Command buffers that lock the buffer are already ordered by its
+    /// [`GPUMutex`](crate::sync::GPUMutex).
+    pub fn flush(self, encoder: &mut CommandEncoder<'a>) {
+        // Safety: only used to reach the staging buffer, whose memory isn't accessed.
+        let Some(staging) = (unsafe { &self.unwrap().staging }) else {
+            return;
+        };
+        // Safety: `staging` is part of the `ManagedBuffer`, so this token guarantees for it
+        // what it guarantees for the whole value.
+        let staging: GPURef<'a, Buffer> = unsafe { GPURef::new_unchecked(staging) };
+        encoder.emit_barriers();
+        encoder.copy_buffer(staging, self.device_buffer());
+    }
+
+    /// Makes GPU writes to [`device_buffer`](Self::device_buffer) recorded before this call
+    /// visible to [`as_slice`](ManagedBuffer::as_slice), once this command buffer completes.
+    ///
+    /// On discrete GPUs, this copies [`device_buffer`](Self::device_buffer) into the staging
+    /// buffer. On integrated GPUs, it records nothing: the host reads the buffer the GPU
+    /// writes.
+    ///
+    /// # Synchronization
+    ///
+    /// The caller synchronizes [`device_buffer`](Self::device_buffer): call
+    /// [`use_resource`](CommandEncoder::use_resource) with
+    /// `Access::COPY_READ | Access::HOST_READ` before this, so the writes are visible to the
+    /// copy on discrete GPUs and to the host on integrated GPUs. The barriers may stay
+    /// pending: this emits them before the copy, and recording emits them at the end. This
+    /// makes the copy's writes to the staging buffer visible to the host itself.
+    ///
+    /// The caller also orders this against [`flush`](Self::flush) and other `invalidate`s on
+    /// the same buffer in the same command buffer, whose copies access the staging buffer
+    /// this copy writes. Record this between them:
+    ///
+    /// ```ignore
+    /// encoder.memory_barrier(Access::COPY_WRITE, Access::COPY_READ | Access::COPY_WRITE);
+    /// ```
+    ///
+    /// Command buffers that lock the buffer are already ordered by its
+    /// [`GPUMutex`](crate::sync::GPUMutex).
+    pub fn invalidate(self, encoder: &mut CommandEncoder<'a>) {
+        // Safety: only used to reach the staging buffer, whose memory isn't accessed.
+        let Some(staging) = (unsafe { &self.unwrap().staging }) else {
+            return;
+        };
+        // Safety: `staging` is part of the `ManagedBuffer`, so this token guarantees for it
+        // what it guarantees for the whole value.
+        let staging: GPURefMut<'a, Buffer> = unsafe { GPURefMut::new_unchecked(staging) };
+        encoder.emit_barriers();
+        encoder.copy_buffer(self.device_buffer(), staging);
+        // Semaphore waits on the host don't make GPU writes visible to it.
+        encoder.memory_barrier(Access::COPY_WRITE, Access::HOST_READ);
+    }
+}
 
 /// Trait for types that can allocate staging buffers.
 ///
@@ -955,5 +1038,79 @@ impl StagingBufferAllocator for Allocator {
     type Buffer = Buffer;
     fn allocate_staging_buffer(&mut self, size: u64) -> VkResult<Buffer> {
         Buffer::new_host(self.clone(), size, 4, vk::BufferUsageFlags::TRANSFER_SRC)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{command::CommandPool, sync::GPUMutex, sync::Timeline, tracking::ResourceState};
+
+    /// Writes on the host, flushes, overwrites a prefix on the GPU, then invalidates.
+    fn managed_buffer_round_trip(direct: bool) {
+        let (device, mut queue) = Device::create_system_default().unwrap();
+        let allocator = Allocator::new(device.clone()).unwrap();
+        let mut pool = CommandPool::new(device.clone(), queue.family_index()).unwrap();
+        let mut timeline = Timeline::new(device).unwrap();
+
+        let size = 64;
+        let usage = vk::BufferUsageFlags::TRANSFER_DST;
+        let mut buffer = if direct {
+            ManagedBuffer {
+                device: Buffer::new_dynamic(allocator, size, 4, usage).unwrap(),
+                staging: None,
+            }
+        } else {
+            let transfer = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST;
+            ManagedBuffer {
+                staging: Some(Buffer::new_dynamic(allocator.clone(), size, 4, transfer).unwrap()),
+                device: Buffer::new_device(allocator, size, 4, usage | transfer).unwrap(),
+            }
+        };
+        assert_eq!(buffer.is_direct(), direct);
+        for (i, byte) in buffer.as_slice_mut().iter_mut().enumerate() {
+            *byte = i as u8;
+        }
+        let buffer = GPUMutex::new(buffer);
+
+        let mut cmd = pool.alloc().unwrap();
+        timeline.schedule(&mut cmd);
+        pool.begin(&mut cmd).unwrap();
+        pool.record(&mut cmd, |encoder| {
+            let mut state = ResourceState::default();
+            let locked = encoder.lock(&buffer, vk::PipelineStageFlags2::ALL_COMMANDS);
+            encoder.use_resource::<Buffer>(&mut state, Access::COPY_WRITE);
+            locked.flush(encoder);
+            encoder.use_resource::<Buffer>(&mut state, Access::COPY_WRITE);
+            encoder.emit_barriers();
+            encoder.update_buffer(locked.device_buffer(), &[0xff; 8]);
+            encoder.use_resource::<Buffer>(&mut state, Access::COPY_READ | Access::HOST_READ);
+            encoder.memory_barrier(Access::COPY_WRITE, Access::COPY_READ | Access::COPY_WRITE);
+            locked.invalidate(encoder);
+        });
+        pool.finish(&mut cmd).unwrap();
+        queue.submit(&mut cmd).unwrap();
+        cmd.block_until_completion().unwrap();
+
+        let buffer = buffer.unwrap_block().unwrap();
+        let data = buffer.as_slice();
+        assert!(data[..8].iter().all(|&b| b == 0xff));
+        assert!(
+            data[8..]
+                .iter()
+                .enumerate()
+                .all(|(i, &b)| b == (i + 8) as u8)
+        );
+        pool.free(cmd);
+    }
+
+    #[test]
+    fn managed_buffer_round_trip_staging() {
+        managed_buffer_round_trip(false);
+    }
+
+    #[test]
+    fn managed_buffer_round_trip_direct() {
+        managed_buffer_round_trip(true);
     }
 }

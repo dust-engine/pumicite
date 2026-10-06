@@ -242,6 +242,10 @@ impl Access {
         stage: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
         access: vk::AccessFlags2::SHADER_READ,
     };
+    pub const HOST_READ: Access = Access {
+        stage: vk::PipelineStageFlags2::HOST,
+        access: vk::AccessFlags2::HOST_READ,
+    };
     pub const ALL_COMMANDS: Access = Access {
         stage: vk::PipelineStageFlags2::ALL_COMMANDS,
         access: vk::AccessFlags2::from_raw(

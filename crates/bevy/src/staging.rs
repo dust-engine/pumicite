@@ -558,7 +558,7 @@ pub struct ImageUpload<T: ImageLike> {
 impl<T: ImageLike> ImageUpload<T> {
     /// Waits until the upload has completed on the GPU, then returns the image.
     ///
-    /// This doesn't submit anything itself: the shared command buffer is submitted by
+    /// This doesn't submit anything itself: the shared command buffer is submitted once a frame by
     /// [`async_transfer_submission_system`], or earlier once
     /// [`submit_threshold`](AsyncTransfer::submit_threshold) is exceeded.
     ///

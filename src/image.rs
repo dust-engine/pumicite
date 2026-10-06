@@ -201,7 +201,7 @@ impl Image {
                 info,
                 &vk_mem::AllocationCreateInfo {
                     memory_type_bits: 1 << memory_type,
-                    usage: vk_mem::MemoryUsage::AutoPreferDevice,
+                    usage: vk_mem::MemoryUsage::Unknown,
                     ..Default::default()
                 },
             )?;
@@ -251,9 +251,7 @@ impl Image {
                 &info,
                 &vk_mem::AllocationCreateInfo {
                     memory_type_bits: 1 << memory_type_map.upload,
-                    usage: vk_mem::MemoryUsage::AutoPreferDevice,
-                    flags: vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE
-                        | vk_mem::AllocationCreateFlags::HOST_ACCESS_ALLOW_TRANSFER_INSTEAD,
+                    usage: vk_mem::MemoryUsage::Unknown,
                     ..Default::default()
                 },
             )?;

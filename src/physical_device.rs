@@ -338,17 +338,25 @@ pub struct MemoryTypeMap {
     /// if a staging copy is needed.
     pub upload: u32,
 
-    /// Whether [`upload`](Self::upload) memory is host visible.
-    ///
-    /// True on discrete GPUs without resizable BAR. These GPUs do not have a large
-    /// DEVICE_LOCAL, HOST_VISIBLE pool.
-    pub upload_host_visible: bool,
-
     /// Memory for uniform buffers: guaranteed to be device-local and host-visible.
     ///
     /// May use the 256MB BAR on discrete GPUs without resizable BAR.
     /// Set to `u32::MAX` on GPUs that have no device-local host-visible memory type at all.
     pub uniform: u32,
+
+    /// Whether the device can use [`dynamic`](Self::dynamic) memory as its own, so data
+    /// there needs no staging copy into [`private`](Self::private) memory.
+    ///
+    /// True on integrated GPUs, whose system RAM is the GPU's memory even when it isn't
+    /// marked DEVICE_LOCAL (AMD APUs), and on other GPUs whose `dynamic` memory type is
+    /// DEVICE_LOCAL (e.g. GPUs with a cache-coherent link to the host).
+    pub dynamic_device_local: bool,
+
+    /// Whether [`upload`](Self::upload) memory is host visible.
+    ///
+    /// True on discrete GPUs without resizable BAR. These GPUs do not have a large
+    /// DEVICE_LOCAL, HOST_VISIBLE pool.
+    pub upload_host_visible: bool,
 }
 
 impl MemoryTypeMap {
@@ -362,9 +370,18 @@ impl MemoryTypeMap {
         memory_heaps: &[vk::MemoryHeap],
         device_type: vk::PhysicalDeviceType,
     ) -> Self {
-        // Helper to check if a memory type has all required flags
+        // Memory types that general-purpose allocations can't use: PROTECTED memory needs
+        // protected submissions, LAZILY_ALLOCATED memory only backs transient attachments, and
+        // DEVICE_COHERENT_AMD memory needs a device feature pumicite doesn't enable (VMA
+        // excludes it too). Buffers and images are pinned to the selected types, so picking
+        // one of these would make every allocation fail.
+        let unusable = vk::MemoryPropertyFlags::PROTECTED
+            | vk::MemoryPropertyFlags::LAZILY_ALLOCATED
+            | vk::MemoryPropertyFlags::DEVICE_COHERENT_AMD;
+
+        // Helper to check if a memory type is usable and has all required flags
         let has_flags = |mt: &vk::MemoryType, required: vk::MemoryPropertyFlags| {
-            mt.property_flags.contains(required)
+            mt.property_flags.contains(required) && !mt.property_flags.intersects(unusable)
         };
 
         // Helper to get heap size for a memory type
@@ -434,6 +451,11 @@ impl MemoryTypeMap {
             })
             .map(|(i, _)| i as u32)
             .expect("No HOST_VISIBLE + HOST_CACHED memory type found - unsupported hardware");
+        let dynamic_device_local = device_type == vk::PhysicalDeviceType::INTEGRATED_GPU
+            || has_flags(
+                &memory_types[dynamic as usize],
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            );
 
         // === UPLOAD: DEVICE_LOCAL, prefer HOST_VISIBLE ===
         // If HOST_VISIBLE is available, we can write directly without staging.
@@ -504,6 +526,7 @@ impl MemoryTypeMap {
             private,
             host,
             dynamic,
+            dynamic_device_local,
             upload,
             upload_host_visible,
             uniform,
@@ -819,6 +842,7 @@ mod tests {
         assert_eq!(map.private, 0, "private should use type 0");
         assert_eq!(map.host, 0, "host should use type 0");
         assert_eq!(map.dynamic, 0, "dynamic should use type 0");
+        assert!(map.dynamic_device_local);
         assert_eq!(map.upload, 0, "upload should use type 0");
         assert!(
             map.upload_host_visible,
@@ -842,6 +866,7 @@ mod tests {
         assert_eq!(map.private, 0);
         assert_eq!(map.host, 0);
         assert_eq!(map.dynamic, 0);
+        assert!(map.dynamic_device_local);
         assert_eq!(map.upload, 0);
         assert!(map.upload_host_visible);
         assert_eq!(map.uniform, 0);
@@ -872,6 +897,7 @@ mod tests {
             "host should use HOST_VISIBLE without HOST_CACHED"
         );
         assert_eq!(map.dynamic, 2, "dynamic should use HOST_CACHED type");
+        assert!(!map.dynamic_device_local);
         assert_eq!(
             map.upload, 0,
             "upload should use DEVICE_LOCAL (with staging)"
@@ -914,6 +940,7 @@ mod tests {
         );
         assert_eq!(map.host, 2, "host should use system RAM for staging");
         assert_eq!(map.dynamic, 3, "dynamic should use HOST_CACHED type");
+        assert!(!map.dynamic_device_local);
         assert_eq!(
             map.upload, 1,
             "upload should use ReBAR type (DEVICE_LOCAL + HOST_VISIBLE)"
@@ -951,6 +978,7 @@ mod tests {
         assert_eq!(map.private, 0, "private should use main VRAM heap");
         assert_eq!(map.host, 2, "host should use system RAM");
         assert_eq!(map.dynamic, 3, "dynamic should use HOST_CACHED");
+        assert!(!map.dynamic_device_local);
         // For discrete GPU, 256MB BAR is still usable for uploads
         assert_eq!(
             map.upload, 0,
@@ -987,6 +1015,7 @@ mod tests {
         assert_eq!(map.private, 0, "private should prefer pure DEVICE_LOCAL");
         assert_eq!(map.host, 2, "host should use system RAM");
         assert_eq!(map.dynamic, 3, "dynamic should use HOST_CACHED");
+        assert!(!map.dynamic_device_local);
         assert_eq!(map.upload, 1, "upload should use SAM/ReBAR type");
         assert!(map.upload_host_visible, "SAM allows direct upload");
         assert_eq!(map.uniform, 1, "uniform should use SAM/ReBAR type");
@@ -1033,6 +1062,7 @@ mod tests {
         assert_eq!(map.private, 0, "private should use DEVICE_LOCAL");
         assert_eq!(map.host, 4, "host should use system RAM (non-cached)");
         assert_eq!(map.dynamic, 5, "dynamic should use HOST_CACHED");
+        assert!(map.dynamic_device_local);
         // Upload should fall back to system RAM because 256MB is too small
         assert_eq!(
             map.upload, 4,
@@ -1076,6 +1106,7 @@ mod tests {
         assert_eq!(map.private, 5);
         assert_eq!(map.host, 0);
         assert_eq!(map.dynamic, 1);
+        assert!(map.dynamic_device_local);
         assert_eq!(map.upload, 7);
         assert!(map.upload_host_visible);
         assert_eq!(map.uniform, 7, "uniform should use DL+HV type on heap 1");
@@ -1105,6 +1136,7 @@ mod tests {
         assert_eq!(map.private, 0, "private should use pure DEVICE_LOCAL");
         assert_eq!(map.host, 2, "host should use system RAM");
         assert_eq!(map.dynamic, 3, "dynamic should use HOST_CACHED");
+        assert!(!map.dynamic_device_local);
         assert_eq!(map.upload, 1, "upload should use ReBAR");
         assert!(map.upload_host_visible);
         assert_eq!(map.uniform, 1, "uniform should use ReBAR type");
@@ -1125,6 +1157,7 @@ mod tests {
         assert_eq!(map.private, 0, "private should use pure DEVICE_LOCAL");
         assert_eq!(map.host, 1, "host should use HOST_VISIBLE type");
         assert_eq!(map.dynamic, 1, "dynamic should use HOST_CACHED type");
+        assert!(map.dynamic_device_local);
         assert_eq!(map.upload, 1, "upload should use HOST_VISIBLE DEVICE_LOCAL");
         assert!(map.upload_host_visible);
         assert_eq!(map.uniform, 1, "uniform should use DL+HV type");
@@ -1145,6 +1178,7 @@ mod tests {
         assert_eq!(map.private, 0);
         assert_eq!(map.host, 1);
         assert_eq!(map.dynamic, 1);
+        assert!(!map.dynamic_device_local);
         assert_eq!(map.upload, 0, "upload must use DEVICE_LOCAL");
         assert!(
             !map.upload_host_visible,
@@ -1209,5 +1243,61 @@ mod tests {
             map.uniform, 1,
             "uniform should prefer larger ReBAR heap over 256MB BAR"
         );
+    }
+
+    /// Discrete GPU with a cache-coherent link to the host (e.g. NVIDIA Grace Hopper).
+    /// Illustrative layout, not captured from real hardware.
+    #[test]
+    fn test_coherent_link_discrete() {
+        // Heap 0: VRAM (DEVICE_LOCAL)
+        // Heap 1: System RAM
+        // Type 0: DEVICE_LOCAL (heap 0)
+        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 0)
+        // Type 2: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 1)
+        let heaps = [mem_heap(96 * GB, true), mem_heap(480 * GB, false)];
+        let types = [
+            mem_type(0, DL),
+            mem_type(0, flags(&[DL, HV, HC, HCA])),
+            mem_type(1, flags(&[HV, HC, HCA])),
+        ];
+
+        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+
+        assert_eq!(
+            map.dynamic, 1,
+            "dynamic should prefer DEVICE_LOCAL + HOST_CACHED"
+        );
+        assert!(
+            map.dynamic_device_local,
+            "device-local cached memory needs no staging copy"
+        );
+    }
+
+    /// Memory types general-purpose allocations can't use are never selected, even when
+    /// they're listed before an equivalent usable type.
+    #[test]
+    fn test_skips_unusable_types() {
+        const PROT: vk::MemoryPropertyFlags = vk::MemoryPropertyFlags::PROTECTED;
+        const LAZY: vk::MemoryPropertyFlags = vk::MemoryPropertyFlags::LAZILY_ALLOCATED;
+        let heaps = [mem_heap(8 * GB, true), mem_heap(16 * GB, false)];
+        let types = [
+            mem_type(0, flags(&[DL, LAZY])),
+            mem_type(0, flags(&[DL, PROT])),
+            mem_type(1, flags(&[HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(1, flags(&[HV, HC, HCA, DLC_AMD, DLU_AMD])),
+            mem_type(0, flags(&[DL, HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(0, DL),
+            mem_type(1, flags(&[HV, HC])),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(0, flags(&[DL, HV, HC])),
+        ];
+
+        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+
+        assert_eq!(map.private, 5);
+        assert_eq!(map.host, 6);
+        assert_eq!(map.dynamic, 7);
+        assert_eq!(map.upload, 8);
+        assert_eq!(map.uniform, 8);
     }
 }

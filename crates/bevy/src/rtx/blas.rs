@@ -15,8 +15,12 @@ use bevy_ecs::{
 
 use crate::CreateDevice;
 use pumicite::{
-    ash::khr::acceleration_structure::Meta as AccelerationStructureKhr, command::GPURef,
-    prelude::*, query::QueryPool, rtx::AccelStruct, sync::{GPUMutex, Timeline},
+    ash::khr::acceleration_structure::Meta as AccelerationStructureKhr,
+    command::GPURef,
+    prelude::*,
+    query::QueryPool,
+    rtx::AccelStruct,
+    sync::{GPUMutex, Timeline},
 };
 use smallvec::SmallVec;
 
@@ -219,9 +223,7 @@ fn drain_built_blas_system(mut commands: Commands, mut cmd_pool: ResMut<ASBuildC
             build.accel_structs.len()
         );
         let compacted_sizes = if let Some(mut query_pool) = build.query_pool {
-            let query_pool = query_pool
-                .try_deref_mut()
-                .unwrap();
+            let query_pool = query_pool.try_deref_mut().unwrap();
             let mut sizes = vec![0; query_pool.len() as usize];
             query_pool
                 .get_results::<u64>(0, &mut sizes, vk::QueryResultFlags::TYPE_64)
