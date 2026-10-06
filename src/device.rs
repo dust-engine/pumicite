@@ -77,7 +77,9 @@
 use crate::{
     Extension, Instance, MissingFeatureError,
     debug::DebugObject,
-    physical_device::{Feature, PhysicalDevice, PhysicalDeviceFeatureMap},
+    physical_device::{
+        Feature, MemoryTypeMap, MemoryTypeMapInner, PhysicalDevice, PhysicalDeviceFeatureMap,
+    },
     queue::Queue,
     utils::{AsVkHandle, NextChainMap, Version},
 };
@@ -146,6 +148,7 @@ impl Debug for Device {
 struct DeviceInner {
     physical_device: PhysicalDevice,
     device: ash::Device,
+    memory_type_map: MemoryTypeMapInner,
     /// Map of enabled extensions and their function loaders
     extensions: BTreeMap<&'static CStr, Option<Box<dyn Any + Send + Sync>>>,
     /// Chain of enabled device features
@@ -165,6 +168,11 @@ impl Device {
     /// Returns a reference to the [`PhysicalDevice`]
     pub fn physical_device(&self) -> &PhysicalDevice {
         &self.0.physical_device
+    }
+
+    /// Returns the pre-calculated memory types for common allocation strategies.
+    pub fn memory_type_map(&self) -> MemoryTypeMap<'_> {
+        MemoryTypeMap::new(self, &self.0.memory_type_map)
     }
 
     /// Gets a reference to an enabled device extension.
@@ -428,6 +436,7 @@ impl DeviceBuilder {
     /// The builder is initialized with default required extensions and features:
     /// - `VK_KHR_synchronization2` extension and feature
     /// - `VK_KHR_timeline_semaphore` extension and feature
+    /// - `VK_KHR_maintenance4` extension and feature, used to pick memory types
     ///
     /// # Arguments
     ///
@@ -491,6 +500,11 @@ impl DeviceBuilder {
             &mut f.timeline_semaphore
         })
         .unwrap();
+
+        this.enable_extension::<ash::khr::maintenance4::Meta>()
+            .unwrap();
+        this.enable_feature::<vk::PhysicalDeviceMaintenance4Features>(|f| &mut f.maintenance4)
+            .unwrap();
 
         #[cfg(target_vendor = "apple")]
         {
@@ -739,10 +753,17 @@ impl DeviceBuilder {
             })
             .collect();
 
+        let memory_type_map = MemoryTypeMapInner::new(
+            self.pdevice.properties().memory_types(),
+            self.pdevice.properties().memory_heaps(),
+            self.pdevice.properties().device_type,
+        );
+
         let (sender, receiver) = crossbeam_channel::unbounded::<crate::sync::RetiredGPUMutex>();
         let device = Device(Arc::new(DeviceInner {
             physical_device: self.pdevice,
             device,
+            memory_type_map,
             extensions,
             features,
             recycler: sender,

@@ -31,7 +31,7 @@
 //! println!("Using: {:?}", gpu.properties().device_name());
 //! ```
 use crate::{
-    MissingFeatureError,
+    Device, MissingFeatureError,
     utils::{AsVkHandle, NextChainMap, Version, VkTaggedObject},
 };
 
@@ -41,6 +41,7 @@ use ash::{
     vk::{self, ExtensionMeta, PromotionStatus, TaggedStructure},
 };
 use core::ffi::c_void;
+use smallvec::{SmallVec, smallvec};
 use std::{
     collections::BTreeMap,
     ffi::CStr,
@@ -167,7 +168,6 @@ pub struct PhysicalDeviceProperties {
     pdevice: vk::PhysicalDevice,
     inner: vk::PhysicalDeviceProperties,
     memory_properties: vk::PhysicalDeviceMemoryProperties,
-    memory_type_map: MemoryTypeMap,
     properties: RwLock<BTreeMap<vk::StructureType, Box<VkTaggedObject>>>,
 }
 unsafe impl Send for PhysicalDeviceProperties {}
@@ -177,19 +177,11 @@ impl PhysicalDeviceProperties {
         let memory_properties = unsafe { instance.get_physical_device_memory_properties(pdevice) };
         let pdevice_properties = unsafe { instance.get_physical_device_properties(pdevice) };
 
-        let memory_types =
-            &memory_properties.memory_types[0..memory_properties.memory_type_count as usize];
-        let memory_heaps =
-            &memory_properties.memory_heaps[0..memory_properties.memory_heap_count as usize];
-        let memory_type_map =
-            MemoryTypeMap::new(memory_types, memory_heaps, pdevice_properties.device_type);
-
         Self {
             instance,
             pdevice,
             properties: Default::default(),
             memory_properties,
-            memory_type_map,
             inner: pdevice_properties,
         }
     }
@@ -262,11 +254,6 @@ impl PhysicalDeviceProperties {
     pub fn memory_heaps(&self) -> &[vk::MemoryHeap] {
         &self.memory_properties.memory_heaps[0..self.memory_properties.memory_heap_count as usize]
     }
-
-    /// Returns the pre-calculated memory type indices for common allocation strategies.
-    pub fn memory_type_map(&self) -> &MemoryTypeMap {
-        &self.memory_type_map
-    }
 }
 impl Deref for PhysicalDeviceProperties {
     type Target = vk::PhysicalDeviceProperties;
@@ -306,61 +293,151 @@ pub struct MemoryHeap {
 /// The selection algorithm accounts for the various memory type patterns seen
 /// across different GPU architectures:
 ///
-/// - **Intel integrated**: Single heap, all DEVICE_LOCAL + HOST_VISIBLE
+/// - **Intel integrated**: Single DEVICE_LOCAL heap (system RAM), with and without HOST_VISIBLE
 /// - **NVIDIA/AMD discrete**: Separate VRAM (DEVICE_LOCAL) and system RAM (HOST_VISIBLE)
-/// - **AMD with 256MB BAR**: Additional small DEVICE_LOCAL + HOST_VISIBLE heap
+/// - **Discrete without resizable BAR**: Additional 256MB DEVICE_LOCAL + HOST_VISIBLE heap
 /// - **Resizable BAR (SAM)**: Entire VRAM accessible as DEVICE_LOCAL + HOST_VISIBLE
-/// - **AMD APU**: 256MB "virtual" DEVICE_LOCAL heap, rest is HOST_VISIBLE only
-#[derive(Debug, Clone, Copy)]
-pub struct MemoryTypeMap {
-    /// GPU-exclusive memory for render targets, scratch buffers, GPU-generated data.
-    ///
-    /// Selection: DEVICE_LOCAL required, prefers non-HOST_VISIBLE (pure VRAM is faster
-    /// on discrete GPUs when not accessed via BAR).
-    pub private: u32,
+/// - **AMD APU (radv)**: 2/3 of the carve-out plus system RAM as one DEVICE_LOCAL +
+///   HOST_VISIBLE heap, the rest as HOST_VISIBLE only
+/// - **Integrated with a small carve-out**: DEVICE_LOCAL + HOST_VISIBLE heap of 256MB or
+///   less, the rest is HOST_VISIBLE only
+///
+/// Memory types with identical flags can still accept different resources: Intel Xe2+
+/// lists a compressed DEVICE_LOCAL type first that only images can use. So `private` and
+/// `upload` memory are ranked lists of candidates, and the `private_*` and `upload_*`
+/// methods return the first candidate the resource's `memoryTypeBits` allow.
+pub struct MemoryTypeMap<'a> {
+    device: &'a Device,
+    inner: &'a MemoryTypeMapInner,
+}
+
+impl Deref for MemoryTypeMap<'_> {
+    type Target = MemoryTypeMapInner;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner
+    }
+}
+
+/// The memory types of a [`MemoryTypeMap`], stored by its device.
+#[derive(Debug, Clone)]
+pub struct MemoryTypeMapInner {
+    /// Every DEVICE_LOCAL type, non-HOST_VISIBLE first, then larger heaps, then index order.
+    private: SmallVec<[u32; 2]>,
 
     /// Staging memory for CPU-to-GPU transfers.
     ///
-    /// Selection: HOST_VISIBLE required, prefers HOST_COHERENT, avoids HOST_CACHED
+    /// Selection: HOST_VISIBLE + HOST_COHERENT required, prefers system RAM over
+    /// DEVICE_LOCAL (keeps staging out of a 256MB BAR heap), then avoids HOST_CACHED
     /// (write-combined memory is fine for sequential writes).
-    pub host: u32,
+    pub staging: u32,
 
     /// CPU-readable memory for GPU-to-CPU readback.
     ///
-    /// Selection: HOST_VISIBLE + HOST_CACHED required (fast CPU reads),
-    /// prefers DEVICE_LOCAL (benefits integrated GPUs).
+    /// Selection: HOST_VISIBLE + HOST_COHERENT required, prefers HOST_CACHED (fast CPU
+    /// reads), then DEVICE_LOCAL (benefits integrated GPUs).
     pub dynamic: u32,
 
-    /// Upload memory for CPU-written, GPU-read data.
-    ///
-    /// Selection: DEVICE_LOCAL required, prefers HOST_VISIBLE (avoids staging).
-    /// Check [`upload_host_visible`](Self::upload_host_visible) to determine
-    /// if a staging copy is needed.
-    pub upload: u32,
+    /// The best DEVICE_LOCAL + HOST_VISIBLE + HOST_COHERENT type, or the `private`
+    /// candidates on discrete GPUs that need staging.
+    upload: SmallVec<[u32; 2]>,
 
-    /// Memory for uniform buffers: guaranteed to be device-local and host-visible.
+    /// Memory for uniform buffers: guaranteed to be device-local, host-visible and
+    /// host-coherent.
     ///
     /// May use the 256MB BAR on discrete GPUs without resizable BAR.
     /// Set to `u32::MAX` on GPUs that have no device-local host-visible memory type at all.
     pub uniform: u32,
 
     /// Whether the device can use [`dynamic`](Self::dynamic) memory as its own, so data
-    /// there needs no staging copy into [`private`](Self::private) memory.
+    /// there needs no staging copy into [`private_buffer`](MemoryTypeMap::private_buffer) memory.
     ///
     /// True on integrated GPUs, whose system RAM is the GPU's memory even when it isn't
     /// marked DEVICE_LOCAL (AMD APUs), and on other GPUs whose `dynamic` memory type is
     /// DEVICE_LOCAL (e.g. GPUs with a cache-coherent link to the host).
     pub dynamic_device_local: bool,
 
-    /// Whether [`upload`](Self::upload) memory is host visible.
+    /// Whether [`upload_buffer`](MemoryTypeMap::upload_buffer) and
+    /// [`upload_image`](MemoryTypeMap::upload_image) memory is host visible.
     ///
     /// True on discrete GPUs without resizable BAR. These GPUs do not have a large
     /// DEVICE_LOCAL, HOST_VISIBLE pool.
     pub upload_host_visible: bool,
 }
 
-impl MemoryTypeMap {
-    /// Computes the memory type map for a physical device.
+impl<'a> MemoryTypeMap<'a> {
+    pub(crate) fn new(device: &'a Device, inner: &'a MemoryTypeMapInner) -> Self {
+        Self { device, inner }
+    }
+
+    /// GPU-exclusive memory for scratch buffers and GPU-generated data.
+    ///
+    /// Selection: DEVICE_LOCAL required, prefers non-HOST_VISIBLE (pure VRAM is faster on
+    /// discrete GPUs when not accessed via BAR). Fails with `ERROR_FEATURE_NOT_PRESENT` if
+    /// a buffer created with `info` accepts no DEVICE_LOCAL memory type.
+    pub fn private_buffer(&self, info: &vk::BufferCreateInfo) -> VkResult<u32> {
+        first_allowed(&self.private, self.buffer_memory_type_bits(info))
+    }
+
+    /// GPU-exclusive memory for render targets and GPU-generated images.
+    ///
+    /// Selection as in [`private_buffer`](Self::private_buffer). Images that can be
+    /// compressed get the compressed memory type on Intel Xe2+.
+    pub fn private_image(&self, info: &vk::ImageCreateInfo) -> VkResult<u32> {
+        first_allowed(&self.private, self.image_memory_type_bits(info))
+    }
+
+    /// Upload memory for CPU-written, GPU-read buffers.
+    ///
+    /// Selection: DEVICE_LOCAL required, prefers HOST_VISIBLE + HOST_COHERENT (avoids
+    /// staging).
+    /// Check [`upload_host_visible`](MemoryTypeMapInner::upload_host_visible) to determine
+    /// if a staging copy is needed.
+    pub fn upload_buffer(&self, info: &vk::BufferCreateInfo) -> VkResult<u32> {
+        first_allowed(&self.upload, self.buffer_memory_type_bits(info))
+    }
+
+    /// Upload memory for CPU-written, GPU-read images.
+    ///
+    /// Selection as in [`upload_buffer`](Self::upload_buffer).
+    pub fn upload_image(&self, info: &vk::ImageCreateInfo) -> VkResult<u32> {
+        first_allowed(&self.upload, self.image_memory_type_bits(info))
+    }
+
+    fn buffer_memory_type_bits(&self, info: &vk::BufferCreateInfo) -> u32 {
+        let mut requirements = vk::MemoryRequirements2::default();
+        unsafe {
+            self.device.get_device_buffer_memory_requirements(
+                &vk::DeviceBufferMemoryRequirements::default().create_info(info),
+                &mut requirements,
+            );
+        }
+        requirements.memory_requirements.memory_type_bits
+    }
+
+    fn image_memory_type_bits(&self, info: &vk::ImageCreateInfo) -> u32 {
+        let mut requirements = vk::MemoryRequirements2::default();
+        unsafe {
+            self.device.get_device_image_memory_requirements(
+                &vk::DeviceImageMemoryRequirements::default().create_info(info),
+                &mut requirements,
+            );
+        }
+        requirements.memory_requirements.memory_type_bits
+    }
+}
+
+/// The first of `candidates` that `memory_type_bits` allows.
+fn first_allowed(candidates: &[u32], memory_type_bits: u32) -> VkResult<u32> {
+    candidates
+        .iter()
+        .copied()
+        .find(|&i| memory_type_bits & (1 << i) != 0)
+        .ok_or(vk::Result::ERROR_FEATURE_NOT_PRESENT)
+}
+
+impl MemoryTypeMapInner {
+    /// Computes the memory types for a physical device.
     ///
     /// # Panics
     ///
@@ -389,121 +466,121 @@ impl MemoryTypeMap {
 
         // === PRIVATE: DEVICE_LOCAL, prefer non-HOST_VISIBLE ===
         // On discrete GPUs, pure VRAM without BAR access is typically faster.
-        let private = memory_types
-            .iter()
-            .enumerate()
-            .rev()
-            .filter(|(_, mt)| has_flags(mt, vk::MemoryPropertyFlags::DEVICE_LOCAL))
-            // Prefer non-HOST_VISIBLE (pure VRAM), then larger heaps
-            .max_by_key(|(_, mt)| {
-                let not_host_visible = !mt
-                    .property_flags
-                    .contains(vk::MemoryPropertyFlags::HOST_VISIBLE);
-                (not_host_visible, heap_size(mt))
+        let mut private: SmallVec<[u32; 2]> = (0..memory_types.len() as u32)
+            .filter(|&i| {
+                has_flags(
+                    &memory_types[i as usize],
+                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                )
             })
-            .map(|(i, _)| i as u32)
-            .expect("No DEVICE_LOCAL memory type found - unsupported hardware");
+            .collect();
+        // Prefer non-HOST_VISIBLE (pure VRAM), then larger heaps. The sort is stable, so
+        // equally ranked types stay in index order, where drivers put the one they prefer.
+        private.sort_by_key(|&i| {
+            let mt = &memory_types[i as usize];
+            let not_host_visible = !mt
+                .property_flags
+                .contains(vk::MemoryPropertyFlags::HOST_VISIBLE);
+            std::cmp::Reverse((not_host_visible, heap_size(mt)))
+        });
+        assert!(
+            !private.is_empty(),
+            "No DEVICE_LOCAL memory type found - unsupported hardware"
+        );
 
-        // === HOST: HOST_VISIBLE, prefer HOST_COHERENT, avoid HOST_CACHED ===
-        // Write-combined memory is ideal for staging (sequential CPU writes).
-        let host = memory_types
+        // === HOST: HOST_VISIBLE + HOST_COHERENT, prefer system RAM, avoid HOST_CACHED ===
+        // Write-combined memory is ideal for staging (sequential CPU writes), but not at
+        // the cost of VRAM: Intel discrete GPUs expose only HOST_CACHED system RAM, and
+        // without resizable BAR their only uncached type is the 256MB BAR heap.
+        let staging = memory_types
             .iter()
             .enumerate()
             .rev()
-            .filter(|(_, mt)| has_flags(mt, vk::MemoryPropertyFlags::HOST_VISIBLE))
-            // Prefer: HOST_COHERENT, not HOST_CACHED, not DEVICE_LOCAL, larger heap
+            .filter(|(_, mt)| has_flags(mt, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT))
+            // Prefer: not DEVICE_LOCAL, not HOST_CACHED, larger heap
             .max_by_key(|(_, mt)| {
-                let coherent = mt
-                    .property_flags
-                    .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
                 let not_cached = !mt
                     .property_flags
                     .contains(vk::MemoryPropertyFlags::HOST_CACHED);
                 let not_device_local = !mt
                     .property_flags
                     .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL);
-                (coherent, not_cached, not_device_local, heap_size(mt))
+                (not_device_local, not_cached, heap_size(mt))
             })
             .map(|(i, _)| i as u32)
-            .expect("No HOST_VISIBLE memory type found - unsupported hardware");
+            .expect("No HOST_VISIBLE + HOST_COHERENT memory type found - unsupported hardware");
 
-        // === DYNAMIC: HOST_VISIBLE + HOST_CACHED, prefer DEVICE_LOCAL ===
-        // Fast CPU reads required; DEVICE_LOCAL benefits integrated GPUs.
+        // === DYNAMIC: HOST_VISIBLE + HOST_COHERENT, prefer HOST_CACHED, DEVICE_LOCAL ===
+        // HOST_CACHED makes CPU reads fast, but some GPUs only cache non-coherent maps
+        // (Intel without LLC, Tegra), so uncached memory is the fallback.
+        // DEVICE_LOCAL benefits integrated GPUs.
         let dynamic = memory_types
             .iter()
             .enumerate()
             .rev()
-            .filter(|(_, mt)| {
-                has_flags(
-                    mt,
-                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_CACHED,
-                )
-            })
-            // Prefer: DEVICE_LOCAL (for integrated GPUs), HOST_COHERENT, larger heap
+            .filter(|(_, mt)| has_flags(mt, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT))
+            // Prefer: HOST_CACHED, DEVICE_LOCAL (for integrated GPUs), larger heap
             .max_by_key(|(_, mt)| {
+                let cached = mt
+                    .property_flags
+                    .contains(vk::MemoryPropertyFlags::HOST_CACHED);
                 let device_local = mt
                     .property_flags
                     .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL);
-                let coherent = mt
-                    .property_flags
-                    .contains(vk::MemoryPropertyFlags::HOST_COHERENT);
-                (device_local, coherent, heap_size(mt))
+                (cached, device_local, heap_size(mt))
             })
             .map(|(i, _)| i as u32)
-            .expect("No HOST_VISIBLE + HOST_CACHED memory type found - unsupported hardware");
+            .expect("No HOST_VISIBLE + HOST_COHERENT memory type found - unsupported hardware");
         let dynamic_device_local = device_type == vk::PhysicalDeviceType::INTEGRATED_GPU
             || has_flags(
                 &memory_types[dynamic as usize],
                 vk::MemoryPropertyFlags::DEVICE_LOCAL,
             );
 
-        // === UPLOAD: DEVICE_LOCAL, prefer HOST_VISIBLE ===
+        // === UPLOAD: DEVICE_LOCAL, prefer HOST_VISIBLE + HOST_COHERENT ===
         // If HOST_VISIBLE is available, we can write directly without staging.
         let (upload, upload_host_visible) = {
-            // First, try to find DEVICE_LOCAL + HOST_VISIBLE
+            // First, try to find DEVICE_LOCAL + HOST_VISIBLE + HOST_COHERENT
             let device_local_host_visible = memory_types
                 .iter()
                 .enumerate()
                 .rev()
                 .filter(|(_, mt)| {
-                    has_flags(
-                        mt,
-                        vk::MemoryPropertyFlags::DEVICE_LOCAL
-                            | vk::MemoryPropertyFlags::HOST_VISIBLE,
-                    )
+                    has_flags(mt, vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)
                 })
                 // Prefer larger heaps (avoid 256MB BAR if full VRAM is available via ReBAR)
                 .max_by_key(|(_, mt)| heap_size(mt));
 
             if let Some((idx, mt)) = device_local_host_visible {
-                // On AMD APU, the 256MB DEVICE_LOCAL heap is too small for general use.
+                // An integrated GPU's carve-out can be too small for general use (radv
+                // avoids this by reporting 2/3 of system memory as the carve-out heap).
                 // Fall back to HOST_VISIBLE-only memory if the heap is suspiciously small
                 // and we're on an integrated GPU.
                 let is_small_heap = heap_size(mt) <= 256 * 1024 * 1024; // 256MB threshold
                 if is_small_heap {
                     if device_type == vk::PhysicalDeviceType::INTEGRATED_GPU {
-                        // AMD APU pattern: use the HOST_VISIBLE memory instead
+                        // Small carve-out: use the HOST_VISIBLE memory instead
                         // (it's system RAM which is actually what the GPU uses)
-                        (host, true)
+                        (smallvec![staging], true)
                     } else {
                         // discrete GPU without resizable bar: use private
-                        (private, false)
+                        (private.clone(), false)
                     }
                 } else {
-                    (idx as u32, true)
+                    (smallvec![idx as u32], true)
                 }
             } else {
                 if device_type == vk::PhysicalDeviceType::INTEGRATED_GPU {
-                    (host, false)
+                    (smallvec![staging], false)
                 } else {
                     // No DEVICE_LOCAL + HOST_VISIBLE: discrete GPU without ReBAR
                     // Use pure DEVICE_LOCAL and require staging
-                    (private, false)
+                    (private.clone(), false)
                 }
             }
         };
 
-        // === UNIFORM: DEVICE_LOCAL + HOST_VISIBLE, accepts 256MB BAR ===
+        // === UNIFORM: DEVICE_LOCAL + HOST_VISIBLE + HOST_COHERENT, accepts 256MB BAR ===
         // For uniform buffers that need direct CPU writes. Unlike upload, we accept
         // even small heaps (256MB BAR) since uniform data is typically small.
         // Returns u32::MAX if no such memory type exists.
@@ -511,12 +588,7 @@ impl MemoryTypeMap {
             .iter()
             .enumerate()
             .rev()
-            .filter(|(_, mt)| {
-                has_flags(
-                    mt,
-                    vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE,
-                )
-            })
+            .filter(|(_, mt)| has_flags(mt, vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT))
             // Prefer larger heaps when available
             .max_by_key(|(_, mt)| heap_size(mt))
             .map(|(i, _)| i as u32)
@@ -524,7 +596,7 @@ impl MemoryTypeMap {
 
         Self {
             private,
-            host,
+            staging,
             dynamic,
             dynamic_device_local,
             upload,
@@ -784,6 +856,10 @@ impl_feature_for_ext!(
     vk::PhysicalDeviceMultiviewFeaturesKHR<'static>,
     khr::multiview::Meta
 );
+impl_feature_for_ext!(
+    vk::PhysicalDeviceMaintenance4Features<'static>,
+    khr::maintenance4::Meta
+);
 
 #[cfg(test)]
 mod tests {
@@ -807,6 +883,8 @@ mod tests {
     const HV: vk::MemoryPropertyFlags = vk::MemoryPropertyFlags::HOST_VISIBLE;
     const HC: vk::MemoryPropertyFlags = vk::MemoryPropertyFlags::HOST_COHERENT;
     const HCA: vk::MemoryPropertyFlags = vk::MemoryPropertyFlags::HOST_CACHED;
+    const PROT: vk::MemoryPropertyFlags = vk::MemoryPropertyFlags::PROTECTED;
+    const LAZY: vk::MemoryPropertyFlags = vk::MemoryPropertyFlags::LAZILY_ALLOCATED;
 
     fn mem_type(heap_index: u32, flags: vk::MemoryPropertyFlags) -> vk::MemoryType {
         vk::MemoryType {
@@ -826,33 +904,202 @@ mod tests {
         }
     }
 
-    /// Intel integrated GPU: Single unified memory heap.
-    /// All memory is DEVICE_LOCAL + HOST_VISIBLE + HOST_COHERENT + HOST_CACHED.
+    // Intel (Mesa anv) layouts below follow anv_physical_device_init_heaps and the
+    // i915/xe `*_physical_device_init_memory_types` tables. anv appends every type that
+    // isn't PROTECTED or compressed a second time with identical flags, for descriptor
+    // buffers only: normal buffers and images can't use those copies, so the lowest-index
+    // tie must win. The system RAM heap is 75% of RAM (32GB machines here).
+
+    /// Checks `map` against the memoryTypeBits anv reports (anv_buffer.c, anv_image.c).
+    /// `buffer_bits` are the types buffers and images may use: the base types minus PROTECTED
+    /// and compressed ones. `compressed_bits` are the types only compressible images may also
+    /// use. Returns the types a buffer, a compressible image and an uploaded buffer get.
+    fn anv_selection(
+        map: &MemoryTypeMapInner,
+        buffer_bits: u32,
+        compressed_bits: u32,
+    ) -> (u32, u32, u32) {
+        let allowed = |i: u32| buffer_bits & (1 << i) != 0;
+        assert!(
+            allowed(map.staging),
+            "staging must be a type buffers can use"
+        );
+        assert!(
+            allowed(map.dynamic),
+            "dynamic must be a type buffers can use"
+        );
+        if map.uniform != u32::MAX {
+            assert!(
+                allowed(map.uniform),
+                "uniform must be a type buffers can use"
+            );
+        }
+        (
+            first_allowed(&map.private, buffer_bits).unwrap(),
+            first_allowed(&map.private, buffer_bits | compressed_bits).unwrap(),
+            first_allowed(&map.upload, buffer_bits).unwrap(),
+        )
+    }
+
+    /// Intel integrated GPU with LLC on i915: Skylake through Raptor Lake (HD/UHD Graphics,
+    /// Iris Xe). Meteor Lake and Arrow Lake on the Xe KMD expose the same flags.
     #[test]
-    fn test_intel_integrated() {
-        // Intel UHD Graphics 630 pattern:
-        // Heap 0: ~25GB (system RAM, DEVICE_LOCAL)
-        // Type 0: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED
-        let heaps = [mem_heap(25 * GB, true)];
-        let types = [mem_type(0, flags(&[DL, HV, HC, HCA]))];
+    fn test_intel_llc_i915() {
+        // Intel UHD Graphics 630 (Coffee Lake):
+        // Heap 0: 24GB system RAM (DEVICE_LOCAL)
+        // Type 0: DEVICE_LOCAL
+        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (write-combined)
+        // Type 2: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED
+        // Types 3-5: descriptor buffer copies of types 0-2
+        let heaps = [mem_heap(24 * GB, true)];
+        let types = [
+            mem_type(0, DL),
+            mem_type(0, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[DL, HV, HC, HCA])),
+            mem_type(0, DL),
+            mem_type(0, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[DL, HV, HC, HCA])),
+        ];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
 
-        // All strategies should use type 0 (the only type)
-        assert_eq!(map.private, 0, "private should use type 0");
-        assert_eq!(map.host, 0, "host should use type 0");
-        assert_eq!(map.dynamic, 0, "dynamic should use type 0");
+        assert_eq!(
+            map.private[..],
+            [0, 3, 1, 2, 4, 5],
+            "private should use non-HOST_VISIBLE type"
+        );
+        assert_eq!(map.staging, 1, "staging should use write-combined type");
+        assert_eq!(map.dynamic, 2, "dynamic should use HOST_CACHED type");
         assert!(map.dynamic_device_local);
-        assert_eq!(map.upload, 0, "upload should use type 0");
+        assert_eq!(map.upload[..], [1]);
         assert!(
             map.upload_host_visible,
             "integrated GPU should get host visible upload buffers"
         );
-        assert_eq!(map.uniform, 0, "uniform should use type 0");
+        assert_eq!(map.uniform, 1);
+        assert_eq!(anv_selection(&map, 0b111, 0), (0, 0, 1));
     }
 
-    /// Apple Silicon (M1/M2/M3): Unified memory architecture.
-    /// Similar to Intel integrated but with MoltenVK translation layer.
+    /// Intel integrated GPU with LLC on the Xe KMD: Tiger Lake through Raptor Lake.
+    /// Xe can't select the CPU caching mode at mmap time, so there's no write-combined type.
+    #[test]
+    fn test_intel_llc_xe() {
+        // Heap 0: 24GB system RAM (DEVICE_LOCAL)
+        // Type 0: DEVICE_LOCAL
+        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED
+        // Types 2-3: descriptor buffer copies of types 0-1
+        let heaps = [mem_heap(24 * GB, true)];
+        let types = [
+            mem_type(0, DL),
+            mem_type(0, flags(&[DL, HV, HC, HCA])),
+            mem_type(0, DL),
+            mem_type(0, flags(&[DL, HV, HC, HCA])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+
+        assert_eq!(map.private[..], [0, 2, 1, 3]);
+        assert_eq!(map.staging, 1, "staging falls back to the only HOST_VISIBLE type");
+        assert_eq!(map.dynamic, 1);
+        assert!(map.dynamic_device_local);
+        assert_eq!(map.upload[..], [1]);
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 1);
+        assert_eq!(anv_selection(&map, 0b11, 0), (0, 0, 1));
+    }
+
+    /// Intel integrated GPU without LLC on i915: Meteor Lake and Arrow Lake (Core Ultra),
+    /// and, without the PROTECTED type, Apollo Lake and Gemini Lake. The only HOST_CACHED
+    /// type is not HOST_COHERENT.
+    #[test]
+    fn test_intel_non_llc_i915() {
+        // Heap 0: 24GB system RAM (DEVICE_LOCAL)
+        // Type 0: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (write-combined)
+        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_CACHED (not coherent)
+        // Type 2: DEVICE_LOCAL | PROTECTED
+        // Types 3-4: descriptor buffer copies of types 0-1
+        let heaps = [mem_heap(24 * GB, true)];
+        let types = [
+            mem_type(0, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[DL, HV, HCA])),
+            mem_type(0, flags(&[DL, PROT])),
+            mem_type(0, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[DL, HV, HCA])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+
+        assert_eq!(
+            map.private[..],
+            [0, 1, 3, 4],
+            "private falls back to a HOST_VISIBLE type"
+        );
+        assert_eq!(map.staging, 0, "staging should use the coherent type");
+        assert_eq!(map.dynamic, 0, "dynamic should use the coherent type");
+        assert!(map.dynamic_device_local);
+        assert_eq!(map.upload[..], [0]);
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 0);
+        assert_eq!(anv_selection(&map, 0b011, 0), (0, 0, 0));
+    }
+
+    /// Mapped memory is never flushed or invalidated, so `dynamic` must be HOST_COHERENT
+    /// even when the only HOST_CACHED type isn't (Intel without LLC on i915).
+    #[test]
+    fn test_intel_non_llc_i915_dynamic_coherent() {
+        let heaps = [mem_heap(24 * GB, true)];
+        let types = [
+            mem_type(0, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[DL, HV, HCA])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+
+        assert!(
+            types[map.dynamic as usize].property_flags.contains(HC),
+            "dynamic must be HOST_COHERENT"
+        );
+    }
+
+    /// Intel Xe2+ integrated GPU on the Xe KMD: Lunar Lake and Panther Lake (Core Ultra
+    /// 200V and Series 3).
+    #[test]
+    fn test_intel_xe2_integrated() {
+        // Heap 0: 24GB system RAM (DEVICE_LOCAL)
+        // Type 0: DEVICE_LOCAL, compressed (images only)
+        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (write-combined)
+        // Type 2: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED
+        // Type 3: DEVICE_LOCAL | PROTECTED
+        // Types 4-5: descriptor buffer copies of types 1-2
+        let heaps = [mem_heap(24 * GB, true)];
+        let types = [
+            mem_type(0, DL),
+            mem_type(0, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[DL, HV, HC, HCA])),
+            mem_type(0, flags(&[DL, PROT])),
+            mem_type(0, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[DL, HV, HC, HCA])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+
+        // anv's memoryTypeBits allow types 1-2 for buffers and images that can't be
+        // compressed, so they get type 1; compressible images also allow type 0.
+        assert_eq!(map.private[..], [0, 1, 2, 4, 5]);
+        assert_eq!(map.staging, 1, "host should use write-combined type");
+        assert_eq!(map.dynamic, 2, "dynamic should use HOST_CACHED type");
+        assert!(map.dynamic_device_local);
+        assert_eq!(map.upload[..], [1]);
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 1);
+        assert_eq!(
+            anv_selection(&map, 0b0110, 0b0001),
+            (1, 0, 1),
+            "buffers skip the compressed type, compressible images take it"
+        );
+    }
+
+    /// Apple Silicon (M1/M2/M3): Unified memory architecture via MoltenVK.
     #[test]
     fn test_apple_silicon() {
         // Apple M1 pattern (via MoltenVK):
@@ -861,13 +1108,13 @@ mod tests {
         let heaps = [mem_heap(16 * GB, true)];
         let types = [mem_type(0, flags(&[DL, HV, HC, HCA]))];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
 
-        assert_eq!(map.private, 0);
-        assert_eq!(map.host, 0);
+        assert_eq!(map.private[..], [0]);
+        assert_eq!(map.staging, 0);
         assert_eq!(map.dynamic, 0);
         assert!(map.dynamic_device_local);
-        assert_eq!(map.upload, 0);
+        assert_eq!(map.upload[..], [0]);
         assert!(map.upload_host_visible);
         assert_eq!(map.uniform, 0);
     }
@@ -889,17 +1136,18 @@ mod tests {
             mem_type(1, flags(&[HV, HC, HCA])),
         ];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
 
-        assert_eq!(map.private, 0, "private should use DEVICE_LOCAL type");
+        assert_eq!(map.private[..], [0], "private should use DEVICE_LOCAL type");
         assert_eq!(
-            map.host, 1,
-            "host should use HOST_VISIBLE without HOST_CACHED"
+            map.staging, 1,
+            "staging should use HOST_VISIBLE without HOST_CACHED"
         );
         assert_eq!(map.dynamic, 2, "dynamic should use HOST_CACHED type");
         assert!(!map.dynamic_device_local);
         assert_eq!(
-            map.upload, 0,
+            map.upload[..],
+            [0],
             "upload should use DEVICE_LOCAL (with staging)"
         );
         assert!(
@@ -932,198 +1180,649 @@ mod tests {
             mem_type(1, flags(&[HV, HC, HCA])),
         ];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
 
         assert_eq!(
-            map.private, 0,
+            map.private[..],
+            [0, 1],
             "private should prefer non-HOST_VISIBLE DEVICE_LOCAL"
         );
-        assert_eq!(map.host, 2, "host should use system RAM for staging");
+        assert_eq!(map.staging, 2, "staging should use system RAM for staging");
         assert_eq!(map.dynamic, 3, "dynamic should use HOST_CACHED type");
         assert!(!map.dynamic_device_local);
         assert_eq!(
-            map.upload, 1,
+            map.upload[..],
+            [1],
             "upload should use ReBAR type (DEVICE_LOCAL + HOST_VISIBLE)"
         );
         assert!(map.upload_host_visible, "ReBAR allows direct upload");
         assert_eq!(map.uniform, 1, "uniform should use ReBAR type");
     }
 
-    /// AMD discrete GPU with 256MB BAR (pre-SAM).
-    /// Small host-visible window into VRAM.
+    // NVIDIA on Mesa NVK: layouts follow nvk_create_drm_physical_device. NVK exposes at most
+    // three types and only one system RAM type, which is HOST_CACHED (the GPU snoops CPU
+    // caches across PCIe). VRAM is CPU-mappable only from Maxwell on, through a separate
+    // BAR heap unless the BAR covers all of VRAM. The system RAM heap is 75% of RAM (32GB
+    // machines here).
+
+    /// NVK on a Maxwell or newer discrete GPU without resizable BAR.
     #[test]
-    fn test_amd_256mb_bar() {
-        // AMD RX 6800 XT without SAM:
-        // Heap 0: 16GB VRAM (DEVICE_LOCAL)
-        // Heap 1: 256MB BAR (DEVICE_LOCAL) - small host-visible window
-        // Heap 2: 16GB system RAM
+    fn test_nvk_small_bar() {
+        // Heap 0: 10GB VRAM (DEVICE_LOCAL)
+        // Heap 1: 256MB BAR (DEVICE_LOCAL), the CPU-visible window into VRAM
+        // Heap 2: 24GB system RAM
         // Type 0: DEVICE_LOCAL (heap 0)
-        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 1) - 256MB BAR
-        // Type 2: HOST_VISIBLE | HOST_COHERENT (heap 2)
-        // Type 3: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 2)
+        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 1)
+        // Type 2: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 2)
         let heaps = [
-            mem_heap(16 * GB, true),
+            mem_heap(10 * GB, true),
             mem_heap(256 * MB, true),
-            mem_heap(16 * GB, false),
+            mem_heap(24 * GB, false),
         ];
         let types = [
             mem_type(0, DL),
             mem_type(1, flags(&[DL, HV, HC])),
-            mem_type(2, flags(&[HV, HC])),
             mem_type(2, flags(&[HV, HC, HCA])),
         ];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
 
-        assert_eq!(map.private, 0, "private should use main VRAM heap");
-        assert_eq!(map.host, 2, "host should use system RAM");
-        assert_eq!(map.dynamic, 3, "dynamic should use HOST_CACHED");
-        assert!(!map.dynamic_device_local);
-        // For discrete GPU, 256MB BAR is still usable for uploads
+        assert_eq!(map.private[..], [0, 1], "private prefers VRAM over the BAR");
         assert_eq!(
-            map.upload, 0,
+            map.staging, 2,
+            "staging stays out of the BAR even though system RAM is HOST_CACHED"
+        );
+        assert_eq!(map.dynamic, 2);
+        assert!(!map.dynamic_device_local);
+        assert_eq!(map.upload[..], [0, 1], "256MB BAR is too small for upload");
+        assert!(!map.upload_host_visible);
+        assert_eq!(map.uniform, 1, "uniform should use the BAR");
+    }
+
+    /// NVK without resizable BAR, for images with HOST_TRANSFER usage (host image copy,
+    /// Turing+). When the BAR is smaller than VRAM, NVK allows such images only the
+    /// HOST_VISIBLE types, so even `private` memory lands in the BAR heap.
+    #[test]
+    fn test_nvk_small_bar_host_image_copy() {
+        let heaps = [
+            mem_heap(10 * GB, true),
+            mem_heap(256 * MB, true),
+            mem_heap(24 * GB, false),
+        ];
+        let types = [
+            mem_type(0, DL),
+            mem_type(1, flags(&[DL, HV, HC])),
+            mem_type(2, flags(&[HV, HC, HCA])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+
+        // nvk_get_image_memory_requirements drops type 0
+        let host_transfer_bits = 0b110;
+        assert_eq!(first_allowed(&map.private, host_transfer_bits), Ok(1));
+        assert_eq!(first_allowed(&map.upload, host_transfer_bits), Ok(1));
+        // Every other buffer and image allows all types
+        assert_eq!(first_allowed(&map.private, 0b111), Ok(0));
+        assert_eq!(first_allowed(&map.upload, 0b111), Ok(0));
+    }
+
+    /// NVK on a Maxwell or newer discrete GPU whose resized BAR is still smaller than VRAM,
+    /// e.g. when the host bridge window can't fit all of it. NVK keeps the separate BAR
+    /// heap, but at 8GB it's large enough for upload memory.
+    #[test]
+    fn test_nvk_partial_bar() {
+        // Heap 0: 12GB VRAM (DEVICE_LOCAL)
+        // Heap 1: 8GB BAR (DEVICE_LOCAL)
+        // Heap 2: 24GB system RAM
+        // Type 0: DEVICE_LOCAL (heap 0)
+        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 1)
+        // Type 2: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 2)
+        let heaps = [
+            mem_heap(12 * GB, true),
+            mem_heap(8 * GB, true),
+            mem_heap(24 * GB, false),
+        ];
+        let types = [
+            mem_type(0, DL),
+            mem_type(1, flags(&[DL, HV, HC])),
+            mem_type(2, flags(&[HV, HC, HCA])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+
+        assert_eq!(map.private[..], [0, 1]);
+        assert_eq!(map.staging, 2);
+        assert_eq!(map.dynamic, 2);
+        assert!(!map.dynamic_device_local);
+        assert_eq!(map.upload[..], [1], "upload should use the large BAR");
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 1);
+    }
+
+    /// NVK on a Maxwell or newer discrete GPU whose BAR covers all of VRAM. NVK reports
+    /// the same layout when it can't learn the BAR size (kernels without
+    /// NOUVEAU_GETPARAM_VRAM_BAR_SIZE), even though only part of VRAM is mappable then.
+    #[test]
+    fn test_nvk_rebar() {
+        // Heap 0: 10GB VRAM (DEVICE_LOCAL)
+        // Heap 1: 24GB system RAM
+        // Type 0: DEVICE_LOCAL (heap 0)
+        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 0)
+        // Type 2: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 1)
+        let heaps = [mem_heap(10 * GB, true), mem_heap(24 * GB, false)];
+        let types = [
+            mem_type(0, DL),
+            mem_type(0, flags(&[DL, HV, HC])),
+            mem_type(1, flags(&[HV, HC, HCA])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+
+        assert_eq!(map.private[..], [0, 1]);
+        assert_eq!(map.staging, 2, "staging should use system RAM");
+        assert_eq!(map.dynamic, 2);
+        assert!(!map.dynamic_device_local);
+        assert_eq!(map.upload[..], [1], "upload should use host-visible VRAM");
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 1);
+    }
+
+    /// NVK on Kepler discrete GPUs, where VRAM can't be mapped at all. NVK doesn't
+    /// support anything older.
+    #[test]
+    fn test_nvk_kepler() {
+        // Heap 0: 3GB VRAM (DEVICE_LOCAL)
+        // Heap 1: 24GB system RAM
+        // Type 0: DEVICE_LOCAL (heap 0)
+        // Type 1: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 1)
+        let heaps = [mem_heap(3 * GB, true), mem_heap(24 * GB, false)];
+        let types = [mem_type(0, DL), mem_type(1, flags(&[HV, HC, HCA]))];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+
+        assert_eq!(map.private[..], [0]);
+        assert_eq!(map.staging, 1);
+        assert_eq!(map.dynamic, 1);
+        assert!(!map.dynamic_device_local);
+        assert_eq!(map.upload[..], [0]);
+        assert!(!map.upload_host_visible);
+        assert_eq!(
+            map.uniform,
+            u32::MAX,
+            "no DEVICE_LOCAL + HOST_VISIBLE = uniform unavailable"
+        );
+    }
+
+    /// NVK on Tegra: system RAM only, reported as one DEVICE_LOCAL heap. The two types
+    /// differ only in cached or coherent CPU maps. NVK only exposes Tegra with
+    /// NVK_I_WANT_A_BROKEN_VULKAN_DRIVER=1.
+    #[test]
+    fn test_nvk_tegra() {
+        // Heap 0: 24GB system RAM (DEVICE_LOCAL)
+        // Type 0: DEVICE_LOCAL | HOST_VISIBLE | HOST_CACHED (not coherent)
+        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT
+        let heaps = [mem_heap(24 * GB, true)];
+        let types = [
+            mem_type(0, flags(&[DL, HV, HCA])),
+            mem_type(0, flags(&[DL, HV, HC])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+
+        assert_eq!(map.private[..], [0, 1]);
+        assert_eq!(map.staging, 1, "staging should use the coherent type");
+        assert_eq!(
+            map.dynamic, 1,
+            "dynamic gives up HOST_CACHED for HOST_COHERENT"
+        );
+        assert!(map.dynamic_device_local);
+        assert_eq!(
+            map.upload[..],
+            [1],
+            "upload skips the non-coherent type listed first"
+        );
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 1, "uniform must be HOST_COHERENT");
+    }
+
+    // AMD (Mesa radv) layouts below follow radv_physical_device_init_mem_types. Heaps are
+    // VRAM the CPU can't map, GTT (system RAM), then CPU-mappable VRAM, each only if present.
+    // Types are VRAM, GTT write-combined, CPU-mappable VRAM, then GTT cached. Every type but
+    // GTT write-combined is followed by a copy with identical flags in the 32-bit address
+    // space, for descriptor buffers only: normal buffers and images can't use those copies,
+    // so the lowest-index tie must win. TMZ adds PROTECTED copies (GFX10+ and Vega10, when the
+    // kernel enables it), and GFX9+ then appends DEVICE_COHERENT_AMD | DEVICE_UNCACHED_AMD
+    // copies of the types that are neither 32-bit nor PROTECTED.
+
+    /// Checks `map` against the memoryTypeBits radv reports (radv_buffer.c, radv_device.c).
+    /// `buffer_bits` are the types buffers and images may use: every type but the 32-bit
+    /// copies. Returns the types a buffer and an uploaded buffer get.
+    fn radv_selection(map: &MemoryTypeMapInner, buffer_bits: u32) -> (u32, u32) {
+        let allowed = |i: u32| buffer_bits & (1 << i) != 0;
+        assert!(
+            allowed(map.staging),
+            "staging must be a type buffers can use"
+        );
+        assert!(
+            allowed(map.dynamic),
+            "dynamic must be a type buffers can use"
+        );
+        if map.uniform != u32::MAX {
+            assert!(
+                allowed(map.uniform),
+                "uniform must be a type buffers can use"
+            );
+        }
+        (
+            first_allowed(&map.private, buffer_bits).unwrap(),
+            first_allowed(&map.upload, buffer_bits).unwrap(),
+        )
+    }
+
+    /// AMD discrete GPU, GFX9+ (Vega, RDNA), without resizable BAR: the CPU-mappable part of
+    /// VRAM is split into its own 256MB heap. `radv_hide_rebar_on_dgpu` exposes the same
+    /// layout with resizable BAR.
+    #[test]
+    fn test_amd_256mb_bar() {
+        // AMD RX 6800 XT without SAM:
+        // Heap 0: 15.75GB VRAM not mappable by the CPU (DEVICE_LOCAL)
+        // Heap 1: 16GB GTT
+        // Heap 2: 256MB CPU-mappable VRAM (DEVICE_LOCAL)
+        // Type 0: DEVICE_LOCAL (heap 0)
+        // Type 2: HOST_VISIBLE | HOST_COHERENT (heap 1) - write-combined
+        // Type 3: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 2) - 256MB BAR
+        // Type 5: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 1)
+        // Types 1, 4, 6: 32-bit copies of types 0, 3, 5
+        // Types 7-10: DEVICE_COHERENT_AMD copies of types 0, 2, 3, 5
+        let heaps = [
+            mem_heap(16 * GB - 256 * MB, true),
+            mem_heap(16 * GB, false),
+            mem_heap(256 * MB, true),
+        ];
+        let types = [
+            mem_type(0, DL),
+            mem_type(0, DL),
+            mem_type(1, flags(&[HV, HC])),
+            mem_type(2, flags(&[DL, HV, HC])),
+            mem_type(2, flags(&[DL, HV, HC])),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(0, flags(&[DL, DLC_AMD, DLU_AMD])),
+            mem_type(1, flags(&[HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(2, flags(&[DL, HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(1, flags(&[HV, HC, HCA, DLC_AMD, DLU_AMD])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+
+        assert_eq!(
+            map.private[..],
+            [0, 1, 3, 4],
+            "private should use main VRAM heap"
+        );
+        assert_eq!(
+            map.staging, 2,
+            "staging should use write-combined system RAM"
+        );
+        assert_eq!(map.dynamic, 5, "dynamic should use HOST_CACHED");
+        assert!(!map.dynamic_device_local);
+        assert_eq!(
+            map.upload[..],
+            [0, 1, 3, 4],
             "upload should use private, requiring staging"
         );
         assert!(
             !map.upload_host_visible,
             "256MB BAR does not allow direct upload"
         );
-        assert_eq!(map.uniform, 1, "uniform should use 256MB BAR");
+        assert_eq!(map.uniform, 3, "uniform should use 256MB BAR");
+        assert_eq!(radv_selection(&map, 0b111_1010_1101), (0, 0));
     }
 
-    /// AMD discrete GPU with SAM (Smart Access Memory) / Resizable BAR.
-    /// Full VRAM is host-visible.
+    /// AMD discrete GPU, GFX9+, with SAM (Smart Access Memory) / resizable BAR. All of VRAM
+    /// is CPU-mappable, so there's no heap for VRAM the CPU can't map.
     #[test]
     fn test_amd_sam() {
         // AMD RX 6800 XT with SAM enabled:
-        // Heap 0: 16GB VRAM (DEVICE_LOCAL)
-        // Heap 1: 16GB system RAM
-        // Type 0: DEVICE_LOCAL (heap 0)
-        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 0) - full ReBAR
-        // Type 2: HOST_VISIBLE | HOST_COHERENT (heap 1)
-        // Type 3: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 1)
-        let heaps = [mem_heap(16 * GB, true), mem_heap(16 * GB, false)];
+        // Heap 0: 16GB GTT
+        // Heap 1: 16GB VRAM (DEVICE_LOCAL)
+        // Type 0: DEVICE_LOCAL (heap 1)
+        // Type 2: HOST_VISIBLE | HOST_COHERENT (heap 0) - write-combined
+        // Type 3: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 1) - full ReBAR
+        // Type 5: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 0)
+        // Types 1, 4, 6: 32-bit copies of types 0, 3, 5
+        // Types 7-10: DEVICE_COHERENT_AMD copies of types 0, 2, 3, 5
+        let heaps = [mem_heap(16 * GB, false), mem_heap(16 * GB, true)];
         let types = [
-            mem_type(0, DL),
-            mem_type(0, flags(&[DL, HV, HC])),
-            mem_type(1, flags(&[HV, HC])),
-            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(1, DL),
+            mem_type(1, DL),
+            mem_type(0, flags(&[HV, HC])),
+            mem_type(1, flags(&[DL, HV, HC])),
+            mem_type(1, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[HV, HC, HCA])),
+            mem_type(0, flags(&[HV, HC, HCA])),
+            mem_type(1, flags(&[DL, DLC_AMD, DLU_AMD])),
+            mem_type(0, flags(&[HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(1, flags(&[DL, HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(0, flags(&[HV, HC, HCA, DLC_AMD, DLU_AMD])),
         ];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
 
-        assert_eq!(map.private, 0, "private should prefer pure DEVICE_LOCAL");
-        assert_eq!(map.host, 2, "host should use system RAM");
-        assert_eq!(map.dynamic, 3, "dynamic should use HOST_CACHED");
+        assert_eq!(
+            map.private[..],
+            [0, 1, 3, 4],
+            "private should prefer pure DEVICE_LOCAL"
+        );
+        assert_eq!(map.staging, 2, "staging should use system RAM");
+        assert_eq!(map.dynamic, 5, "dynamic should use HOST_CACHED");
         assert!(!map.dynamic_device_local);
-        assert_eq!(map.upload, 1, "upload should use SAM/ReBAR type");
+        assert_eq!(map.upload[..], [3], "upload should use SAM/ReBAR type");
         assert!(map.upload_host_visible, "SAM allows direct upload");
-        assert_eq!(map.uniform, 1, "uniform should use SAM/ReBAR type");
+        assert_eq!(map.uniform, 3, "uniform should use SAM/ReBAR type");
+        assert_eq!(radv_selection(&map, 0b111_1010_1101), (0, 3));
     }
 
-    /// AMD APU (e.g., Steam Deck, Ryzen 7000 series APU).
-    /// 256MB "virtual" DEVICE_LOCAL heap, rest is HOST_VISIBLE system RAM.
+    /// AMD discrete GPU, GFX9+, with a BAR larger than 256MB that still leaves over 10% of
+    /// VRAM unmappable (e.g. firmware capping the resizable BAR): radv keeps the three-heap
+    /// layout of test_amd_256mb_bar, but the CPU-mappable heap is large enough for uploads.
+    /// Illustrative layout, not captured from real hardware.
     #[test]
-    fn test_amd_apu() {
-        // AMD Ryzen 7 6800U (Rembrandt APU) pattern:
-        // Heap 0: 256MB "carve-out" (DEVICE_LOCAL) - virtual VRAM
-        // Heap 1: 14GB system RAM
-        // Type 0: DEVICE_LOCAL (heap 0) - too small for general use!
-        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 0)
-        // Type 2: HOST_VISIBLE | HOST_COHERENT (heap 1) - main memory
-        // Type 3: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 1)
+    fn test_amd_partial_bar() {
+        // AMD RX 7900 XTX with a 16GB BAR:
+        // Heap 0: 8GB VRAM not mappable by the CPU (DEVICE_LOCAL)
+        // Heap 1: 16GB GTT
+        // Heap 2: 16GB CPU-mappable VRAM (DEVICE_LOCAL)
+        // Types 0-10: as in test_amd_256mb_bar
         let heaps = [
+            mem_heap(8 * GB, true),
+            mem_heap(16 * GB, false),
             mem_heap(16 * GB, true),
-            mem_heap(8 * GB, false),
+        ];
+        let types = [
+            mem_type(0, DL),
+            mem_type(0, DL),
+            mem_type(1, flags(&[HV, HC])),
+            mem_type(2, flags(&[DL, HV, HC])),
+            mem_type(2, flags(&[DL, HV, HC])),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(0, flags(&[DL, DLC_AMD, DLU_AMD])),
+            mem_type(1, flags(&[HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(2, flags(&[DL, HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(1, flags(&[HV, HC, HCA, DLC_AMD, DLU_AMD])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+
+        assert_eq!(
+            map.private[..],
+            [0, 1, 3, 4],
+            "private should prefer VRAM the CPU can't map, even from a smaller heap"
+        );
+        assert_eq!(map.staging, 2);
+        assert_eq!(map.dynamic, 5);
+        assert!(!map.dynamic_device_local);
+        assert_eq!(
+            map.upload[..],
+            [3],
+            "a 16GB BAR is large enough for uploads"
+        );
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 3);
+        assert_eq!(radv_selection(&map, 0b111_1010_1101), (0, 3));
+    }
+
+    /// AMD discrete GPU before GFX9 (Southern Islands through Polaris): no
+    /// DEVICE_COHERENT_AMD types.
+    #[test]
+    fn test_amd_gfx8_discrete() {
+        // AMD RX 580 (Polaris) without resizable BAR:
+        // Heap 0: 7.75GB VRAM not mappable by the CPU (DEVICE_LOCAL)
+        // Heap 1: 16GB GTT
+        // Heap 2: 256MB CPU-mappable VRAM (DEVICE_LOCAL)
+        // Types 0-6: as in test_amd_256mb_bar
+        let heaps = [
+            mem_heap(8 * GB - 256 * MB, true),
+            mem_heap(16 * GB, false),
             mem_heap(256 * MB, true),
         ];
         let types = [
             mem_type(0, DL),
-            mem_type(0, flags(&[DL, DLC_AMD, DLU_AMD])),
             mem_type(0, DL),
-            mem_type(0, flags(&[DL, DLC_AMD, DLU_AMD])),
             mem_type(1, flags(&[HV, HC])),
-            mem_type(1, flags(&[HV, HC, HCA])),
-            mem_type(1, flags(&[HV, HC, DLC_AMD, DLU_AMD])),
-            mem_type(1, flags(&[HV, HC, HCA, DLC_AMD, DLU_AMD])),
-            mem_type(1, flags(&[HV, HC])),
-            mem_type(1, flags(&[HV, HC, HCA])),
-            mem_type(1, flags(&[HV, HC, DLC_AMD, DLU_AMD])),
-            mem_type(1, flags(&[HV, HC, HCA, DLC_AMD, DLU_AMD])),
             mem_type(2, flags(&[DL, HV, HC])),
-            mem_type(2, flags(&[DL, HV, HC, DLC_AMD, DLU_AMD])),
             mem_type(2, flags(&[DL, HV, HC])),
-            mem_type(2, flags(&[DL, HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(1, flags(&[HV, HC, HCA])),
         ];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
 
-        // Private can still use the small DEVICE_LOCAL heap for scratch data
-        assert_eq!(map.private, 0, "private should use DEVICE_LOCAL");
-        assert_eq!(map.host, 4, "host should use system RAM (non-cached)");
-        assert_eq!(map.dynamic, 5, "dynamic should use HOST_CACHED");
-        assert!(map.dynamic_device_local);
-        // Upload should fall back to system RAM because 256MB is too small
-        assert_eq!(
-            map.upload, 4,
-            "upload should fall back to HOST_VISIBLE (system RAM)"
-        );
-        assert!(
-            map.upload_host_visible,
-            "APU with system RAM doesn't need staging"
-        );
-        assert_eq!(
-            map.uniform, 12,
-            "uniform should use 256MB BAR (DL+HV on heap 2)"
-        );
+        assert_eq!(map.private[..], [0, 1, 3, 4]);
+        assert_eq!(map.staging, 2);
+        assert_eq!(map.dynamic, 5);
+        assert!(!map.dynamic_device_local);
+        assert_eq!(map.upload[..], [0, 1, 3, 4]);
+        assert!(!map.upload_host_visible);
+        assert_eq!(map.uniform, 3);
+        assert_eq!(radv_selection(&map, 0b010_1101), (0, 0));
     }
 
-    /// Steam Deck (AMD Van Gogh APU).
-    /// Similar to AMD APU but with specific memory configuration.
+    /// AMD discrete GPU, GFX10+ or Vega10, with TMZ enabled by the kernel (`amdgpu.tmz=1`).
+    /// Unlike on APUs, the PROTECTED VRAM types are split between the VRAM heap the CPU can't
+    /// map and the 256MB BAR heap, so the largest DEVICE_LOCAL heap has PROTECTED types.
     #[test]
-    fn test_steam_deck() {
-        // Steam Deck (AMD Van Gogh) pattern:
-        // Heap 0: 256MB DEVICE_LOCAL
-        // Heap 1: ~14GB system RAM
-        // Same type layout as other AMD APUs
-        let heaps = [mem_heap(4 * MB, false), mem_heap(8 * GB, true)];
+    fn test_amd_tmz_discrete() {
+        // AMD RX 6800 XT without SAM:
+        // Heaps as in test_amd_256mb_bar
+        // Types 0-6: as in test_amd_256mb_bar
+        // Types 7-8: DEVICE_LOCAL | PROTECTED (heap 0), VRAM the CPU can't map
+        // Types 9-10: DEVICE_LOCAL | PROTECTED (heap 2), CPU-mappable VRAM
+        // Types 11-12: PROTECTED (heap 1), GTT
+        // Types 13-16: DEVICE_COHERENT_AMD copies of types 0, 2, 3, 5
+        let heaps = [
+            mem_heap(16 * GB - 256 * MB, true),
+            mem_heap(16 * GB, false),
+            mem_heap(256 * MB, true),
+        ];
         let types = [
-            mem_type(0, flags(&[HV, HC])),
-            mem_type(0, flags(&[HV, HC, HCA])),
-            mem_type(0, flags(&[HV, HC, HCA])),
-            mem_type(0, flags(&[HV, HC, DLC_AMD, DLU_AMD])),
-            mem_type(0, flags(&[HV, HC, HCA, DLC_AMD, DLU_AMD])),
-            mem_type(1, DL),
-            mem_type(1, DL),
-            mem_type(1, flags(&[DL, HV, HC])),
-            mem_type(1, flags(&[DL, HV, HC])),
-            mem_type(1, flags(&[DL, DLC_AMD, DLU_AMD])),
-            mem_type(1, flags(&[DL, HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(0, DL),
+            mem_type(0, DL),
+            mem_type(1, flags(&[HV, HC])),
+            mem_type(2, flags(&[DL, HV, HC])),
+            mem_type(2, flags(&[DL, HV, HC])),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(0, flags(&[DL, PROT])),
+            mem_type(0, flags(&[DL, PROT])),
+            mem_type(2, flags(&[DL, PROT])),
+            mem_type(2, flags(&[DL, PROT])),
+            mem_type(1, PROT),
+            mem_type(1, PROT),
+            mem_type(0, flags(&[DL, DLC_AMD, DLU_AMD])),
+            mem_type(1, flags(&[HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(2, flags(&[DL, HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(1, flags(&[HV, HC, HCA, DLC_AMD, DLU_AMD])),
         ];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
 
-        assert_eq!(map.private, 5);
-        assert_eq!(map.host, 0);
-        assert_eq!(map.dynamic, 1);
-        assert!(map.dynamic_device_local);
-        assert_eq!(map.upload, 7);
-        assert!(map.upload_host_visible);
-        assert_eq!(map.uniform, 7, "uniform should use DL+HV type on heap 1");
+        assert_eq!(map.private[..], [0, 1, 3, 4]);
+        assert_eq!(map.staging, 2);
+        assert_eq!(map.dynamic, 5);
+        assert!(!map.dynamic_device_local);
+        assert_eq!(map.upload[..], [0, 1, 3, 4]);
+        assert!(!map.upload_host_visible);
+        assert_eq!(map.uniform, 3);
+        assert_eq!(radv_selection(&map, 0b1_1110_1010_1010_1101), (0, 0));
     }
 
-    /// Older Intel discrete GPU (Arc series).
-    /// Discrete with separate heaps but potentially different layout.
+    /// AMD APU, GFX9+ (Raven through Strix, including Steam Deck's Van Gogh). radv adds the
+    /// VRAM carve-out and GTT together and reports 2/3 of the total as one CPU-mappable
+    /// VRAM heap and the rest as GTT, however small the carve-out is.
     #[test]
-    fn test_intel_arc() {
-        // Intel Arc A770 pattern:
-        // Heap 0: 16GB VRAM (DEVICE_LOCAL)
-        // Heap 1: 32GB system RAM
+    fn test_amd_apu() {
+        // AMD Ryzen 7 6800U (Rembrandt), 1GB carve-out and 15GB GTT:
+        // Heap 0: 1/3 of 16GB GTT
+        // Heap 1: 2/3 of 16GB "VRAM" (DEVICE_LOCAL)
+        // Type 0: DEVICE_LOCAL (heap 1)
+        // Type 2: HOST_VISIBLE | HOST_COHERENT (heap 0) - write-combined
+        // Type 3: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 1)
+        // Type 5: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 0)
+        // Types 1, 4, 6: 32-bit copies of types 0, 3, 5
+        // Types 7-10: DEVICE_COHERENT_AMD copies of types 0, 2, 3, 5
+        let total = GB + 15 * GB;
+        let vram = (total * 2 / 3).next_multiple_of(4096);
+        let heaps = [mem_heap(total - vram, false), mem_heap(vram, true)];
+        let types = [
+            mem_type(1, DL),
+            mem_type(1, DL),
+            mem_type(0, flags(&[HV, HC])),
+            mem_type(1, flags(&[DL, HV, HC])),
+            mem_type(1, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[HV, HC, HCA])),
+            mem_type(0, flags(&[HV, HC, HCA])),
+            mem_type(1, flags(&[DL, DLC_AMD, DLU_AMD])),
+            mem_type(0, flags(&[HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(1, flags(&[DL, HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(0, flags(&[HV, HC, HCA, DLC_AMD, DLU_AMD])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+
+        assert_eq!(map.private[..], [0, 1, 3, 4]);
+        assert_eq!(map.staging, 2, "staging should use write-combined GTT");
+        assert_eq!(map.dynamic, 5, "dynamic should use HOST_CACHED GTT");
+        assert!(map.dynamic_device_local);
+        assert_eq!(
+            map.upload[..],
+            [3],
+            "the CPU-mappable VRAM heap is large enough for uploads"
+        );
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 3);
+        assert_eq!(radv_selection(&map, 0b111_1010_1101), (0, 3));
+    }
+
+    /// AMD APU, GFX10+, with TMZ enabled by the kernel (`amdgpu.tmz=1`): PROTECTED types
+    /// come between the 32-bit copies and the DEVICE_COHERENT_AMD types.
+    #[test]
+    fn test_amd_apu_tmz() {
+        // Heaps as in test_amd_apu
+        // Types 0-6: as in test_amd_apu
+        // Types 7-10: DEVICE_LOCAL | PROTECTED (heap 1), VRAM and CPU-mappable VRAM
+        // Types 11-12: PROTECTED (heap 0), GTT
+        // Types 13-16: DEVICE_COHERENT_AMD copies of types 0, 2, 3, 5
+        let total = GB + 15 * GB;
+        let vram = (total * 2 / 3).next_multiple_of(4096);
+        let heaps = [mem_heap(total - vram, false), mem_heap(vram, true)];
+        let types = [
+            mem_type(1, DL),
+            mem_type(1, DL),
+            mem_type(0, flags(&[HV, HC])),
+            mem_type(1, flags(&[DL, HV, HC])),
+            mem_type(1, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[HV, HC, HCA])),
+            mem_type(0, flags(&[HV, HC, HCA])),
+            mem_type(1, flags(&[DL, PROT])),
+            mem_type(1, flags(&[DL, PROT])),
+            mem_type(1, flags(&[DL, PROT])),
+            mem_type(1, flags(&[DL, PROT])),
+            mem_type(0, PROT),
+            mem_type(0, PROT),
+            mem_type(1, flags(&[DL, DLC_AMD, DLU_AMD])),
+            mem_type(0, flags(&[HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(1, flags(&[DL, HV, HC, DLC_AMD, DLU_AMD])),
+            mem_type(0, flags(&[HV, HC, HCA, DLC_AMD, DLU_AMD])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+
+        assert_eq!(map.private[..], [0, 1, 3, 4]);
+        assert_eq!(map.staging, 2);
+        assert_eq!(map.dynamic, 5);
+        assert!(map.dynamic_device_local);
+        assert_eq!(map.upload[..], [3]);
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 3);
+        assert_eq!(radv_selection(&map, 0b1_1110_1010_1010_1101), (0, 3));
+    }
+
+    /// AMD APU before GFX9 (Kaveri, Carrizo, Bristol Ridge): no DEVICE_COHERENT_AMD types.
+    #[test]
+    fn test_amd_gfx8_apu() {
+        // AMD A10-9700 (Bristol Ridge), 512MB carve-out and 8GB GTT:
+        // Heaps as in test_amd_apu
+        // Types 0-6: as in test_amd_apu
+        let total = 512 * MB + 8 * GB;
+        let vram = (total * 2 / 3).next_multiple_of(4096);
+        let heaps = [mem_heap(total - vram, false), mem_heap(vram, true)];
+        let types = [
+            mem_type(1, DL),
+            mem_type(1, DL),
+            mem_type(0, flags(&[HV, HC])),
+            mem_type(1, flags(&[DL, HV, HC])),
+            mem_type(1, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[HV, HC, HCA])),
+            mem_type(0, flags(&[HV, HC, HCA])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+
+        assert_eq!(map.private[..], [0, 1, 3, 4]);
+        assert_eq!(map.staging, 2);
+        assert_eq!(map.dynamic, 5);
+        assert!(map.dynamic_device_local);
+        assert_eq!(map.upload[..], [3]);
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 3);
+        assert_eq!(radv_selection(&map, 0b010_1101), (0, 3));
+    }
+
+    /// AMD APU with `radv_enable_unified_heap_on_apu`: the carve-out and GTT become one
+    /// DEVICE_LOCAL heap with only VRAM types, so there's no HOST_CACHED type.
+    #[test]
+    fn test_amd_apu_unified_heap() {
+        // Heap 0: 16GB "VRAM" (DEVICE_LOCAL)
+        // Type 0: DEVICE_LOCAL
+        // Type 2: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT
+        // Types 1, 3: 32-bit copies of types 0, 2
+        // Types 4-5: DEVICE_COHERENT_AMD copies of types 0, 2
+        let heaps = [mem_heap(16 * GB, true)];
+        let types = [
+            mem_type(0, DL),
+            mem_type(0, DL),
+            mem_type(0, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[DL, DLC_AMD, DLU_AMD])),
+            mem_type(0, flags(&[DL, HV, HC, DLC_AMD, DLU_AMD])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+
+        assert_eq!(map.private[..], [0, 1, 2, 3]);
+        assert_eq!(map.staging, 2);
+        assert_eq!(map.dynamic, 2, "dynamic falls back to the uncached type");
+        assert!(map.dynamic_device_local);
+        assert_eq!(map.upload[..], [2]);
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 2);
+        assert_eq!(radv_selection(&map, 0b11_0101), (0, 2));
+    }
+
+    /// Integrated GPU whose only DEVICE_LOCAL + HOST_VISIBLE heap is a small carve-out, so
+    /// uploads go to system RAM instead. radv doesn't expose this layout (see
+    /// test_amd_apu). Illustrative layout, not captured from real hardware.
+    #[test]
+    fn test_integrated_small_carveout() {
+        // Heap 0: 256MB carve-out (DEVICE_LOCAL)
+        // Heap 1: 16GB system RAM
         // Type 0: DEVICE_LOCAL (heap 0)
-        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 0) - ReBAR
+        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 0)
         // Type 2: HOST_VISIBLE | HOST_COHERENT (heap 1)
         // Type 3: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 1)
-        let heaps = [mem_heap(16 * GB, true), mem_heap(32 * GB, false)];
+        let heaps = [mem_heap(256 * MB, true), mem_heap(16 * GB, false)];
         let types = [
             mem_type(0, DL),
             mem_type(0, flags(&[DL, HV, HC])),
@@ -1131,15 +1830,196 @@ mod tests {
             mem_type(1, flags(&[HV, HC, HCA])),
         ];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
 
-        assert_eq!(map.private, 0, "private should use pure DEVICE_LOCAL");
-        assert_eq!(map.host, 2, "host should use system RAM");
-        assert_eq!(map.dynamic, 3, "dynamic should use HOST_CACHED");
-        assert!(!map.dynamic_device_local);
-        assert_eq!(map.upload, 1, "upload should use ReBAR");
+        assert_eq!(map.private[..], [0, 1]);
+        assert_eq!(map.staging, 2);
+        assert_eq!(map.dynamic, 3);
+        assert!(map.dynamic_device_local);
+        assert_eq!(
+            map.upload[..],
+            [2],
+            "upload should fall back to HOST_VISIBLE (system RAM)"
+        );
         assert!(map.upload_host_visible);
-        assert_eq!(map.uniform, 1, "uniform should use ReBAR type");
+        assert_eq!(map.uniform, 1, "uniform should use the carve-out");
+    }
+
+    /// Intel Arc A-series (Alchemist) discrete GPU on i915 with resizable BAR. DG1 (Iris Xe
+    /// MAX) uses the same layout. There's no uncached system RAM type.
+    #[test]
+    fn test_intel_arc_rebar() {
+        // Intel Arc A770:
+        // Heap 0: 16GB VRAM (DEVICE_LOCAL)
+        // Heap 1: 24GB system RAM
+        // Type 0: DEVICE_LOCAL (heap 0)
+        // Type 1: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 1)
+        // Type 2: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 0) - ReBAR
+        // Types 3-5: descriptor buffer copies of types 0-2
+        let heaps = [mem_heap(16 * GB, true), mem_heap(24 * GB, false)];
+        let types = [
+            mem_type(0, DL),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(0, flags(&[DL, HV, HC])),
+            mem_type(0, DL),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(0, flags(&[DL, HV, HC])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+
+        assert_eq!(
+            map.private[..],
+            [0, 3, 2, 5],
+            "private should use pure DEVICE_LOCAL"
+        );
+        assert_eq!(
+            map.staging, 1,
+            "host should use system RAM, even though it's HOST_CACHED"
+        );
+        assert_eq!(map.dynamic, 1, "dynamic should use HOST_CACHED system RAM");
+        assert!(!map.dynamic_device_local);
+        assert_eq!(map.upload[..], [2], "upload should use ReBAR");
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 2, "uniform should use ReBAR type");
+        assert_eq!(anv_selection(&map, 0b111, 0), (0, 0, 2));
+    }
+
+    /// Intel Arc A-series discrete GPU on i915 without resizable BAR: the CPU-mappable part
+    /// of VRAM is split into its own 256MB heap.
+    #[test]
+    fn test_intel_arc_small_bar() {
+        // Heap 0: 15.75GB VRAM not mappable by the CPU (DEVICE_LOCAL)
+        // Heap 1: 24GB system RAM
+        // Heap 2: 256MB CPU-mappable VRAM (DEVICE_LOCAL)
+        // Type 0: DEVICE_LOCAL (heap 0)
+        // Type 1: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 1)
+        // Type 2: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 2)
+        // Types 3-5: descriptor buffer copies of types 0-2
+        let heaps = [
+            mem_heap(16 * GB - 256 * MB, true),
+            mem_heap(24 * GB, false),
+            mem_heap(256 * MB, true),
+        ];
+        let types = [
+            mem_type(0, DL),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(2, flags(&[DL, HV, HC])),
+            mem_type(0, DL),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(2, flags(&[DL, HV, HC])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+
+        assert_eq!(map.private[..], [0, 3, 2, 5]);
+        assert_eq!(
+            map.staging, 1,
+            "staging should use system RAM, not the 256MB BAR heap uniforms share"
+        );
+        assert_eq!(map.dynamic, 1, "dynamic should use HOST_CACHED system RAM");
+        assert!(!map.dynamic_device_local);
+        assert_eq!(
+            map.upload[..],
+            [0, 3, 2, 5],
+            "upload should use private, requiring staging"
+        );
+        assert!(!map.upload_host_visible);
+        assert_eq!(map.uniform, 2, "uniform should use 256MB BAR");
+        assert_eq!(anv_selection(&map, 0b111, 0), (0, 0, 0));
+    }
+
+    /// Intel Arc B-series (Battlemage) discrete GPU on the Xe KMD with resizable BAR.
+    #[test]
+    fn test_intel_battlemage() {
+        // Intel Arc B580:
+        // Heap 0: 12GB VRAM (DEVICE_LOCAL)
+        // Heap 1: 24GB system RAM
+        // Type 0: DEVICE_LOCAL (heap 0), compressed (images only)
+        // Type 1: DEVICE_LOCAL (heap 0)
+        // Type 2: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 1)
+        // Type 3: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 0) - ReBAR
+        // Types 4-6: descriptor buffer copies of types 1-3
+        let heaps = [mem_heap(12 * GB, true), mem_heap(24 * GB, false)];
+        let types = [
+            mem_type(0, DL),
+            mem_type(0, DL),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(0, flags(&[DL, HV, HC])),
+            mem_type(0, DL),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(0, flags(&[DL, HV, HC])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+
+        // anv's memoryTypeBits allow types 1-3 for buffers and images that can't be
+        // compressed, so they get type 1; compressible images also allow type 0.
+        assert_eq!(map.private[..], [0, 1, 4, 3, 6]);
+        assert_eq!(
+            map.staging, 2,
+            "host should use system RAM, even though it's HOST_CACHED"
+        );
+        assert_eq!(map.dynamic, 2, "dynamic should use HOST_CACHED system RAM");
+        assert!(!map.dynamic_device_local);
+        assert_eq!(map.upload[..], [3], "upload should use ReBAR");
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 3, "uniform should use ReBAR type");
+        assert_eq!(
+            anv_selection(&map, 0b1110, 0b0001),
+            (1, 0, 3),
+            "buffers skip the compressed type, compressible images take it"
+        );
+    }
+
+    /// Intel Arc B-series discrete GPU on the Xe KMD without resizable BAR: the compressed
+    /// type of Xe2 plus the 256MB CPU-mappable heap split out of VRAM.
+    #[test]
+    fn test_intel_battlemage_small_bar() {
+        // Heap 0: 11.75GB VRAM not mappable by the CPU (DEVICE_LOCAL)
+        // Heap 1: 24GB system RAM
+        // Heap 2: 256MB CPU-mappable VRAM (DEVICE_LOCAL)
+        // Type 0: DEVICE_LOCAL (heap 0), compressed (images only)
+        // Type 1: DEVICE_LOCAL (heap 0)
+        // Type 2: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED (heap 1)
+        // Type 3: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT (heap 2)
+        // Types 4-6: descriptor buffer copies of types 1-3
+        let heaps = [
+            mem_heap(12 * GB - 256 * MB, true),
+            mem_heap(24 * GB, false),
+            mem_heap(256 * MB, true),
+        ];
+        let types = [
+            mem_type(0, DL),
+            mem_type(0, DL),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(2, flags(&[DL, HV, HC])),
+            mem_type(0, DL),
+            mem_type(1, flags(&[HV, HC, HCA])),
+            mem_type(2, flags(&[DL, HV, HC])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+
+        assert_eq!(map.private[..], [0, 1, 4, 3, 6]);
+        assert_eq!(
+            map.staging, 2,
+            "staging should use system RAM, not the 256MB BAR heap uniforms share"
+        );
+        assert_eq!(map.dynamic, 2, "dynamic should use HOST_CACHED system RAM");
+        assert!(!map.dynamic_device_local);
+        assert_eq!(
+            map.upload[..],
+            [0, 1, 4, 3, 6],
+            "upload should use private, requiring staging"
+        );
+        assert!(!map.upload_host_visible);
+        assert_eq!(map.uniform, 3, "uniform should use 256MB BAR");
+        assert_eq!(
+            anv_selection(&map, 0b1110, 0b0001),
+            (1, 0, 1),
+            "uploaded buffers must skip the compressed type"
+        );
     }
 
     /// Qualcomm Adreno (mobile GPU in Android/Windows on ARM).
@@ -1151,14 +2031,22 @@ mod tests {
         let heaps = [mem_heap(8 * GB, true)];
         let types = [mem_type(0, DL), mem_type(0, flags(&[DL, HV, HC, HCA]))];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
 
         // Should prefer non-HOST_VISIBLE for private if available
-        assert_eq!(map.private, 0, "private should use pure DEVICE_LOCAL");
-        assert_eq!(map.host, 1, "host should use HOST_VISIBLE type");
+        assert_eq!(
+            map.private[..],
+            [0, 1],
+            "private should use pure DEVICE_LOCAL"
+        );
+        assert_eq!(map.staging, 1, "host should use HOST_VISIBLE type");
         assert_eq!(map.dynamic, 1, "dynamic should use HOST_CACHED type");
         assert!(map.dynamic_device_local);
-        assert_eq!(map.upload, 1, "upload should use HOST_VISIBLE DEVICE_LOCAL");
+        assert_eq!(
+            map.upload[..],
+            [1],
+            "upload should use HOST_VISIBLE DEVICE_LOCAL"
+        );
         assert!(map.upload_host_visible);
         assert_eq!(map.uniform, 1, "uniform should use DL+HV type");
     }
@@ -1173,13 +2061,13 @@ mod tests {
         let heaps = [mem_heap(4 * GB, true), mem_heap(8 * GB, false)];
         let types = [mem_type(0, DL), mem_type(1, flags(&[HV, HC, HCA]))];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
 
-        assert_eq!(map.private, 0);
-        assert_eq!(map.host, 1);
+        assert_eq!(map.private[..], [0]);
+        assert_eq!(map.staging, 1);
         assert_eq!(map.dynamic, 1);
         assert!(!map.dynamic_device_local);
-        assert_eq!(map.upload, 0, "upload must use DEVICE_LOCAL");
+        assert_eq!(map.upload[..], [0], "upload must use DEVICE_LOCAL");
         assert!(
             !map.upload_host_visible,
             "no HOST_VISIBLE DEVICE_LOCAL = staging required"
@@ -1206,10 +2094,14 @@ mod tests {
             mem_type(2, flags(&[HV, HC, HCA])),
         ];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
 
         // Should prefer the larger VRAM heap
-        assert_eq!(map.private, 1, "private should use larger VRAM heap");
+        assert_eq!(
+            map.private[..],
+            [1, 0],
+            "private should use larger VRAM heap"
+        );
         assert_eq!(
             map.uniform,
             u32::MAX,
@@ -1234,10 +2126,14 @@ mod tests {
             mem_type(2, flags(&[HV, HC, HCA])),
         ];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
 
         // Upload should prefer the larger ReBAR heap over the 256MB BAR
-        assert_eq!(map.upload, 1, "upload should prefer larger ReBAR heap");
+        assert_eq!(
+            map.upload[..],
+            [1],
+            "upload should prefer larger ReBAR heap"
+        );
         assert!(map.upload_host_visible);
         assert_eq!(
             map.uniform, 1,
@@ -1261,7 +2157,7 @@ mod tests {
             mem_type(1, flags(&[HV, HC, HCA])),
         ];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
 
         assert_eq!(
             map.dynamic, 1,
@@ -1277,8 +2173,6 @@ mod tests {
     /// they're listed before an equivalent usable type.
     #[test]
     fn test_skips_unusable_types() {
-        const PROT: vk::MemoryPropertyFlags = vk::MemoryPropertyFlags::PROTECTED;
-        const LAZY: vk::MemoryPropertyFlags = vk::MemoryPropertyFlags::LAZILY_ALLOCATED;
         let heaps = [mem_heap(8 * GB, true), mem_heap(16 * GB, false)];
         let types = [
             mem_type(0, flags(&[DL, LAZY])),
@@ -1292,12 +2186,12 @@ mod tests {
             mem_type(0, flags(&[DL, HV, HC])),
         ];
 
-        let map = MemoryTypeMap::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::DISCRETE_GPU);
 
-        assert_eq!(map.private, 5);
-        assert_eq!(map.host, 6);
+        assert_eq!(map.private[..], [5, 8]);
+        assert_eq!(map.staging, 6);
         assert_eq!(map.dynamic, 7);
-        assert_eq!(map.upload, 8);
+        assert_eq!(map.upload[..], [8]);
         assert_eq!(map.uniform, 8);
     }
 }

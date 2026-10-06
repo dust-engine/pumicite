@@ -461,7 +461,7 @@ impl AssetLoader for KtxLoader {
                 })
                 .sum();
 
-            let _staging_buffer = Buffer::new_host(
+            let _staging_buffer = Buffer::new_staging(
                 self.allocator.clone(),
                 total_data_size,
                 format_info.block_size as u64,

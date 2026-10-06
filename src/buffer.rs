@@ -307,19 +307,15 @@ impl Buffer {
         alignment: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
     ) -> VkResult<Self> {
-        let memory_type = allocator
-            .device()
-            .physical_device()
-            .properties()
-            .memory_type_map()
-            .private;
+        let info = vk::BufferCreateInfo {
+            size,
+            usage,
+            ..Default::default()
+        };
+        let memory_type = allocator.device().memory_type_map().private_buffer(&info)?;
         unsafe {
             let (buffer, allocation) = allocator.create_buffer_with_alignment(
-                &vk::BufferCreateInfo {
-                    size,
-                    usage,
-                    ..Default::default()
-                },
+                &info,
                 &vk_mem::AllocationCreateInfo {
                     memory_type_bits: 1 << memory_type,
                     usage: vk_mem::MemoryUsage::Unknown,
@@ -337,18 +333,13 @@ impl Buffer {
     /// Use for staging buffers or data that the GPU reads infrequently.
     ///
     /// Uses the pre-calculated `host` memory type from [`MemoryTypeMap`](crate::physical_device::MemoryTypeMap).
-    pub fn new_host(
+    pub fn new_staging(
         allocator: Allocator,
         size: vk::DeviceSize,
         alignment: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
     ) -> VkResult<Self> {
-        let memory_type = allocator
-            .device()
-            .physical_device()
-            .properties()
-            .memory_type_map()
-            .host;
+        let memory_type = allocator.device().memory_type_map().staging;
         unsafe {
             let (buffer, allocation) = allocator.create_buffer_with_alignment(
                 &vk::BufferCreateInfo {
@@ -384,25 +375,23 @@ impl Buffer {
         alignment: vk::DeviceSize,
         mut usage: vk::BufferUsageFlags,
     ) -> VkResult<Self> {
-        let memory_type_map = allocator
-            .device()
-            .physical_device()
-            .properties()
-            .memory_type_map();
+        let memory_type_map = allocator.device().memory_type_map();
 
         if !memory_type_map.upload_host_visible {
             usage |= vk::BufferUsageFlags::TRANSFER_DST;
         }
 
+        let info = vk::BufferCreateInfo {
+            size,
+            usage,
+            ..Default::default()
+        };
+        let memory_type = memory_type_map.upload_buffer(&info)?;
         unsafe {
             let (buffer, allocation) = allocator.create_buffer_with_alignment(
-                &vk::BufferCreateInfo {
-                    size,
-                    usage,
-                    ..Default::default()
-                },
+                &info,
                 &vk_mem::AllocationCreateInfo {
-                    memory_type_bits: 1 << memory_type_map.upload,
+                    memory_type_bits: 1 << memory_type,
                     usage: vk_mem::MemoryUsage::Unknown,
                     flags: vk_mem::AllocationCreateFlags::MAPPED,
                     ..Default::default()
@@ -425,12 +414,7 @@ impl Buffer {
         alignment: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
     ) -> VkResult<Self> {
-        let memory_type = allocator
-            .device()
-            .physical_device()
-            .properties()
-            .memory_type_map()
-            .dynamic;
+        let memory_type = allocator.device().memory_type_map().dynamic;
         unsafe {
             let (buffer, allocation) = allocator.create_buffer_with_alignment(
                 &vk::BufferCreateInfo {
@@ -847,13 +831,7 @@ impl ManagedBuffer {
         alignment: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
     ) -> VkResult<Self> {
-        if allocator
-            .device()
-            .physical_device()
-            .properties()
-            .memory_type_map()
-            .dynamic_device_local
-        {
+        if allocator.device().memory_type_map().dynamic_device_local {
             let buffer = Buffer::new_dynamic(allocator, size, alignment, usage)?;
             Ok(Self {
                 device: buffer,
@@ -1037,7 +1015,7 @@ impl StagingBufferAllocator for RingBuffer {
 impl StagingBufferAllocator for Allocator {
     type Buffer = Buffer;
     fn allocate_staging_buffer(&mut self, size: u64) -> VkResult<Buffer> {
-        Buffer::new_host(self.clone(), size, 4, vk::BufferUsageFlags::TRANSFER_SRC)
+        Buffer::new_staging(self.clone(), size, 4, vk::BufferUsageFlags::TRANSFER_SRC)
     }
 }
 

@@ -189,12 +189,7 @@ impl Image {
     /// - Intel iGPU:  [DEVICE_LOCAL](`vk::MemoryPropertyFlags::DEVICE_LOCAL`)
     /// - Apple: [DEVICE_LOCAL](`vk::MemoryPropertyFlags::DEVICE_LOCAL`)
     pub fn new_device(allocator: Allocator, info: &vk::ImageCreateInfo) -> VkResult<Self> {
-        let memory_type = allocator
-            .device()
-            .physical_device()
-            .properties()
-            .memory_type_map()
-            .private;
+        let memory_type = allocator.device().memory_type_map().private_image(info)?;
 
         unsafe {
             let (image, allocation) = allocator.create_image(
@@ -236,21 +231,18 @@ impl Image {
     /// - Apple: [DEVICE_LOCAL](`vk::MemoryPropertyFlags::DEVICE_LOCAL`) | [HOST_VISIBLE](`vk::MemoryPropertyFlags::HOST_VISIBLE`)
     pub fn new_upload(allocator: Allocator, info: &vk::ImageCreateInfo) -> VkResult<Self> {
         let mut info = *info;
-        let memory_type_map = allocator
-            .device()
-            .physical_device()
-            .properties()
-            .memory_type_map();
+        let memory_type_map = allocator.device().memory_type_map();
 
         if !memory_type_map.upload_host_visible {
             info.usage |= vk::ImageUsageFlags::TRANSFER_DST;
         }
+        let memory_type = memory_type_map.upload_image(&info)?;
 
         unsafe {
             let (image, allocation) = allocator.create_image(
                 &info,
                 &vk_mem::AllocationCreateInfo {
-                    memory_type_bits: 1 << memory_type_map.upload,
+                    memory_type_bits: 1 << memory_type,
                     usage: vk_mem::MemoryUsage::Unknown,
                     ..Default::default()
                 },

@@ -149,12 +149,6 @@ impl DerefMut for DeviceLocalRingBuffer {
 }
 impl DeviceLocalRingBuffer {
     pub fn new(device: Device, chunk_size: u32) -> VkResult<Self> {
-        let memory_type_index = device
-            .physical_device()
-            .properties()
-            .memory_type_map()
-            .private;
-
         let mut flags = vk::BufferUsageFlags::STORAGE_BUFFER
             | vk::BufferUsageFlags::TRANSFER_DST
             | vk::BufferUsageFlags::INDEX_BUFFER
@@ -175,6 +169,14 @@ impl DeviceLocalRingBuffer {
         {
             flags |= vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR;
         }
+        // Every chunk uses the same usage flags, so they all accept the same memory types.
+        let memory_type_index = device
+            .memory_type_map()
+            .private_buffer(&vk::BufferCreateInfo {
+                size: chunk_size as u64,
+                usage: flags,
+                ..Default::default()
+            })?;
         // By default, 64MB page size.
         Ok(Self(RingBuffer::new(
             device,
@@ -207,11 +209,7 @@ impl DerefMut for UniformRingBuffer {
 }
 impl UniformRingBuffer {
     pub fn new(device: Device, chunk_size: u32) -> VkResult<Self> {
-        let memory_type_index = device
-            .physical_device()
-            .properties()
-            .memory_type_map()
-            .uniform;
+        let memory_type_index = device.memory_type_map().uniform;
 
         if memory_type_index == u32::MAX {
             return Err(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY);
@@ -284,7 +282,7 @@ impl DerefMut for HostVisibleRingBuffer {
 }
 impl HostVisibleRingBuffer {
     pub fn new(device: Device, chunk_size: u32) -> VkResult<Self> {
-        let memory_type_index = device.physical_device().properties().memory_type_map().host;
+        let memory_type_index = device.memory_type_map().staging;
 
         let flags = vk::BufferUsageFlags::TRANSFER_SRC;
         // By default, 64MB page size.

@@ -9,10 +9,10 @@
 //! - Pooling allocations to reduce API overhead
 //! - Managing memory defragmentation
 //!
-//! VMA doesn't choose memory types. Buffer and image constructors allocate from the types
-//! selected by [`MemoryTypeMap`](crate::physical_device::MemoryTypeMap): they set a single bit
-//! in `memory_type_bits`, so VMA either uses that type or fails, and leave `usage` as
-//! `Unknown`, so VMA adds no requirements that could reject it.
+//! VMA doesn't choose memory types. Buffer and image constructors allocate from the type
+//! selected by [`MemoryTypeMap`](crate::physical_device::MemoryTypeMap) for that resource:
+//! they set a single bit in `memory_type_bits`, so VMA either uses that type or fails, and
+//! leave `usage` as `Unknown`, so VMA adds no requirements that could reject it.
 //!
 //! # Usage
 //!
