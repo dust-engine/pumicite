@@ -363,6 +363,15 @@ pub struct MemoryTypeMapInner {
     /// True on discrete GPUs without resizable BAR. These GPUs do not have a large
     /// DEVICE_LOCAL, HOST_VISIBLE pool.
     pub upload_host_visible: bool,
+
+    /// HOST_VISIBLE + HOST_CACHED memory that isn't HOST_COHERENT, for memory that is
+    /// explicitly flushed and invalidated. Prefers DEVICE_LOCAL, then larger heaps.
+    ///
+    /// Only set when [`dynamic`](Self::dynamic) isn't HOST_CACHED: on integrated GPUs that
+    /// don't snoop the CPU caches (Tegra, Intel without LLC on i915), this is the only memory
+    /// with fast CPU reads. `None` wherever coherent cached memory exists, which needs no
+    /// flushing or invalidating.
+    pub noncoherent_host_cached: Option<u32>,
 }
 
 impl<'a> MemoryTypeMap<'a> {
@@ -594,6 +603,34 @@ impl MemoryTypeMapInner {
             .map(|(i, _)| i as u32)
             .unwrap_or(u32::MAX);
 
+        // === NONCOHERENT HOST CACHED: HOST_VISIBLE + HOST_CACHED, not HOST_COHERENT ===
+        // Only where `dynamic` had to give up HOST_CACHED: coherent cached memory is as fast
+        // for CPU reads without flushing and invalidating. Prefer DEVICE_LOCAL, then larger
+        // heaps. Ties go to the lowest index: anv lists descriptor buffer copies with
+        // identical flags after the types buffers can use.
+        let dynamic_cached = memory_types[dynamic as usize]
+            .property_flags
+            .contains(vk::MemoryPropertyFlags::HOST_CACHED);
+        let noncoherent_host_cached = if dynamic_cached {
+            None
+        } else {
+            memory_types
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, mt)| {
+                    has_flags(mt, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_CACHED)
+                        && !mt.property_flags.contains(vk::MemoryPropertyFlags::HOST_COHERENT)
+                })
+                .max_by_key(|(_, mt)| {
+                    let device_local = mt
+                        .property_flags
+                        .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL);
+                    (device_local, heap_size(mt))
+                })
+                .map(|(i, _)| i as u32)
+        };
+
         Self {
             private,
             staging,
@@ -602,6 +639,7 @@ impl MemoryTypeMapInner {
             upload,
             upload_host_visible,
             uniform,
+            noncoherent_host_cached,
         }
     }
 }
@@ -977,6 +1015,7 @@ mod tests {
             "integrated GPU should get host visible upload buffers"
         );
         assert_eq!(map.uniform, 1);
+        assert_eq!(map.noncoherent_host_cached, None);
         assert_eq!(anv_selection(&map, 0b111, 0), (0, 0, 1));
     }
 
@@ -1040,6 +1079,11 @@ mod tests {
         assert_eq!(map.upload[..], [0]);
         assert!(map.upload_host_visible);
         assert_eq!(map.uniform, 0);
+        assert_eq!(
+            map.noncoherent_host_cached,
+            Some(1),
+            "the cached type, not its descriptor buffer copy"
+        );
         assert_eq!(anv_selection(&map, 0b011, 0), (0, 0, 0));
     }
 
@@ -1117,6 +1161,7 @@ mod tests {
         assert_eq!(map.upload[..], [0]);
         assert!(map.upload_host_visible);
         assert_eq!(map.uniform, 0);
+        assert_eq!(map.noncoherent_host_cached, None);
     }
 
     /// NVIDIA discrete GPU without resizable BAR.
@@ -1237,6 +1282,10 @@ mod tests {
         assert_eq!(map.upload[..], [0, 1], "256MB BAR is too small for upload");
         assert!(!map.upload_host_visible);
         assert_eq!(map.uniform, 1, "uniform should use the BAR");
+        assert_eq!(
+            map.noncoherent_host_cached, None,
+            "the GPU snoops system RAM, so it's coherent"
+        );
     }
 
     /// NVK without resizable BAR, for images with HOST_TRANSFER usage (host image copy,
@@ -1383,6 +1432,7 @@ mod tests {
         );
         assert!(map.upload_host_visible);
         assert_eq!(map.uniform, 1, "uniform must be HOST_COHERENT");
+        assert_eq!(map.noncoherent_host_cached, Some(0));
     }
 
     // AMD (Mesa radv) layouts below follow radv_physical_device_init_mem_types. Heaps are
@@ -2049,6 +2099,67 @@ mod tests {
         );
         assert!(map.upload_host_visible);
         assert_eq!(map.uniform, 1, "uniform should use DL+HV type");
+    }
+
+    // Qualcomm Adreno on Mesa turnip: layouts follow tu_physical_device_init. One
+    // DEVICE_LOCAL heap of system RAM. On 64-bit ARM, turnip adds a cached non-coherent type
+    // after the uncached one and, when the kernel supports it, a cached coherent one.
+
+    /// turnip on a kernel with cached coherent memory.
+    #[test]
+    fn test_turnip_cached_coherent() {
+        // Heap 0: 12GB system RAM (DEVICE_LOCAL)
+        // Type 0: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT
+        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED
+        // Type 2: DEVICE_LOCAL | HOST_VISIBLE | HOST_CACHED (not coherent)
+        // Type 3: DEVICE_LOCAL | LAZILY_ALLOCATED
+        let heaps = [mem_heap(12 * GB, true)];
+        let types = [
+            mem_type(0, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[DL, HV, HC, HCA])),
+            mem_type(0, flags(&[DL, HV, HCA])),
+            mem_type(0, flags(&[DL, LAZY])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+
+        assert_eq!(map.private[..], [0, 1, 2]);
+        assert_eq!(map.staging, 0);
+        assert_eq!(map.dynamic, 1);
+        assert!(map.dynamic_device_local);
+        assert_eq!(map.upload[..], [0]);
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 0);
+        assert_eq!(
+            map.noncoherent_host_cached, None,
+            "coherent cached memory needs no flushing"
+        );
+    }
+
+    /// turnip on a kernel without cached coherent memory: only non-coherent maps are cached.
+    #[test]
+    fn test_turnip_no_cached_coherent() {
+        // Heap 0: 12GB system RAM (DEVICE_LOCAL)
+        // Type 0: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT
+        // Type 1: DEVICE_LOCAL | HOST_VISIBLE | HOST_CACHED (not coherent)
+        // Type 2: DEVICE_LOCAL | LAZILY_ALLOCATED
+        let heaps = [mem_heap(12 * GB, true)];
+        let types = [
+            mem_type(0, flags(&[DL, HV, HC])),
+            mem_type(0, flags(&[DL, HV, HCA])),
+            mem_type(0, flags(&[DL, LAZY])),
+        ];
+
+        let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
+
+        assert_eq!(map.private[..], [0, 1]);
+        assert_eq!(map.staging, 0);
+        assert_eq!(map.dynamic, 0, "dynamic gives up HOST_CACHED for HOST_COHERENT");
+        assert!(map.dynamic_device_local);
+        assert_eq!(map.upload[..], [0]);
+        assert!(map.upload_host_visible);
+        assert_eq!(map.uniform, 0);
+        assert_eq!(map.noncoherent_host_cached, Some(1));
     }
 
     /// Edge case: Minimal configuration with only essential memory types.

@@ -31,7 +31,10 @@ use std::{
     ffi::{CStr, CString},
     fmt::Debug,
     ops::RangeBounds,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use ash::{
@@ -340,23 +343,7 @@ impl Buffer {
         usage: vk::BufferUsageFlags,
     ) -> VkResult<Self> {
         let memory_type = allocator.device().memory_type_map().staging;
-        unsafe {
-            let (buffer, allocation) = allocator.create_buffer_with_alignment(
-                &vk::BufferCreateInfo {
-                    size,
-                    usage,
-                    ..Default::default()
-                },
-                &vk_mem::AllocationCreateInfo {
-                    memory_type_bits: 1 << memory_type,
-                    usage: vk_mem::MemoryUsage::Unknown,
-                    flags: vk_mem::AllocationCreateFlags::MAPPED,
-                    ..Default::default()
-                },
-                alignment,
-            )?;
-            Ok(Self::from_raw(allocator, buffer, allocation, usage, size))
-        }
+        Self::new_mapped(allocator, memory_type, size, alignment, usage)
     }
 
     /// Create a DEVICE_LOCAL buffer that is **preferably** host-writable.
@@ -387,19 +374,7 @@ impl Buffer {
             ..Default::default()
         };
         let memory_type = memory_type_map.upload_buffer(&info)?;
-        unsafe {
-            let (buffer, allocation) = allocator.create_buffer_with_alignment(
-                &info,
-                &vk_mem::AllocationCreateInfo {
-                    memory_type_bits: 1 << memory_type,
-                    usage: vk_mem::MemoryUsage::Unknown,
-                    flags: vk_mem::AllocationCreateFlags::MAPPED,
-                    ..Default::default()
-                },
-                alignment,
-            )?;
-            Ok(Self::from_raw(allocator, buffer, allocation, usage, size))
-        }
+        Self::new_mapped(allocator, memory_type, size, alignment, usage)
     }
 
     /// Create a host-visible buffer that is **always** host-cached and **preferably** device-local.
@@ -415,6 +390,21 @@ impl Buffer {
         usage: vk::BufferUsageFlags,
     ) -> VkResult<Self> {
         let memory_type = allocator.device().memory_type_map().dynamic;
+        Self::new_mapped(allocator, memory_type, size, alignment, usage)
+    }
+
+    /// Creates a buffer in `memory_type`, mapped if the memory type is HOST_VISIBLE (VMA
+    /// ignores `MAPPED` for other memory).
+    ///
+    /// Non-coherent memory is for owners like [`ManagedBuffer`] that flush and invalidate
+    /// it: [`BufferLike`] assumes host-visible memory is coherent.
+    fn new_mapped(
+        allocator: Allocator,
+        memory_type: u32,
+        size: vk::DeviceSize,
+        alignment: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+    ) -> VkResult<Self> {
         unsafe {
             let (buffer, allocation) = allocator.create_buffer_with_alignment(
                 &vk::BufferCreateInfo {
@@ -787,13 +777,19 @@ impl<'a> GPURefMut<'a, SharedRingBufferSuballocation> {
         }
     }
 }
-/// A buffer that abstracts over the differences between integrated and discrete GPUs.
-/// On integrated GPUs, and on GPUs with memory that is both device-local and host-cached,
-/// a single buffer serves both CPU and GPU access. On other discrete GPUs, this uses a host
-/// buffer for CPU access and a device buffer for GPU access, with explicit transfers
-/// between them.
+
+/// A DEVICE_LOCAL, HOST_VISIBLE, HOST_CACHED, but non-coherent memory that works on all
+/// GPU architectures.
+/// 
+/// It has three implementations:
+/// - On most discrete GPUs: It maintains a HOST_VISIBLE, HOST_COHERENT, HOST_CACHED
+///   staging buffer on the CPU side, plus a DEVICE_LOCAL buffer on the GPU
+/// - On integrated GPUs with unified memory: A single HOST_VISIBLE, HOST_COHERENT,
+///   HOST_CACHED, DEVICE_LOCAL buffer
+/// - On some integrated GPUs that don't snoop the CPU caches like Tegra, Intel without LLC
+///   on i915 kernel mode driver: for these GPUs, the only HOST_VISIBLE, HOST_CACHED buffer
+///   is incoherent, requiring manual CFI (cache flush and invalidate) from the host.
 ///
-/// Can be treated as DEVICE_LOCAL, HOST_VISIBLE, HOST_CACHED, but non-coherent memory.
 ///
 /// # Usage
 ///
@@ -822,6 +818,11 @@ pub struct ManagedBuffer {
     device: Buffer,
     /// Host-visible copy of `device`, on GPUs where `device` isn't host-visible.
     staging: Option<Buffer>,
+    /// `Some` when `device` is also the host's buffer and its memory isn't HOST_COHERENT.
+    /// Holds whether an [`invalidate`](GPURefMut::<ManagedBuffer>::invalidate) was recorded
+    /// since the host last invalidated its caches. The host can only access the buffer again
+    /// once that command buffer completed, so it invalidates on its next access.
+    noncoherent: Option<AtomicBool>,
 }
 
 impl ManagedBuffer {
@@ -831,19 +832,29 @@ impl ManagedBuffer {
         alignment: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
     ) -> VkResult<Self> {
-        if allocator.device().memory_type_map().dynamic_device_local {
-            let buffer = Buffer::new_dynamic(allocator, size, alignment, usage)?;
-            Ok(Self {
-                device: buffer,
-                staging: None,
-            })
-        } else {
+        let memory_type_map = allocator.device().memory_type_map();
+        if !memory_type_map.dynamic_device_local {
             let transfer = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST;
             let staging = Buffer::new_dynamic(allocator.clone(), size, alignment, transfer)?;
             let device = Buffer::new_device(allocator, size, alignment, usage | transfer)?;
             Ok(Self {
                 device,
                 staging: Some(staging),
+                noncoherent: None,
+            })
+        } else if let Some(memory_type) = memory_type_map.noncoherent_host_cached {
+            let device = Buffer::new_mapped(allocator, memory_type, size, alignment, usage)?;
+            Ok(Self {
+                device,
+                staging: None,
+                noncoherent: Some(AtomicBool::new(false)),
+            })
+        } else {
+            let device = Buffer::new_dynamic(allocator, size, alignment, usage)?;
+            Ok(Self {
+                device,
+                staging: None,
+                noncoherent: None,
             })
         }
     }
@@ -853,10 +864,35 @@ impl ManagedBuffer {
     pub fn is_direct(&self) -> bool {
         self.staging.is_none()
     }
+    /// Returns `true` if the host's view is non-coherent memory, which
+    /// [`flush`](GPURefMut::<ManagedBuffer>::flush) and
+    /// [`invalidate`](GPURefMut::<ManagedBuffer>::invalidate) flush and invalidate.
+    pub fn is_noncoherent(&self) -> bool {
+        self.noncoherent.is_some()
+    }
+    /// Invalidates the host's caches of the buffer if an `invalidate` was recorded since the
+    /// last time, so the host sees the GPU's writes.
+    fn invalidate_host(&self) {
+        let Some(pending) = &self.noncoherent else {
+            return;
+        };
+        // Cleared only after invalidating, so a thread that sees `false` reads after the
+        // invalidation. Threads that both see `true` both invalidate, which is harmless:
+        // through `&self`, neither can have unflushed writes to the buffer.
+        if pending.load(Ordering::Acquire) {
+            self.device
+                .allocator
+                .invalidate_allocation(&self.device.allocation, 0, vk::WHOLE_SIZE)
+                .expect("vkInvalidateMappedMemoryRanges failed");
+            pending.store(false, Ordering::Release);
+        }
+    }
     fn host(&self) -> &Buffer {
+        self.invalidate_host();
         self.staging.as_ref().unwrap_or(&self.device)
     }
     fn host_mut(&mut self) -> &mut Buffer {
+        self.invalidate_host();
         self.staging.as_mut().unwrap_or(&mut self.device)
     }
     /// Returns the host's view of the buffer.
@@ -917,7 +953,8 @@ impl<'a> GPURefMut<'a, ManagedBuffer> {
     /// On discrete GPUs, this copies the staging buffer into
     /// [`device_buffer`](Self::device_buffer). On integrated GPUs, it records nothing: the
     /// host writes the buffer the GPU reads, and submitting the command buffer makes those
-    /// writes visible.
+    /// writes visible. If that buffer is [non-coherent](ManagedBuffer::is_noncoherent), this
+    /// also flushes the host's caches right away.
     ///
     /// # Synchronization
     ///
@@ -937,8 +974,21 @@ impl<'a> GPURefMut<'a, ManagedBuffer> {
     /// Command buffers that lock the buffer are already ordered by its
     /// [`GPUMutex`](crate::sync::GPUMutex).
     pub fn flush(self, encoder: &mut CommandEncoder<'a>) {
-        // Safety: only used to reach the staging buffer, whose memory isn't accessed.
-        let Some(staging) = (unsafe { &self.unwrap().staging }) else {
+        // Safety: only used to flush the host's caches and to reach the staging buffer. The
+        // memory isn't accessed through it.
+        let this = unsafe { self.unwrap() };
+        if this.noncoherent.is_some() {
+            // The host can't write the buffer again until this command buffer completes, so
+            // this flushes every write the GPU will see. Earlier GPU work on the buffer has
+            // completed too, since the host wrote it after that, so no cache line written
+            // back here overwrites the GPU's writes.
+            this.device
+                .allocator
+                .flush_allocation(&this.device.allocation, 0, vk::WHOLE_SIZE)
+                .expect("vkFlushMappedMemoryRanges failed");
+            return;
+        }
+        let Some(staging) = &this.staging else {
             return;
         };
         // Safety: `staging` is part of the `ManagedBuffer`, so this token guarantees for it
@@ -953,7 +1003,8 @@ impl<'a> GPURefMut<'a, ManagedBuffer> {
     ///
     /// On discrete GPUs, this copies [`device_buffer`](Self::device_buffer) into the staging
     /// buffer. On integrated GPUs, it records nothing: the host reads the buffer the GPU
-    /// writes.
+    /// writes. If that buffer is [non-coherent](ManagedBuffer::is_noncoherent), the host
+    /// invalidates its caches on its next access through `ManagedBuffer`.
     ///
     /// # Synchronization
     ///
@@ -975,8 +1026,13 @@ impl<'a> GPURefMut<'a, ManagedBuffer> {
     /// Command buffers that lock the buffer are already ordered by its
     /// [`GPUMutex`](crate::sync::GPUMutex).
     pub fn invalidate(self, encoder: &mut CommandEncoder<'a>) {
-        // Safety: only used to reach the staging buffer, whose memory isn't accessed.
-        let Some(staging) = (unsafe { &self.unwrap().staging }) else {
+        // Safety: only used to mark the host's caches stale and to reach the staging buffer.
+        // The memory isn't accessed through it.
+        let this = unsafe { self.unwrap() };
+        if let Some(pending) = &this.noncoherent {
+            pending.store(true, Ordering::Release);
+        }
+        let Some(staging) = &this.staging else {
             return;
         };
         // Safety: `staging` is part of the `ManagedBuffer`, so this token guarantees for it
@@ -1024,8 +1080,17 @@ mod tests {
     use super::*;
     use crate::{command::CommandPool, sync::GPUMutex, sync::Timeline, tracking::ResourceState};
 
+    enum Mode {
+        Staging,
+        Direct,
+        /// Direct, flushing and invalidating explicitly. Uses coherent memory on GPUs
+        /// without non-coherent cached memory, where flushing and invalidating do nothing,
+        /// to check the bookkeeping.
+        Noncoherent,
+    }
+
     /// Writes on the host, flushes, overwrites a prefix on the GPU, then invalidates.
-    fn managed_buffer_round_trip(direct: bool) {
+    fn managed_buffer_round_trip(mode: Mode) {
         let (device, mut queue) = Device::create_system_default().unwrap();
         let allocator = Allocator::new(device.clone()).unwrap();
         let mut pool = CommandPool::new(device.clone(), queue.family_index()).unwrap();
@@ -1033,19 +1098,36 @@ mod tests {
 
         let size = 64;
         let usage = vk::BufferUsageFlags::TRANSFER_DST;
-        let mut buffer = if direct {
-            ManagedBuffer {
+        let mut buffer = match mode {
+            Mode::Staging => {
+                let transfer =
+                    vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST;
+                ManagedBuffer {
+                    staging: Some(
+                        Buffer::new_dynamic(allocator.clone(), size, 4, transfer).unwrap(),
+                    ),
+                    device: Buffer::new_device(allocator, size, 4, usage | transfer).unwrap(),
+                    noncoherent: None,
+                }
+            }
+            Mode::Direct => ManagedBuffer {
                 device: Buffer::new_dynamic(allocator, size, 4, usage).unwrap(),
                 staging: None,
-            }
-        } else {
-            let transfer = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST;
-            ManagedBuffer {
-                staging: Some(Buffer::new_dynamic(allocator.clone(), size, 4, transfer).unwrap()),
-                device: Buffer::new_device(allocator, size, 4, usage | transfer).unwrap(),
+                noncoherent: None,
+            },
+            Mode::Noncoherent => {
+                let memory_type_map = allocator.device().memory_type_map();
+                let memory_type = memory_type_map
+                    .noncoherent_host_cached
+                    .unwrap_or(memory_type_map.dynamic);
+                ManagedBuffer {
+                    device: Buffer::new_mapped(allocator, memory_type, size, 4, usage).unwrap(),
+                    staging: None,
+                    noncoherent: Some(AtomicBool::new(false)),
+                }
             }
         };
-        assert_eq!(buffer.is_direct(), direct);
+        assert_eq!(buffer.is_direct(), !matches!(mode, Mode::Staging));
         for (i, byte) in buffer.as_slice_mut().iter_mut().enumerate() {
             *byte = i as u8;
         }
@@ -1070,7 +1152,7 @@ mod tests {
         queue.submit(&mut cmd).unwrap();
         cmd.block_until_completion().unwrap();
 
-        let buffer = buffer.unwrap_block().unwrap();
+        let mut buffer = buffer.unwrap_block().unwrap();
         let data = buffer.as_slice();
         assert!(data[..8].iter().all(|&b| b == 0xff));
         assert!(
@@ -1080,15 +1162,30 @@ mod tests {
                 .all(|(i, &b)| b == (i + 8) as u8)
         );
         pool.free(cmd);
+
+        // Invalidating again would discard these unflushed writes.
+        buffer.as_slice_mut()[0] = 0;
+        assert_eq!(buffer.as_slice()[0], 0);
+        if let Some(pending) = &buffer.noncoherent {
+            assert!(
+                !pending.load(Ordering::Acquire),
+                "the first host access invalidates"
+            );
+        }
     }
 
     #[test]
     fn managed_buffer_round_trip_staging() {
-        managed_buffer_round_trip(false);
+        managed_buffer_round_trip(Mode::Staging);
     }
 
     #[test]
     fn managed_buffer_round_trip_direct() {
-        managed_buffer_round_trip(true);
+        managed_buffer_round_trip(Mode::Direct);
+    }
+
+    #[test]
+    fn managed_buffer_round_trip_noncoherent() {
+        managed_buffer_round_trip(Mode::Noncoherent);
     }
 }
