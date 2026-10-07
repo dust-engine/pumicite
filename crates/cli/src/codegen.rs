@@ -478,24 +478,33 @@ fn generate_struct(info: &ParameterBlockInfo) -> proc_macro2::TokenStream {
                 )
             };
 
-            let (value_param, value_expr) = match group.category {
+            let (value_generics, value_param, value_expr) = match group.category {
+                // Bound resources are taken as GPU tokens (from `CommandEncoder::retain`
+                // or `CommandEncoder::lock`), so the resource is guaranteed to outlive
+                // the command buffer the descriptor set is pushed on.
                 InfoCategory::AccelerationStructure => (
-                    quote! { accel: &impl pumicite::utils::AsVkHandle<Handle = pumicite::ash::vk::AccelerationStructureKHR> },
-                    quote! { pumicite::utils::AsVkHandle::vk_handle(accel) },
+                    quote! { <'r, A: pumicite::utils::AsVkHandle<Handle = pumicite::ash::vk::AccelerationStructureKHR> + ?Sized + 'r> },
+                    quote! { accel: impl Into<pumicite::command::GPURef<'r, A>> },
+                    quote! { pumicite::utils::AsVkHandle::vk_handle(&accel.into()) },
                 ),
                 InfoCategory::Buffer => (
-                    quote! { buffer: &(impl pumicite::buffer::BufferLike + ?Sized) },
+                    quote! { <'r, B: pumicite::buffer::BufferLike + ?Sized + 'r> },
+                    quote! { buffer: impl Into<pumicite::command::GPURef<'r, B>> },
                     quote! {
-                        pumicite::ash::vk::DescriptorBufferInfo {
-                            buffer: pumicite::utils::AsVkHandle::vk_handle(buffer),
-                            offset: buffer.offset(),
-                            range: buffer.size(),
+                        {
+                            let buffer = buffer.into();
+                            pumicite::ash::vk::DescriptorBufferInfo {
+                                buffer: pumicite::utils::AsVkHandle::vk_handle(&buffer),
+                                offset: buffer.offset(),
+                                range: buffer.size(),
+                            }
                         }
                     },
                 ),
                 InfoCategory::Image => {
                     if entry.descriptor_type == DescriptorType::Sampler {
                         (
+                            quote! {},
                             quote! { sampler: &impl pumicite::utils::AsVkHandle<Handle = pumicite::ash::vk::Sampler> },
                             quote! {
                                 pumicite::ash::vk::DescriptorImageInfo {
@@ -511,10 +520,11 @@ fn generate_struct(info: &ParameterBlockInfo) -> proc_macro2::TokenStream {
                             quote! { pumicite::ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL }
                         };
                         (
-                            quote! { image: &(impl pumicite::image::ImageViewLike + ?Sized) },
+                            quote! { <'r, V: pumicite::image::ImageViewLike + ?Sized + 'r> },
+                            quote! { image: impl Into<pumicite::command::GPURef<'r, V>> },
                             quote! {
                                 pumicite::ash::vk::DescriptorImageInfo {
-                                    image_view: pumicite::utils::AsVkHandle::vk_handle(image),
+                                    image_view: pumicite::utils::AsVkHandle::vk_handle(&image.into()),
                                     image_layout: #layout,
                                     sampler: pumicite::ash::vk::Sampler::null(),
                                 }
@@ -523,13 +533,14 @@ fn generate_struct(info: &ParameterBlockInfo) -> proc_macro2::TokenStream {
                     }
                 }
                 InfoCategory::TexelBufferView => (
+                    quote! {},
                     quote! { view: pumicite::ash::vk::BufferView },
                     quote! { view },
                 ),
             };
 
             setter_methods.push(quote! {
-                pub fn #method(&mut self, #index_param #value_param) -> &mut Self {
+                pub fn #method #value_generics (&mut self, #index_param #value_param) -> &mut Self {
                     #guard_tokens
                     self.#backing_field[#slot_tokens] = #value_expr;
                     self.#dirty_field |= 1u64 << #bit_tokens;

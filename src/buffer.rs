@@ -45,7 +45,7 @@ use vk_mem::Alloc;
 
 use crate::{
     Allocator, Device, HasDevice,
-    command::{CommandEncoder, GPURef, GPURefMut, NoHostMapping},
+    command::{CommandEncoder, GPURef, GPURefMut, NoHostMapping, project_host_metadata},
     tracking::Access,
     utils::AsVkHandle,
 };
@@ -114,26 +114,11 @@ pub unsafe trait BufferLike:
     /// Returns `None` if the buffer is not host-visible or not mapped.
     fn as_slice_mut(&mut self) -> Option<&mut [u8]>;
 }
-impl<T: BufferLike + ?Sized> GPURef<'_, T> {
-    pub fn offset(&self) -> vk::DeviceSize {
-        unsafe { self.unwrap().offset() }
-    }
-    pub fn device_address(&self) -> vk::DeviceAddress {
-        unsafe { self.unwrap().device_address() }
-    }
-    pub fn size(&self) -> vk::DeviceSize {
-        unsafe { self.unwrap().size() }
-    }
-}
-impl<T: BufferLike + ?Sized> GPURefMut<'_, T> {
-    pub fn offset(&self) -> vk::DeviceSize {
-        unsafe { self.unwrap().offset() }
-    }
-    pub fn device_address(&self) -> vk::DeviceAddress {
-        unsafe { self.unwrap().device_address() }
-    }
-    pub fn size(&self) -> vk::DeviceSize {
-        unsafe { self.unwrap().size() }
+project_host_metadata! {
+    impl[T: BufferLike + ?Sized] T {
+        fn offset(&self) -> vk::DeviceSize;
+        fn device_address(&self) -> vk::DeviceAddress;
+        fn size(&self) -> vk::DeviceSize;
     }
 }
 /// A buffer fully bound to a memory allocation.
@@ -170,6 +155,11 @@ impl Debug for Buffer {
             .field("device_address", &self.device_address)
             .field("memory_properties", &self.memory_properties)
             .finish_non_exhaustive()
+    }
+}
+project_host_metadata! {
+    impl[] Buffer {
+        fn allocator(&self) -> &Allocator;
     }
 }
 impl crate::utils::AsVkHandle for Buffer {
@@ -780,7 +770,7 @@ impl<'a> GPURefMut<'a, SharedRingBufferSuballocation> {
 
 /// A DEVICE_LOCAL, HOST_VISIBLE, HOST_CACHED, but non-coherent memory that works on all
 /// GPU architectures.
-/// 
+///
 /// It has three implementations:
 /// - On most discrete GPUs: It maintains a HOST_VISIBLE, HOST_COHERENT, HOST_CACHED
 ///   staging buffer on the CPU side, plus a DEVICE_LOCAL buffer on the GPU
@@ -920,12 +910,24 @@ impl ManagedBuffer {
     pub fn size(&self) -> u64 {
         self.device.size()
     }
+    pub fn device_address(&self) -> vk::DeviceAddress {
+        self.device.device_address()
+    }
 }
 impl AsVkHandle for ManagedBuffer {
     type Handle = vk::Buffer;
 
     fn vk_handle(&self) -> Self::Handle {
         self.device.vk_handle()
+    }
+}
+project_host_metadata! {
+    impl[] ManagedBuffer {
+        fn is_direct(&self) -> bool;
+        fn is_noncoherent(&self) -> bool;
+        fn allocator(&self) -> &Allocator;
+        fn size(&self) -> u64;
+        fn device_address(&self) -> vk::DeviceAddress;
     }
 }
 // `ManagedBuffer` doesn't implement `BufferLike`: its `as_slice` returns the staging copy,

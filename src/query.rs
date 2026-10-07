@@ -31,7 +31,7 @@ use ash::{VkResult, vk};
 
 use crate::{
     Device, HasDevice,
-    command::{CommandEncoder, GPURef, GPURefMut},
+    command::{CommandEncoder, GPURefMut, project_host_metadata},
     utils::AsVkHandle,
 };
 
@@ -45,20 +45,10 @@ pub struct QueryPool {
     ty: vk::QueryType,
     len: u32,
 }
-impl<'a> GPURef<'a, QueryPool> {
-    pub fn len(&self) -> u32 {
-        unsafe { self.unwrap().len }
-    }
-    pub fn ty(&self) -> vk::QueryType {
-        unsafe { self.unwrap().ty }
-    }
-}
-impl<'a> GPURefMut<'a, QueryPool> {
-    pub fn len(&self) -> u32 {
-        unsafe { self.unwrap().len }
-    }
-    pub fn ty(&self) -> vk::QueryType {
-        unsafe { self.unwrap().ty }
+project_host_metadata! {
+    impl[] QueryPool {
+        fn len(&self) -> u32;
+        fn ty(&self) -> vk::QueryType;
     }
 }
 impl Debug for QueryPool {

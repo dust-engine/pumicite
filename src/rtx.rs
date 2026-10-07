@@ -872,6 +872,16 @@ impl<T: BufferLike> AsVkHandle for AccelStruct<T> {
     }
     type Handle = vk::AccelerationStructureKHR;
 }
+crate::command::project_host_metadata! {
+    impl[T: BufferLike] AccelStruct<T> {
+        /// Returns the build flags used when this structure was built.
+        fn flags(&self) -> vk::BuildAccelerationStructureFlagsKHR;
+        /// Returns the device address for use in shaders and TLAS instances.
+        fn device_address(&self) -> vk::DeviceAddress;
+        /// Returns the size of the backing buffer in bytes.
+        fn size(&self) -> vk::DeviceSize;
+    }
+}
 impl<T: BufferLike> AccelStruct<T> {
     /// Returns the build flags used when this structure was built.
     pub fn flags(&self) -> vk::BuildAccelerationStructureFlagsKHR {

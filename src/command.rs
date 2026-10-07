@@ -254,6 +254,12 @@ impl<T: NoHostMapping + ?Sized> Deref for GPURefMut<'_, T> {
         self.0
     }
 }
+impl<T: NoHostMapping + Send> Deref for GPUMutex<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
 unsafe impl NoHostMapping for u8 {}
 unsafe impl NoHostMapping for u16 {}
 unsafe impl NoHostMapping for u32 {}
@@ -335,6 +341,89 @@ impl<T: AsVkHandle + ?Sized> AsVkHandle for GPURefMut<'_, T> {
     type Handle = T::Handle;
     fn vk_handle(&self) -> Self::Handle {
         unsafe { self.unwrap().vk_handle() }
+    }
+}
+
+/// VKHandle can always be projected
+impl<T: AsVkHandle + Send> AsVkHandle for GPUMutex<T> {
+    type Handle = T::Handle;
+    fn vk_handle(&self) -> Self::Handle {
+        self.inner.vk_handle()
+    }
+}
+
+/// Projects host metadata accessors of a type onto [`GPUMutex`], [`GPURef`] and [`GPURefMut`]
+/// wrapping it, so the host can read them while the GPU may be using the resource.
+///
+/// Each listed method forwards to the wrapped value's method of the same name. It must not
+/// access memory the GPU can access, such as a buffer's mapped bytes: the wrappers call it
+/// while the GPU may be writing that memory.
+///
+/// ```ignore
+/// project_host_metadata! {
+///     impl[T: BufferLike + ?Sized] T {
+///         fn size(&self) -> vk::DeviceSize;
+///     }
+/// }
+/// ```
+macro_rules! project_host_metadata {
+    (
+        impl[$($generics:tt)*] $ty:ty {
+            $(
+                $(#[$meta:meta])*
+                fn $name:ident(&self) -> $ret:ty;
+            )*
+        }
+    ) => {
+        impl<$($generics)*> $crate::sync::GPUMutex<$ty>
+        where
+            $ty: Sized + Send,
+        {
+            $(
+                $(#[$meta])*
+                pub fn $name(&self) -> $ret {
+                    (**self.inner).$name()
+                }
+            )*
+        }
+        impl<$($generics)*> $crate::command::GPURef<'_, $ty> {
+            $(
+                $(#[$meta])*
+                pub fn $name(&self) -> $ret {
+                    unsafe { self.unwrap().$name() }
+                }
+            )*
+        }
+        impl<$($generics)*> $crate::command::GPURefMut<'_, $ty> {
+            $(
+                $(#[$meta])*
+                pub fn $name(&self) -> $ret {
+                    unsafe { self.unwrap().$name() }
+                }
+            )*
+        }
+    };
+}
+pub(crate) use project_host_metadata;
+
+/// Device can always be projected
+impl<T: HasDevice + ?Sized> HasDevice for GPURef<'_, T> {
+    fn device(&self) -> &Device {
+        unsafe { self.unwrap().device() }
+    }
+}
+
+/// Device can always be projected
+impl<T: HasDevice + ?Sized> HasDevice for GPURefMut<'_, T> {
+    fn device(&self) -> &Device {
+        unsafe { self.unwrap().device() }
+    }
+}
+
+/// Device can always be projected
+impl<T: HasDevice + Send> HasDevice for GPUMutex<T> {
+    fn device(&self) -> &Device {
+        self.inner.device()
     }
 }
 

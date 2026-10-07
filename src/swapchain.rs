@@ -497,6 +497,12 @@ impl SwapchainImageInner {
         self.swapchain.color_space
     }
 }
+crate::command::project_host_metadata! {
+    impl[] SwapchainImageInner {
+        /// The swapchain's color space.
+        fn color_space(&self) -> vk::ColorSpaceKHR;
+    }
+}
 
 impl Drop for SwapchainImageInner {
     fn drop(&mut self) {
@@ -577,6 +583,8 @@ impl AsVkHandle for SwapchainImageView {
         self.0
     }
 }
+// Safety: a `SwapchainImageView` holds only a view handle and its format.
+unsafe impl crate::command::NoHostMapping for SwapchainImageView {}
 // Safety: `SwapchainImageView`s only exist inside the `SwapchainImageInner` that owns their
 // image, which destroys them on drop. Their fields are private and they aren't `Clone`, so
 // they're only reachable through it.
@@ -613,6 +621,18 @@ impl SwapchainImageInner {
         } else {
             Some(&self.srgb_view)
         }
+    }
+}
+impl crate::sync::GPUMutex<SwapchainImageInner> {
+    pub fn linear_view(&self) -> &SwapchainImageView {
+        self.inner.linear_view()
+    }
+    /// An image view of the swapchain image in sRGB format.
+    ///
+    /// May be null if the swapchain format doesn't have a corresponding srgb format.
+    /// See [to_srgb_format](`pumicite_types::format::Format::to_srgb_format`)
+    pub fn srgb_view(&self) -> Option<&SwapchainImageView> {
+        self.inner.srgb_view()
     }
 }
 impl<'a> GPURef<'a, SwapchainImageInner> {

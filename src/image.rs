@@ -8,7 +8,7 @@ use ash::{VkResult, vk, vk::TaggedStructure};
 use glam::UVec3;
 
 use crate::buffer::StagingBufferAllocator;
-use crate::command::{GPURef, GPURefMut};
+use crate::command::{GPURef, GPURefMut, NoHostMapping, project_host_metadata};
 use crate::prelude::*;
 use vk_mem::Alloc;
 
@@ -48,79 +48,14 @@ pub unsafe trait ImageLike: AsVkHandle<Handle = vk::Image> + Send + Sync + 'stat
     /// Returns the image type (1D, 2D, or 3D).
     fn ty(&self) -> vk::ImageType;
 }
-impl<T: ImageLike + ?Sized> GPURef<'_, T> {
-    pub fn aspects(&self) -> vk::ImageAspectFlags {
-        unsafe { self.unwrap().aspects() }
-    }
-
-    pub fn array_layer_count(&self) -> u32 {
-        unsafe { self.unwrap().array_layer_count() }
-    }
-
-    pub fn mip_level_count(&self) -> u32 {
-        unsafe { self.unwrap().mip_level_count() }
-    }
-
-    pub fn extent(&self) -> UVec3 {
-        unsafe { self.unwrap().extent() }
-    }
-
-    pub fn format(&self) -> vk::Format {
-        unsafe { self.unwrap().format() }
-    }
-
-    pub fn ty(&self) -> vk::ImageType {
-        unsafe { self.unwrap().ty() }
-    }
-}
-impl<T: ImageLike + ?Sized> GPURefMut<'_, T> {
-    pub fn aspects(&self) -> vk::ImageAspectFlags {
-        unsafe { self.unwrap().aspects() }
-    }
-
-    pub fn array_layer_count(&self) -> u32 {
-        unsafe { self.unwrap().array_layer_count() }
-    }
-
-    pub fn mip_level_count(&self) -> u32 {
-        unsafe { self.unwrap().mip_level_count() }
-    }
-
-    pub fn extent(&self) -> UVec3 {
-        unsafe { self.unwrap().extent() }
-    }
-
-    pub fn format(&self) -> vk::Format {
-        unsafe { self.unwrap().format() }
-    }
-
-    pub fn ty(&self) -> vk::ImageType {
-        unsafe { self.unwrap().ty() }
-    }
-}
-impl<T: ImageLike> crate::sync::GPUMutex<T> {
-    pub fn aspects(&self) -> vk::ImageAspectFlags {
-        self.inner.aspects()
-    }
-
-    pub fn array_layer_count(&self) -> u32 {
-        self.inner.array_layer_count()
-    }
-
-    pub fn mip_level_count(&self) -> u32 {
-        self.inner.mip_level_count()
-    }
-
-    pub fn extent(&self) -> UVec3 {
-        self.inner.extent()
-    }
-
-    pub fn format(&self) -> vk::Format {
-        self.inner.format()
-    }
-
-    pub fn ty(&self) -> vk::ImageType {
-        self.inner.ty()
+project_host_metadata! {
+    impl[T: ImageLike + ?Sized] T {
+        fn aspects(&self) -> vk::ImageAspectFlags;
+        fn array_layer_count(&self) -> u32;
+        fn mip_level_count(&self) -> u32;
+        fn extent(&self) -> UVec3;
+        fn format(&self) -> vk::Format;
+        fn ty(&self) -> vk::ImageType;
     }
 }
 
@@ -265,6 +200,12 @@ impl Image {
         self.allocator.get_allocation_info2(&self.allocation)
     }
 }
+project_host_metadata! {
+    impl[] Image {
+        /// Returns the underlying VMA allocation.
+        fn allocation_info(&self) -> vk_mem::AllocationInfo2;
+    }
+}
 // Safety: an `Image` exclusively owns its `VkImage` and allocation, both created by its
 // constructors and destroyed on drop. `Image` isn't `Clone`, and the metadata comes from the
 // create info.
@@ -383,6 +324,16 @@ macro_rules! image_view_wrapper {
             $(#[$accessor_meta])*
             pub fn $accessor(self) -> GPURefMut<'a, ImageViewItem> {
                 unsafe { GPURefMut::new_unchecked(&self.unwrap().$field) }
+            }
+        }
+        impl<'a, T: ImageLike + HasDevice> GPURef<'a, $name<T>> {
+            pub fn deref_inner(self) -> GPURef<'a, T> {
+                unsafe { GPURef::new_unchecked(&self.unwrap().image) }
+            }
+        }
+        impl<'a, T: ImageLike + HasDevice> GPURefMut<'a, $name<T>> {
+            pub fn deref_inner(self) -> GPURefMut<'a, T> {
+                unsafe { GPURefMut::new_unchecked(&self.unwrap().image) }
             }
         }
         impl<T: ImageLike + HasDevice> HasDevice for $name<T> {
@@ -521,6 +472,15 @@ impl<T: ImageLike + HasDevice> MipImageViews<T> {
         &self.views[level as usize]
     }
 }
+impl<T: ImageLike + HasDevice> crate::sync::GPUMutex<MipImageViews<T>> {
+    /// Returns the view covering exactly mip level `level`.
+    ///
+    /// # Panics
+    /// If `level >= mip_level_count()`.
+    pub fn mip_view(&self, level: u32) -> &ImageViewItem {
+        &self.inner.views[level as usize]
+    }
+}
 impl<'a, T: ImageLike + HasDevice> GPURef<'a, MipImageViews<T>> {
     /// Returns the view covering exactly mip level `level`.
     ///
@@ -541,6 +501,16 @@ impl<'a, T: ImageLike + HasDevice> GPURefMut<'a, MipImageViews<T>> {
         // The views are owned by the `MipImageViews`, so they live as long as it does and
         // share its access.
         unsafe { GPURefMut::new_unchecked(&self.unwrap().views[level as usize]) }
+    }
+}
+impl<'a, T: ImageLike + HasDevice> GPURef<'a, MipImageViews<T>> {
+    pub fn deref_inner(self) -> GPURef<'a, T> {
+        unsafe { GPURef::new_unchecked(&self.unwrap().image) }
+    }
+}
+impl<'a, T: ImageLike + HasDevice> GPURefMut<'a, MipImageViews<T>> {
+    pub fn deref_inner(self) -> GPURefMut<'a, T> {
+        unsafe { GPURefMut::new_unchecked(&self.unwrap().image) }
     }
 }
 impl<T: ImageLike + HasDevice> HasDevice for MipImageViews<T> {
@@ -610,6 +580,8 @@ impl AsVkHandle for ImageViewItem {
         self.view
     }
 }
+// Safety: an `ImageViewItem` holds only a view handle and its metadata.
+unsafe impl NoHostMapping for ImageViewItem {}
 // Safety: `ImageViewItem`s are only created inside the view wrappers and `MipImageViews`, which
 // own the image and destroy the view on drop. They aren't `Clone` and have no public
 // constructor, so they're only reachable through their owner.

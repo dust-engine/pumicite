@@ -505,7 +505,12 @@ impl MemoryTypeMapInner {
             .iter()
             .enumerate()
             .rev()
-            .filter(|(_, mt)| has_flags(mt, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT))
+            .filter(|(_, mt)| {
+                has_flags(
+                    mt,
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                )
+            })
             // Prefer: not DEVICE_LOCAL, not HOST_CACHED, larger heap
             .max_by_key(|(_, mt)| {
                 let not_cached = !mt
@@ -527,7 +532,12 @@ impl MemoryTypeMapInner {
             .iter()
             .enumerate()
             .rev()
-            .filter(|(_, mt)| has_flags(mt, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT))
+            .filter(|(_, mt)| {
+                has_flags(
+                    mt,
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                )
+            })
             // Prefer: HOST_CACHED, DEVICE_LOCAL (for integrated GPUs), larger heap
             .max_by_key(|(_, mt)| {
                 let cached = mt
@@ -555,7 +565,12 @@ impl MemoryTypeMapInner {
                 .enumerate()
                 .rev()
                 .filter(|(_, mt)| {
-                    has_flags(mt, vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)
+                    has_flags(
+                        mt,
+                        vk::MemoryPropertyFlags::DEVICE_LOCAL
+                            | vk::MemoryPropertyFlags::HOST_VISIBLE
+                            | vk::MemoryPropertyFlags::HOST_COHERENT,
+                    )
                 })
                 // Prefer larger heaps (avoid 256MB BAR if full VRAM is available via ReBAR)
                 .max_by_key(|(_, mt)| heap_size(mt));
@@ -597,7 +612,14 @@ impl MemoryTypeMapInner {
             .iter()
             .enumerate()
             .rev()
-            .filter(|(_, mt)| has_flags(mt, vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT))
+            .filter(|(_, mt)| {
+                has_flags(
+                    mt,
+                    vk::MemoryPropertyFlags::DEVICE_LOCAL
+                        | vk::MemoryPropertyFlags::HOST_VISIBLE
+                        | vk::MemoryPropertyFlags::HOST_COHERENT,
+                )
+            })
             // Prefer larger heaps when available
             .max_by_key(|(_, mt)| heap_size(mt))
             .map(|(i, _)| i as u32)
@@ -619,8 +641,13 @@ impl MemoryTypeMapInner {
                 .enumerate()
                 .rev()
                 .filter(|(_, mt)| {
-                    has_flags(mt, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_CACHED)
-                        && !mt.property_flags.contains(vk::MemoryPropertyFlags::HOST_COHERENT)
+                    has_flags(
+                        mt,
+                        vk::MemoryPropertyFlags::HOST_VISIBLE
+                            | vk::MemoryPropertyFlags::HOST_CACHED,
+                    ) && !mt
+                        .property_flags
+                        .contains(vk::MemoryPropertyFlags::HOST_COHERENT)
                 })
                 .max_by_key(|(_, mt)| {
                     let device_local = mt
@@ -1038,7 +1065,10 @@ mod tests {
         let map = MemoryTypeMapInner::new(&types, &heaps, vk::PhysicalDeviceType::INTEGRATED_GPU);
 
         assert_eq!(map.private[..], [0, 2, 1, 3]);
-        assert_eq!(map.staging, 1, "staging falls back to the only HOST_VISIBLE type");
+        assert_eq!(
+            map.staging, 1,
+            "staging falls back to the only HOST_VISIBLE type"
+        );
         assert_eq!(map.dynamic, 1);
         assert!(map.dynamic_device_local);
         assert_eq!(map.upload[..], [1]);
@@ -2154,7 +2184,10 @@ mod tests {
 
         assert_eq!(map.private[..], [0, 1]);
         assert_eq!(map.staging, 0);
-        assert_eq!(map.dynamic, 0, "dynamic gives up HOST_CACHED for HOST_COHERENT");
+        assert_eq!(
+            map.dynamic, 0,
+            "dynamic gives up HOST_CACHED for HOST_COHERENT"
+        );
         assert!(map.dynamic_device_local);
         assert_eq!(map.upload[..], [0]);
         assert!(map.upload_host_visible);
