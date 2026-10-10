@@ -6,6 +6,12 @@
 //! GPU has finished writing, results are read back with
 //! [`QueryPool::get_results`].
 //!
+//! The safe methods take `&mut QueryPool` or a [`GPURefMut`] token, so whoever
+//! resets or writes owns every query in the pool. To share one pool between the
+//! host and several in-flight command buffers that each own different queries
+//! (e.g. a ring of timestamp slots), use the `_unchecked` variants, which take a
+//! shared reference and leave per-query ownership to the caller.
+//!
 //! # Example usage
 //!
 //! ```ignore
@@ -31,7 +37,7 @@ use ash::{VkResult, vk};
 
 use crate::{
     Device, HasDevice,
-    command::{CommandEncoder, GPURefMut, project_host_metadata},
+    command::{CommandEncoder, GPURef, GPURefMut, project_host_metadata},
     utils::AsVkHandle,
 };
 
@@ -104,6 +110,21 @@ impl QueryPool {
     ///
     /// Requires Vulkan 1.2 or `VK_EXT_host_query_reset`.
     pub fn host_reset(&mut self, range: Range<u32>) {
+        // Safety: `&mut self` means no command buffer holds a token to the pool.
+        unsafe { self.host_reset_unchecked(range) }
+    }
+
+    /// Resets queries in `range` from the host, through a shared reference.
+    ///
+    /// Requires Vulkan 1.2 or `VK_EXT_host_query_reset`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have exclusive ownership of the queries in `range`: every command
+    /// buffer that reset or wrote them has completed, no command buffer that accesses them
+    /// is submitted before this returns, and no other thread resets them concurrently.
+    /// Other queries of the pool may be in use by the GPU.
+    pub unsafe fn host_reset_unchecked(&self, range: Range<u32>) {
         assert!(range.end <= self.len, "query range out of bounds");
         unsafe {
             self.device
@@ -157,6 +178,22 @@ impl<'a> CommandEncoder<'a> {
         pool: impl Into<GPURefMut<'a, QueryPool>>,
         range: Range<u32>,
     ) {
+        // Safety: the `GPURefMut` grants this command buffer every query in the pool.
+        unsafe { self.reset_query_pool_unchecked(pool.into().readonly(), range) }
+    }
+
+    /// [`reset_query_pool`](Self::reset_query_pool) through a shared token.
+    ///
+    /// # Safety
+    ///
+    /// This command buffer must have exclusive ownership of the queries in `range` while it
+    /// may execute: no other command buffer accesses them, and the host does not reset or
+    /// read them, until it completes. Other queries of the pool may be in use elsewhere.
+    pub unsafe fn reset_query_pool_unchecked(
+        &mut self,
+        pool: impl Into<GPURef<'a, QueryPool>>,
+        range: Range<u32>,
+    ) {
         let pool = pool.into();
         assert!(range.end <= pool.len(), "query range out of bounds");
         unsafe {
@@ -183,6 +220,25 @@ impl<'a> CommandEncoder<'a> {
     pub fn write_timestamp(
         &mut self,
         pool: impl Into<GPURefMut<'a, QueryPool>>,
+        stage: vk::PipelineStageFlags2,
+        query: u32,
+    ) {
+        // Safety: the `GPURefMut` grants this command buffer every query in the pool.
+        unsafe { self.write_timestamp_unchecked(pool.into().readonly(), stage, query) }
+    }
+
+    /// [`write_timestamp`](Self::write_timestamp) through a shared token.
+    ///
+    /// # Safety
+    ///
+    /// This command buffer must have exclusive ownership of query `query` while it may
+    /// execute: no other command buffer accesses it, and the host does not reset it, until
+    /// it completes. The host may poll it with [`QueryPool::get_results`] and
+    /// [`vk::QueryResultFlags::WITH_AVAILABILITY`]. Other queries of the pool may be in use
+    /// elsewhere.
+    pub unsafe fn write_timestamp_unchecked(
+        &mut self,
+        pool: impl Into<GPURef<'a, QueryPool>>,
         stage: vk::PipelineStageFlags2,
         query: u32,
     ) {
@@ -215,6 +271,31 @@ impl<'a> CommandEncoder<'a> {
         &mut self,
         acceleration_structures: &[vk::AccelerationStructureKHR],
         pool: impl Into<GPURefMut<'a, QueryPool>>,
+        first_query: u32,
+    ) {
+        // Safety: the `GPURefMut` grants this command buffer every query in the pool.
+        unsafe {
+            self.write_acceleration_structures_properties_unchecked(
+                acceleration_structures,
+                pool.into().readonly(),
+                first_query,
+            )
+        }
+    }
+
+    /// [`write_acceleration_structures_properties`](Self::write_acceleration_structures_properties)
+    /// through a shared token.
+    ///
+    /// # Safety
+    ///
+    /// This command buffer must have exclusive ownership of the queries
+    /// `first_query..first_query + acceleration_structures.len()` while it may execute: no
+    /// other command buffer accesses them, and the host does not reset them, until it
+    /// completes. Other queries of the pool may be in use elsewhere.
+    pub unsafe fn write_acceleration_structures_properties_unchecked(
+        &mut self,
+        acceleration_structures: &[vk::AccelerationStructureKHR],
+        pool: impl Into<GPURef<'a, QueryPool>>,
         first_query: u32,
     ) {
         let pool = pool.into();

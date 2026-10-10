@@ -360,12 +360,13 @@ impl<T: AsVkHandle + Send> AsVkHandle for GPUMutex<T> {
 /// while the GPU may be writing that memory.
 ///
 /// ```ignore
-/// project_host_metadata! {
-///     impl[T: BufferLike + ?Sized] T {
-///         fn size(&self) -> vk::DeviceSize;
+/// pumicite::project_host_metadata! {
+///     pub trait MeshMetadata for impl[] Mesh {
+///         fn vertex_count(&self) -> u32;
 ///     }
 /// }
 /// ```
+#[macro_export]
 macro_rules! project_host_metadata {
     (
         impl[$($generics:tt)*] $ty:ty {
@@ -403,8 +404,123 @@ macro_rules! project_host_metadata {
             )*
         }
     };
+    (
+        $(#[$trait_meta:meta])*
+        $vis:vis trait $trait_name:ident for impl[$($generics:tt)*] $ty:ty {
+            $(
+                $(#[$meta:meta])*
+                fn $name:ident(&self) -> $ret:ty;
+            )*
+        }
+    ) => {
+        $(#[$trait_meta])*
+        $vis trait $trait_name {
+            $(
+                $(#[$meta])*
+                fn $name(&self) -> $ret;
+            )*
+        }
+        impl<$($generics)*> $trait_name for $crate::sync::GPUMutex<$ty>
+        where
+            $ty: Sized + Send,
+        {
+            $(
+                fn $name(&self) -> $ret {
+                    unsafe { self.unwrap().$name() }
+                }
+            )*
+        }
+        impl<$($generics)*> $trait_name for $crate::command::GPURef<'_, $ty> {
+            $(
+                fn $name(&self) -> $ret {
+                    unsafe { self.unwrap().$name() }
+                }
+            )*
+        }
+        impl<$($generics)*> $trait_name for $crate::command::GPURefMut<'_, $ty> {
+            $(
+                fn $name(&self) -> $ret {
+                    unsafe { self.unwrap().$name() }
+                }
+            )*
+        }
+    };
 }
 pub(crate) use project_host_metadata;
+
+/// Defines a trait projecting a [`GPURef`] or [`GPURefMut`] to a struct onto tokens of the
+/// same kind to its fields, so each field can be passed to the encoder on its own.
+///
+/// Locking a [`GPUMutex`] that holds several resources yields one token for the whole struct;
+/// each generated method narrows it to one field. It is a trait rather than inherent methods
+/// because [`GPURef`] and [`GPURefMut`] are defined in this crate, so other crates can't add
+/// methods to them. The trait is implemented for both token kinds; its `Token` associated
+/// type keeps the projected token the same kind as the one it was called on. Each field also
+/// gets an associated type of the same name, holding its type, so field types may use the
+/// struct's generics.
+///
+/// The syntax follows [`project_host_metadata!`](crate::project_host_metadata)'s trait form,
+/// listing fields instead of methods:
+///
+/// ```ignore
+/// pumicite::project_fields! {
+///     pub trait GBufferViewsExt for impl[I: ImageLike + HasDevice] GBufferViews<I> {
+///         albedo: FullImageView<I>,
+///         depth: FullImageView<I>,
+///     }
+/// }
+///
+/// let views = encoder.lock(&gbuffer, stages); // GPURefMut<'_, GBufferViews<Image>>
+/// encoder.use_image_resource(views.albedo(), /* .. */); // GPURefMut<'_, FullImageView<Image>>
+/// ```
+#[macro_export]
+macro_rules! project_fields {
+    (
+        @impl $token:ident, $trait_name:ident, [$($generics:tt)*] $ty:ty,
+        $($field:ident: $field_ty:ty),*
+    ) => {
+        #[allow(non_camel_case_types)]
+        impl<'a, $($generics)*> $trait_name<'a> for $crate::command::$token<'a, $ty> {
+            type Token<F: ?Sized + 'a> = $crate::command::$token<'a, F>;
+            $(
+                type $field = $field_ty;
+                fn $field(self) -> Self::Token<$field_ty> {
+                    // `offset_of!` only accepts the struct's own fields, so the `.field` access
+                    // below can't auto-deref into memory the struct doesn't own (e.g. behind an
+                    // `Arc`).
+                    let _ = ::core::mem::offset_of!($ty, $field);
+                    // A raw pointer, unlike a reference, can't deref-coerce, so `$field_ty`
+                    // must be the field's own type.
+                    let $field: *const $field_ty = unsafe { &raw const self.unwrap().$field };
+                    // SAFETY: the token grants the command buffer its access (exclusive for
+                    // `GPURefMut`, read-only for `GPURef`) to the whole struct, so it grants
+                    // the same for each field the struct owns.
+                    unsafe { $crate::command::$token::new_unchecked(&*$field) }
+                }
+            )*
+        }
+    };
+    (
+        $(#[$meta:meta])*
+        $vis:vis trait $trait_name:ident for impl[$($generics:tt)*] $ty:ty {
+            $($field:ident: $field_ty:ty),* $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[allow(non_camel_case_types)]
+        $vis trait $trait_name<'a> {
+            /// `GPURef` or `GPURefMut`, matching the token the projection is called on.
+            type Token<F: ?Sized + 'a>;
+            $(
+                /// The type of the field of the same name.
+                type $field: ?Sized + 'a;
+                fn $field(self) -> Self::Token<Self::$field>;
+            )*
+        }
+        $crate::project_fields!(@impl GPURef, $trait_name, [$($generics)*] $ty, $($field: $field_ty),*);
+        $crate::project_fields!(@impl GPURefMut, $trait_name, [$($generics)*] $ty, $($field: $field_ty),*);
+    };
+}
 
 /// Device can always be projected
 impl<T: HasDevice + ?Sized> HasDevice for GPURef<'_, T> {
