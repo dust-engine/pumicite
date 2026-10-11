@@ -640,7 +640,11 @@ impl<'a> GPURef<'a, SwapchainImageInner> {
         unsafe { GPURef::new_unchecked(self.get_unchecked().linear_view()) }
     }
     pub fn srgb_view(self) -> Option<GPURef<'a, SwapchainImageView>> {
-        unsafe { self.get_unchecked().srgb_view().map(|v| GPURef::new_unchecked(v)) }
+        unsafe {
+            self.get_unchecked()
+                .srgb_view()
+                .map(|v| GPURef::new_unchecked(v))
+        }
     }
 }
 impl<'a> GPURefMut<'a, SwapchainImageInner> {

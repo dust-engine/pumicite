@@ -548,6 +548,40 @@ fn generate_struct(info: &ParameterBlockInfo) -> proc_macro2::TokenStream {
                 }
             });
 
+            // A null descriptor for the binding, for shaders that statically
+            // reference a resource the caller has nothing to bind for. Needs
+            // VK_EXT_robustness2 `nullDescriptor`; samplers have no null form.
+            let null_expr = match group.category {
+                InfoCategory::AccelerationStructure => {
+                    Some(quote! { pumicite::ash::vk::AccelerationStructureKHR::null() })
+                }
+                InfoCategory::Buffer => Some(quote! {
+                    pumicite::ash::vk::DescriptorBufferInfo {
+                        buffer: pumicite::ash::vk::Buffer::null(),
+                        offset: 0,
+                        range: pumicite::ash::vk::WHOLE_SIZE,
+                    }
+                }),
+                InfoCategory::Image if entry.descriptor_type == DescriptorType::Sampler => None,
+                InfoCategory::Image => {
+                    Some(quote! { pumicite::ash::vk::DescriptorImageInfo::default() })
+                }
+                InfoCategory::TexelBufferView => {
+                    Some(quote! { pumicite::ash::vk::BufferView::null() })
+                }
+            };
+            if let Some(null_expr) = null_expr {
+                let null_method = format_ident!("{}_null", entry.setter_name);
+                setter_methods.push(quote! {
+                    pub fn #null_method(&mut self, #index_param) -> &mut Self {
+                        #guard_tokens
+                        self.#backing_field[#slot_tokens] = #null_expr;
+                        self.#dirty_field |= 1u64 << #bit_tokens;
+                        self
+                    }
+                });
+            }
+
             write_i += entry.count;
         }
     }
@@ -650,6 +684,12 @@ mod tests {
         // Arrayed binding generates an indexed setter and array-element runs.
         assert!(code.contains("dst_array_element"));
         assert!(code.contains("index : u32"));
+
+        // Null variants for everything but samplers.
+        assert!(code.contains("fn nodes_null"));
+        assert!(code.contains("fn cascades_null (& mut self , index : u32 ,)"));
+        assert!(code.contains("fn scene_bvh_null"));
+        assert!(!code.contains("fn linear_sampler_null"));
     }
 
     // Consecutive same-type bindings only coalesce when their `[Stages]` masks
