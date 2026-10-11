@@ -333,9 +333,21 @@ pub fn tlas_build_system<T: Send + Sync + 'static>(
     tlas_resource.tlas = Some(tlas_inner);
 }
 
+/// Intended to group the [`TLASBuilderSet<T>`] of every payload type `T`, so
+/// a system can be ordered against all TLAS input uploads at once.
 #[derive(SystemSet, Hash, PartialEq, Eq, Debug, Clone, Copy)]
 pub struct AllTLASBuilderSet;
 
+/// Systems that write `TLASInstance<T>` for this frame's TLAS build.
+///
+/// `TLASBuilderPlugin::<T>` runs [`tlas_build_input_upload_system::<T>`]
+/// `.after(TLASBuilderSet::<T>::default())`. The upload copies each enabled
+/// instance's fields (`blas`, transform, SBT record offset and flags, custom
+/// index, mask) and its `data` into the GPU buffers at that point, so any
+/// system that sets those fields for the current frame must be in this set.
+///
+/// Each payload type has its own set: `TLASBuilderSet<A>` orders nothing
+/// against the upload for `TLAS<B>`.
 #[derive(SystemSet, Copy)]
 pub struct TLASBuilderSet<T = ()>(PhantomData<T>);
 impl<T> Default for TLASBuilderSet<T> {
