@@ -33,7 +33,7 @@ bevy_reflect = { version = "0.20", optional = true }
 bevy = ["bevy_ecs", "bevy_asset", "bevy_reflect"]
 
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
-raw-window-metal = "0.4"
+raw-window-metal = "1.1"
 
 [patch.crates-io]
 bevy_a11y = { git = "https://github.com/dust-engine/bevy", branch = "release-0.20.0" }

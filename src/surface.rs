@@ -160,14 +160,10 @@ unsafe fn create_surface(
 
         #[cfg(target_os = "macos")]
         (RawDisplayHandle::AppKit(_), RawWindowHandle::AppKit(window)) => {
-            use raw_window_metal::{Layer, appkit};
-
-            let layer = match appkit::metal_layer_from_handle(window) {
-                Layer::Existing(layer) | Layer::Allocated(layer) => layer as *mut _,
-            };
+            let layer = raw_window_metal::Layer::from_ns_view(window.ns_view);
 
             let surface_desc = vk::MetalSurfaceCreateInfoEXT {
-                p_layer: &*layer,
+                p_layer: layer.as_ptr().as_ptr().cast(),
                 ..Default::default()
             };
             instance
@@ -177,15 +173,14 @@ unsafe fn create_surface(
 
         #[cfg(target_os = "ios")]
         (RawDisplayHandle::UiKit(_), RawWindowHandle::UiKit(window)) => {
-            use raw_window_metal::{Layer, uikit};
+            let layer = raw_window_metal::Layer::from_ui_view(window.ui_view);
 
-            let layer = match uikit::metal_layer_from_handle(window) {
-                Layer::Existing(layer) | Layer::Allocated(layer) => layer as *mut _,
+            let surface_desc = vk::MetalSurfaceCreateInfoEXT {
+                p_layer: layer.as_ptr().as_ptr().cast(),
+                ..Default::default()
             };
-
-            let surface_desc = vk::MetalSurfaceCreateInfoEXT::builder().layer(&*layer);
             instance
-                .extension::<ash::ext::MetalSurface>()
+                .extension::<ash::ext::metal_surface::Meta>()
                 .create_metal_surface(&surface_desc, None)
         }
 
