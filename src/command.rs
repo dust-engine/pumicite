@@ -164,7 +164,7 @@ impl<'a, T: ?Sized> GPURef<'a, T> {
     /// was downgraded from a [`GPURefMut`]. Use the reference only for handles and metadata,
     /// never to access memory the GPU can access, such as a buffer's mapped bytes through
     /// [`BufferLike::as_slice`].
-    pub unsafe fn unwrap(&self) -> &T {
+    pub unsafe fn get_unchecked(&self) -> &T {
         self.0
     }
     /// Creates a token for `value`, with any lifetime.
@@ -211,7 +211,7 @@ impl<'a, T: ?Sized> GPURefMut<'a, T> {
     /// buffer that still holds the [`GPUMutex`] this token came from, or for this one. Use the
     /// reference only for handles and metadata, never to access memory the GPU can access,
     /// such as a buffer's mapped bytes through [`BufferLike::as_slice`].
-    pub unsafe fn unwrap(&self) -> &T {
+    pub unsafe fn get_unchecked(&self) -> &T {
         self.0
     }
     /// Creates a token for `value`, with any lifetime.
@@ -332,7 +332,7 @@ impl<'a, T: ?Sized> GPURefMut<'a, Box<T>> {
 impl<T: AsVkHandle + ?Sized> AsVkHandle for GPURef<'_, T> {
     type Handle = T::Handle;
     fn vk_handle(&self) -> Self::Handle {
-        unsafe { self.unwrap().vk_handle() }
+        unsafe { self.get_unchecked().vk_handle() }
     }
 }
 
@@ -340,7 +340,7 @@ impl<T: AsVkHandle + ?Sized> AsVkHandle for GPURef<'_, T> {
 impl<T: AsVkHandle + ?Sized> AsVkHandle for GPURefMut<'_, T> {
     type Handle = T::Handle;
     fn vk_handle(&self) -> Self::Handle {
-        unsafe { self.unwrap().vk_handle() }
+        unsafe { self.get_unchecked().vk_handle() }
     }
 }
 
@@ -391,7 +391,7 @@ macro_rules! project_host_metadata {
             $(
                 $(#[$meta])*
                 pub fn $name(&self) -> $ret {
-                    unsafe { self.unwrap().$name() }
+                    unsafe { self.get_unchecked().$name() }
                 }
             )*
         }
@@ -399,7 +399,7 @@ macro_rules! project_host_metadata {
             $(
                 $(#[$meta])*
                 pub fn $name(&self) -> $ret {
-                    unsafe { self.unwrap().$name() }
+                    unsafe { self.get_unchecked().$name() }
                 }
             )*
         }
@@ -491,7 +491,7 @@ macro_rules! project_fields {
                     let _ = ::core::mem::offset_of!($ty, $field);
                     // A raw pointer, unlike a reference, can't deref-coerce, so `$field_ty`
                     // must be the field's own type.
-                    let $field: *const $field_ty = unsafe { &raw const self.unwrap().$field };
+                    let $field: *const $field_ty = unsafe { &raw const self.get_unchecked().$field };
                     // SAFETY: the token grants the command buffer its access (exclusive for
                     // `GPURefMut`, read-only for `GPURef`) to the whole struct, so it grants
                     // the same for each field the struct owns.
@@ -525,14 +525,14 @@ macro_rules! project_fields {
 /// Device can always be projected
 impl<T: HasDevice + ?Sized> HasDevice for GPURef<'_, T> {
     fn device(&self) -> &Device {
-        unsafe { self.unwrap().device() }
+        unsafe { self.get_unchecked().device() }
     }
 }
 
 /// Device can always be projected
 impl<T: HasDevice + ?Sized> HasDevice for GPURefMut<'_, T> {
     fn device(&self) -> &Device {
-        unsafe { self.unwrap().device() }
+        unsafe { self.get_unchecked().device() }
     }
 }
 

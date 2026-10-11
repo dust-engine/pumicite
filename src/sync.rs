@@ -99,12 +99,24 @@ impl<T: Send> GPUMutex<T> {
     ///
     /// # Safety
     ///
-    /// The GPU may be writing `T`'s memory: for a command buffer that still holds this mutex.
+    /// The GPU may be writing `T`'s memory when the GPUMutex is locked on a command buffer.
     /// Use the reference only for handles and metadata, never to access memory the GPU can
-    /// access, such as a buffer's mapped bytes through
-    /// [`BufferLike::as_slice`](crate::buffer::BufferLike::as_slice).
-    pub unsafe fn unwrap(&self) -> &T {
+    /// access.
+    pub unsafe fn get_unchecked(&self) -> &T {
         &self.inner
+    }
+
+    /// Returns a mutable reference to the wrapped item without waiting for pending GPU work.
+    ///
+    /// `&mut self` rules out other host access, but not GPU access.
+    ///
+    /// # Safety
+    ///
+    /// The GPU may be accessing `T`'s memory when the GPUMutex is locked on a command buffer.
+    /// Use the reference only to move or modify handles and metadata. Never free a resource
+    /// the GPU may still use, and never access memory the GPU can access.
+    pub unsafe fn get_mut_unchecked(&mut self) -> &mut T {
+        &mut self.inner
     }
 
     /// Obtain a mutable reference to the wrapped item if there is no currently pending GPU

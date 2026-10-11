@@ -754,7 +754,7 @@ impl AsVkHandle for SharedRingBufferSuballocation {
 impl<'a> GPURef<'a, SharedRingBufferSuballocation> {
     pub fn deref_inner(self) -> GPURef<'a, RingBufferSuballocation> {
         unsafe {
-            let this = self.unwrap();
+            let this = self.get_unchecked();
             GPURef::new_unchecked(&this.0)
         }
     }
@@ -762,7 +762,7 @@ impl<'a> GPURef<'a, SharedRingBufferSuballocation> {
 impl<'a> GPURefMut<'a, SharedRingBufferSuballocation> {
     pub fn deref_inner(self) -> GPURef<'a, RingBufferSuballocation> {
         unsafe {
-            let this = self.unwrap();
+            let this = self.get_unchecked();
             GPURef::new_unchecked(&this.0)
         }
     }
@@ -938,7 +938,7 @@ impl<'a> GPURef<'a, ManagedBuffer> {
     pub fn device_buffer(self) -> GPURef<'a, Buffer> {
         // Safety: `device` is part of the `ManagedBuffer`, so this token guarantees for it
         // what it guarantees for the whole value.
-        unsafe { GPURef::new_unchecked(&self.unwrap().device) }
+        unsafe { GPURef::new_unchecked(&self.get_unchecked().device) }
     }
 }
 impl<'a> GPURefMut<'a, ManagedBuffer> {
@@ -946,7 +946,7 @@ impl<'a> GPURefMut<'a, ManagedBuffer> {
     pub fn device_buffer(self) -> GPURefMut<'a, Buffer> {
         // Safety: `device` is part of the `ManagedBuffer`, so this token guarantees for it
         // what it guarantees for the whole value.
-        unsafe { GPURefMut::new_unchecked(&self.unwrap().device) }
+        unsafe { GPURefMut::new_unchecked(&self.get_unchecked().device) }
     }
 
     /// Makes host writes through [`as_slice_mut`](ManagedBuffer::as_slice_mut) visible to
@@ -978,7 +978,7 @@ impl<'a> GPURefMut<'a, ManagedBuffer> {
     pub fn flush(self, encoder: &mut CommandEncoder<'a>) {
         // Safety: only used to flush the host's caches and to reach the staging buffer. The
         // memory isn't accessed through it.
-        let this = unsafe { self.unwrap() };
+        let this = unsafe { self.get_unchecked() };
         if this.noncoherent.is_some() {
             // The host can't write the buffer again until this command buffer completes, so
             // this flushes every write the GPU will see. Earlier GPU work on the buffer has
@@ -1030,7 +1030,7 @@ impl<'a> GPURefMut<'a, ManagedBuffer> {
     pub fn invalidate(self, encoder: &mut CommandEncoder<'a>) {
         // Safety: only used to mark the host's caches stale and to reach the staging buffer.
         // The memory isn't accessed through it.
-        let this = unsafe { self.unwrap() };
+        let this = unsafe { self.get_unchecked() };
         if let Some(pending) = &this.noncoherent {
             pending.store(true, Ordering::Release);
         }

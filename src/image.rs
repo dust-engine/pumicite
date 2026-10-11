@@ -317,23 +317,23 @@ macro_rules! image_view_wrapper {
         impl<'a, T: ImageLike + HasDevice> GPURef<'a, $name<T>> {
             $(#[$accessor_meta])*
             pub fn $accessor(self) -> GPURef<'a, ImageViewItem> {
-                unsafe { GPURef::new_unchecked(&self.unwrap().$field) }
+                unsafe { GPURef::new_unchecked(&self.get_unchecked().$field) }
             }
         }
         impl<'a, T: ImageLike + HasDevice> GPURefMut<'a, $name<T>> {
             $(#[$accessor_meta])*
             pub fn $accessor(self) -> GPURefMut<'a, ImageViewItem> {
-                unsafe { GPURefMut::new_unchecked(&self.unwrap().$field) }
+                unsafe { GPURefMut::new_unchecked(&self.get_unchecked().$field) }
             }
         }
         impl<'a, T: ImageLike + HasDevice> GPURef<'a, $name<T>> {
             pub fn deref_inner(self) -> GPURef<'a, T> {
-                unsafe { GPURef::new_unchecked(&self.unwrap().image) }
+                unsafe { GPURef::new_unchecked(&self.get_unchecked().image) }
             }
         }
         impl<'a, T: ImageLike + HasDevice> GPURefMut<'a, $name<T>> {
             pub fn deref_inner(self) -> GPURefMut<'a, T> {
-                unsafe { GPURefMut::new_unchecked(&self.unwrap().image) }
+                unsafe { GPURefMut::new_unchecked(&self.get_unchecked().image) }
             }
         }
         impl<T: ImageLike + HasDevice> HasDevice for $name<T> {
@@ -489,7 +489,7 @@ impl<'a, T: ImageLike + HasDevice> GPURef<'a, MipImageViews<T>> {
     pub fn mip_view(self, level: u32) -> GPURef<'a, ImageViewItem> {
         // The views are owned by the `MipImageViews`, so they live as long as it does and
         // share its access.
-        unsafe { GPURef::new_unchecked(&self.unwrap().views[level as usize]) }
+        unsafe { GPURef::new_unchecked(&self.get_unchecked().views[level as usize]) }
     }
 }
 impl<'a, T: ImageLike + HasDevice> GPURefMut<'a, MipImageViews<T>> {
@@ -500,17 +500,17 @@ impl<'a, T: ImageLike + HasDevice> GPURefMut<'a, MipImageViews<T>> {
     pub fn mip_view(self, level: u32) -> GPURefMut<'a, ImageViewItem> {
         // The views are owned by the `MipImageViews`, so they live as long as it does and
         // share its access.
-        unsafe { GPURefMut::new_unchecked(&self.unwrap().views[level as usize]) }
+        unsafe { GPURefMut::new_unchecked(&self.get_unchecked().views[level as usize]) }
     }
 }
 impl<'a, T: ImageLike + HasDevice> GPURef<'a, MipImageViews<T>> {
     pub fn deref_inner(self) -> GPURef<'a, T> {
-        unsafe { GPURef::new_unchecked(&self.unwrap().image) }
+        unsafe { GPURef::new_unchecked(&self.get_unchecked().image) }
     }
 }
 impl<'a, T: ImageLike + HasDevice> GPURefMut<'a, MipImageViews<T>> {
     pub fn deref_inner(self) -> GPURefMut<'a, T> {
-        unsafe { GPURefMut::new_unchecked(&self.unwrap().image) }
+        unsafe { GPURefMut::new_unchecked(&self.get_unchecked().image) }
     }
 }
 impl<T: ImageLike + HasDevice> HasDevice for MipImageViews<T> {

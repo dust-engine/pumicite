@@ -637,19 +637,19 @@ impl crate::sync::GPUMutex<SwapchainImageInner> {
 }
 impl<'a> GPURef<'a, SwapchainImageInner> {
     pub fn linear_view(self) -> GPURef<'a, SwapchainImageView> {
-        unsafe { GPURef::new_unchecked(self.unwrap().linear_view()) }
+        unsafe { GPURef::new_unchecked(self.get_unchecked().linear_view()) }
     }
     pub fn srgb_view(self) -> Option<GPURef<'a, SwapchainImageView>> {
-        unsafe { self.unwrap().srgb_view().map(|v| GPURef::new_unchecked(v)) }
+        unsafe { self.get_unchecked().srgb_view().map(|v| GPURef::new_unchecked(v)) }
     }
 }
 impl<'a> GPURefMut<'a, SwapchainImageInner> {
     pub fn linear_view(self) -> GPURefMut<'a, SwapchainImageView> {
-        unsafe { GPURefMut::new_unchecked(self.unwrap().linear_view()) }
+        unsafe { GPURefMut::new_unchecked(self.get_unchecked().linear_view()) }
     }
     pub fn srgb_view(self) -> Option<GPURefMut<'a, SwapchainImageView>> {
         unsafe {
-            self.unwrap()
+            self.get_unchecked()
                 .srgb_view()
                 .map(|v| GPURefMut::new_unchecked(v))
         }
