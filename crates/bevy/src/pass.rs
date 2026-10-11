@@ -35,7 +35,7 @@ use bevy_ecs::{
     schedule::{
         InternedSystemSet, NodeId, ScheduleBuildPass, ScheduleGraph, SystemKey, SystemSetKey,
     },
-    system::{IntoSystem, System},
+    system::{IntoSystem, System, SystemAccess},
     world::World,
 };
 
@@ -216,16 +216,20 @@ impl ScheduleBuildPass for SubmissionSetsPass {
             for system_node in systems.iter() {
                 let system = graph.systems.get_mut(*system_node).unwrap();
                 system.configurate(&mut shared_config);
-                system
-                    .access_mut()
-                    .add_resource_write(shared_state_component_id);
+                let access = system.access_mut();
+                access.ensure_metadata_access();
+                if let SystemAccess::Shared(access) = access {
+                    access.add_resource_write(shared_state_component_id);
+                }
             }
 
             let submission_system = graph.systems.get_mut(meta_systems.submission).unwrap();
             submission_system.configurate(&mut queue_config);
-            submission_system
-                .access_mut()
-                .add_resource_write(*queue_component_id);
+            let access = submission_system.access_mut();
+            access.ensure_metadata_access();
+            if let SystemAccess::Shared(access) = access {
+                access.add_resource_write(*queue_component_id);
+            }
 
             let user_systems = systems
                 .iter()

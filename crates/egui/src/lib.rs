@@ -122,7 +122,7 @@ impl<Filter: QueryFilter + Send + Sync + 'static> Plugin for EguiPlugin<Filter> 
         app.world_mut().entity_mut(window).insert((
             EguiContext::default(),
             PrimaryEguiContext,
-            EguiMultipassSchedule::new(EguiPrimaryContextPass),
+            EguiSchedule::new(EguiPrimaryContextPass),
             bevy_camera::Camera::default(),
         ));
 
@@ -296,7 +296,7 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
     let Ok(output) = egui_render_output.single() else {
         return;
     };
-    for (texture_id, image_delta) in output.textures_delta.set.iter() {
+    for (texture_id, image_deltas) in output.textures_delta.set.iter() {
         let texture_id = match texture_id {
             TextureId::Managed(id) => *id,
             TextureId::User(_) => unimplemented!(),
@@ -310,6 +310,8 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
             );
             (existing_img, texture_state)
         } else {
+            // A newly allocated texture always starts with a whole delta.
+            let image_delta = &image_deltas[0];
             let size = image_delta.image.size();
             let create_info = vk::ImageCreateInfo {
                 // egui provides color values as alpha-premultiplied gamma values.
@@ -375,22 +377,55 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
         };
 
         let texel_size: u32 = 4;
-        let expected_size =
-            texel_size * image_delta.image.size()[0] as u32 * image_delta.image.size()[1] as u32;
+        let expected_size: u32 = image_deltas
+            .iter()
+            .map(|d| texel_size * d.image.size()[0] as u32 * d.image.size()[1] as u32)
+            .sum();
         let mut host_buffer =
             host_visible_ring_buffer.allocate_buffer(expected_size as u64, texel_size as u64);
-        match &image_delta.image {
-            egui::epaint::ImageData::Color(image) => {
-                let slice: &[u8] = bytemuck::cast_slice(image.pixels.as_slice());
-                host_buffer.as_slice_mut().unwrap().copy_from_slice(slice);
-            } /*
-              egui::epaint::ImageData::Font(font_image) => {
-                  let pixels: Vec<_> = font_image.srgba_pixels(None).collect();
-                  let slice: &[u8] = bytemuck::cast_slice(pixels.as_slice());
-                  dst.copy_from_slice(slice);
-              }
-              */
-        };
+        let mut copies = Vec::with_capacity(image_deltas.len());
+        let mut buffer_offset = 0;
+        for image_delta in image_deltas {
+            let size = image_delta.image.size();
+            let len = (texel_size * size[0] as u32 * size[1] as u32) as usize;
+            match &image_delta.image {
+                egui::epaint::ImageData::Color(image) => {
+                    let slice: &[u8] = bytemuck::cast_slice(image.pixels.as_slice());
+                    host_buffer.as_slice_mut().unwrap()[buffer_offset..buffer_offset + len]
+                        .copy_from_slice(slice);
+                } /*
+                  egui::epaint::ImageData::Font(font_image) => {
+                      let pixels: Vec<_> = font_image.srgba_pixels(None).collect();
+                      let slice: &[u8] = bytemuck::cast_slice(pixels.as_slice());
+                      dst.copy_from_slice(slice);
+                  }
+                  */
+            };
+            copies.push(vk::BufferImageCopy {
+                buffer_offset: buffer_offset as u64,
+                image_subresource: vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                image_offset: image_delta
+                    .pos
+                    .map(|offset| vk::Offset3D {
+                        x: offset[0] as i32,
+                        y: offset[1] as i32,
+                        z: 0,
+                    })
+                    .unwrap_or_default(),
+                image_extent: vk::Extent3D {
+                    width: size[0] as u32,
+                    height: size[1] as u32,
+                    depth: 1,
+                },
+                ..Default::default()
+            });
+            buffer_offset += len;
+        }
         ctx.record(|encoder| {
             let image = encoder.lock(texture, vk::PipelineStageFlags2::COPY);
             let host_buffer = encoder.retain(host_buffer);
@@ -409,28 +444,7 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
             encoder.copy_buffer_to_image_with_layout(
                 host_buffer,
                 image,
-                &[vk::BufferImageCopy {
-                    image_subresource: vk::ImageSubresourceLayers {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        mip_level: 0,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
-                    image_offset: image_delta
-                        .pos
-                        .map(|offset| vk::Offset3D {
-                            x: offset[0] as i32,
-                            y: offset[1] as i32,
-                            z: 0,
-                        })
-                        .unwrap_or_default(),
-                    image_extent: vk::Extent3D {
-                        width: image_delta.image.size()[0] as u32,
-                        height: image_delta.image.size()[1] as u32,
-                        depth: 1,
-                    },
-                    ..Default::default()
-                }],
+                &copies,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             );
 

@@ -307,13 +307,14 @@ unsafe impl<'a, T: 'static> SystemParam for Queue<'a, T> {
     fn init_access(
         state: &Self::State,
         system_meta: &mut SystemMeta,
-        component_access_set: &mut bevy_ecs::query::FilteredAccessSet,
+        system_access: &mut bevy_ecs::system::SystemAccess,
         _world: &mut World,
     ) {
         let component_id = *state;
         if component_id == ComponentId::new(usize::MAX) {
             return;
         }
+        let component_access_set = system_access.require_shared_access::<Self>(system_meta);
         let combined_access = component_access_set.combined_access();
         if combined_access.has_write(component_id) || combined_access.has_read(component_id) {
             panic!(

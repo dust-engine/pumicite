@@ -254,7 +254,7 @@ unsafe impl SystemParam for SubmissionState<'_> {
     fn init_access(
         _state: &Self::State,
         _system_meta: &mut SystemMeta,
-        _component_access_set: &mut bevy_ecs::query::FilteredAccessSet,
+        _system_access: &mut bevy_ecs::system::SystemAccess,
         _world: &mut World,
     ) {
     }

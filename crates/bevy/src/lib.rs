@@ -152,9 +152,6 @@ impl bevy_app::PluginGroup for DefaultPlugins {
     fn build(self) -> bevy_app::PluginGroupBuilder {
         bevy_internal::DefaultPlugins
             .build()
-            .disable_plugin_named("bevy_render::RenderPlugin")
-            .disable_plugin_named("bevy_pbr::PbrPlugin")
-            .disable_plugin_named("bevy_core_pipeline::CorePipelinePlugin")
             .add(crate::SurfacePlugin)
             .add(crate::DebugUtilsPlugin)
             .add(crate::PumicitePlugin::default())
