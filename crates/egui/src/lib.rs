@@ -23,7 +23,7 @@ use pumicite::{
 };
 use pumicite::{HasDevice, Sampler, debug::DebugObject, utils::AsVkHandle};
 use std::alloc::Layout;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, btree_map::Entry};
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -287,7 +287,7 @@ impl<Filter> EguiResources<Filter> {
 
 /// Create the target images.
 fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
-    mut device_buffers: ResMut<EguiResources<Filter>>,
+    device_buffers: ResMut<EguiResources<Filter>>,
     egui_render_output: Query<&EguiRenderOutput, Filter>,
     allocator: Res<Allocator>,
     mut ctx: SubmissionState,
@@ -296,84 +296,99 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
     let Ok(output) = egui_render_output.single() else {
         return;
     };
+    let device_buffers = device_buffers.into_inner();
     for (texture_id, image_deltas) in output.textures_delta.set.iter() {
         let texture_id = match texture_id {
             TextureId::Managed(id) => *id,
             TextureId::User(_) => unimplemented!(),
         };
-        let (texture, mut texture_state) = if let Some((existing_img, _)) =
-            device_buffers.textures.get_mut(&texture_id)
-        {
-            let texture_state = ResourceState::new_with_image_layout(
-                Access::FRAGMENT_SAMPLED_READ,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            );
-            (existing_img, texture_state)
-        } else {
-            // A newly allocated texture always starts with a whole delta.
-            let image_delta = &image_deltas[0];
-            let size = image_delta.image.size();
-            let create_info = vk::ImageCreateInfo {
-                // egui provides color values as alpha-premultiplied gamma values.
-                // We want to read that value directly from the shader so we can do blending in gamma space.
-                format: vk::Format::R8G8B8A8_UNORM,
-                image_type: vk::ImageType::TYPE_2D,
-                extent: vk::Extent3D {
-                    width: size[0] as u32,
-                    height: size[1] as u32,
-                    depth: 1,
-                },
-                mip_levels: 1,
-                array_layers: 1,
-                samples: vk::SampleCountFlags::TYPE_1,
-                tiling: vk::ImageTiling::OPTIMAL,
-                usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
-                initial_layout: vk::ImageLayout::UNDEFINED,
-                sharing_mode: vk::SharingMode::CONCURRENT,
-                ..Default::default()
-            };
-            let image = Image::new_device(allocator.clone(), &create_info)
-                .unwrap()
-                .with_name(c"EGUI asset image")
-                .create_full_view()
-                .unwrap();
-            let image = GPUMutex::new(image);
-            device_buffers
-                .textures
-                .insert(texture_id, (image, image_delta.options));
-
-            device_buffers
-                .samplers
-                .entry(image_delta.options)
-                .or_insert_with(|| {
-                    fn convert_filter(filter: egui::TextureFilter) -> vk::Filter {
-                        match filter {
-                            egui::TextureFilter::Nearest => vk::Filter::NEAREST,
-                            egui::TextureFilter::Linear => vk::Filter::LINEAR,
-                        }
-                    }
-                    let warp = match image_delta.options.wrap_mode {
-                        egui::TextureWrapMode::ClampToEdge => vk::SamplerAddressMode::CLAMP_TO_EDGE,
-                        egui::TextureWrapMode::Repeat => vk::SamplerAddressMode::REPEAT,
-                        egui::TextureWrapMode::MirroredRepeat => {
-                            vk::SamplerAddressMode::MIRRORED_REPEAT
-                        }
-                    };
-                    let sampler = Sampler::new(
-                        allocator.device().clone(),
-                        &vk::SamplerCreateInfo {
-                            min_filter: convert_filter(image_delta.options.minification),
-                            mag_filter: convert_filter(image_delta.options.magnification),
-                            address_mode_u: warp,
-                            address_mode_v: warp,
-                            ..Default::default()
-                        },
-                    )
+        // A whole-texture delta (`pos == None`) replaces the texture's contents.
+        // egui keeps it first, having discarded any earlier deltas for the
+        // texture.
+        let whole = image_deltas[0].pos.is_none();
+        let (texture, mut texture_state) = match device_buffers.textures.entry(texture_id) {
+            Entry::Occupied(entry)
+                if !whole || {
+                    let (existing_img, options) = entry.get();
+                    let extent = existing_img.extent();
+                    [extent.x as usize, extent.y as usize] == image_deltas[0].image.size()
+                        && *options == image_deltas[0].options
+                } =>
+            {
+                let texture_state = ResourceState::new_with_image_layout(
+                    Access::FRAGMENT_SAMPLED_READ,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                );
+                (&mut entry.into_mut().0, texture_state)
+            }
+            // A new texture, which always starts with a whole delta, or a whole
+            // delta the existing image can't hold. Overwriting the entry drops
+            // the old GPUMutex, which defers destruction until the GPU is done
+            // with it.
+            entry => {
+                let image_delta = &image_deltas[0];
+                let size = image_delta.image.size();
+                let create_info = vk::ImageCreateInfo {
+                    // egui provides color values as alpha-premultiplied gamma values.
+                    // We want to read that value directly from the shader so we can do blending in gamma space.
+                    format: vk::Format::R8G8B8A8_UNORM,
+                    image_type: vk::ImageType::TYPE_2D,
+                    extent: vk::Extent3D {
+                        width: size[0] as u32,
+                        height: size[1] as u32,
+                        depth: 1,
+                    },
+                    mip_levels: 1,
+                    array_layers: 1,
+                    samples: vk::SampleCountFlags::TYPE_1,
+                    tiling: vk::ImageTiling::OPTIMAL,
+                    usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+                    initial_layout: vk::ImageLayout::UNDEFINED,
+                    sharing_mode: vk::SharingMode::CONCURRENT,
+                    ..Default::default()
+                };
+                let image = Image::new_device(allocator.clone(), &create_info)
+                    .unwrap()
+                    .with_name(c"EGUI asset image")
+                    .create_full_view()
                     .unwrap();
-                    Arc::new(sampler)
-                });
-            let (texture, _) = device_buffers.textures.get_mut(&texture_id).unwrap();
-            (texture, ResourceState::default())
+                let image = GPUMutex::new(image);
+
+                device_buffers
+                    .samplers
+                    .entry(image_delta.options)
+                    .or_insert_with(|| {
+                        fn convert_filter(filter: egui::TextureFilter) -> vk::Filter {
+                            match filter {
+                                egui::TextureFilter::Nearest => vk::Filter::NEAREST,
+                                egui::TextureFilter::Linear => vk::Filter::LINEAR,
+                            }
+                        }
+                        let warp = match image_delta.options.wrap_mode {
+                            egui::TextureWrapMode::ClampToEdge => {
+                                vk::SamplerAddressMode::CLAMP_TO_EDGE
+                            }
+                            egui::TextureWrapMode::Repeat => vk::SamplerAddressMode::REPEAT,
+                            egui::TextureWrapMode::MirroredRepeat => {
+                                vk::SamplerAddressMode::MIRRORED_REPEAT
+                            }
+                        };
+                        let sampler = Sampler::new(
+                            allocator.device().clone(),
+                            &vk::SamplerCreateInfo {
+                                min_filter: convert_filter(image_delta.options.minification),
+                                mag_filter: convert_filter(image_delta.options.magnification),
+                                address_mode_u: warp,
+                                address_mode_v: warp,
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap();
+                        Arc::new(sampler)
+                    });
+                let (texture, _) = entry.insert_entry((image, image_delta.options)).into_mut();
+                (texture, ResourceState::default())
+            }
         };
 
         let texel_size: u32 = 4;
@@ -430,7 +445,8 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
             let image = encoder.lock(texture, vk::PipelineStageFlags2::COPY);
             let host_buffer = encoder.retain(host_buffer);
 
-            // Transition images to TRANSFER_DST_OPTIMAL layout
+            // Transition images to TRANSFER_DST_OPTIMAL layout. Partial deltas
+            // patch the existing contents, so only a whole delta may discard them.
             encoder.use_image_resource(
                 image,
                 &mut texture_state,
@@ -438,7 +454,7 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 0..1,
                 0..1,
-                true,
+                whole,
             );
             encoder.emit_barriers();
             encoder.copy_buffer_to_image_with_layout(
