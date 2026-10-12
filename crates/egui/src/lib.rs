@@ -11,6 +11,7 @@ use bevy_pumicite::{
 use bevy_window::PrimaryWindow;
 use glam::Vec2;
 use pumicite::buffer::BufferLike;
+use pumicite::command::RenderPass;
 use pumicite::device::DeviceBuilder;
 use pumicite::image::{FullImageView, ImageExt};
 use pumicite::tracking::{Access, ResourceState};
@@ -29,6 +30,37 @@ use std::sync::Arc;
 
 #[derive(SystemSet, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone)]
 pub struct EguiRenderSet;
+
+/// The `callback` of an [`egui::PaintCallback`] that this renderer draws.
+/// Callbacks of any other type are skipped with a warning.
+pub struct Callback(Box<dyn CallbackTrait>);
+
+impl Callback {
+    /// Creates a shape, for `ui.painter().add(...)`, that runs `callback` to
+    /// draw into `rect`.
+    pub fn new_paint_callback(
+        rect: egui::Rect,
+        callback: impl CallbackTrait + 'static,
+    ) -> egui::PaintCallback {
+        egui::PaintCallback {
+            rect,
+            callback: Arc::new(Self(Box::new(callback))),
+        }
+    }
+}
+
+/// Custom drawing within the egui output, such as a 3D view or a texture
+/// egui can't sample itself.
+pub trait CallbackTrait: Send + Sync {
+    /// Records draws into egui's render pass. On entry the viewport covers
+    /// `info.viewport` and the scissor `info.clip_rect`; egui binds its own
+    /// pipeline and state again afterwards.
+    ///
+    /// No barriers can be recorded inside a render pass, so an image sampled
+    /// here must already be in a readable layout, with its writes visible to
+    /// the fragment shader, when egui's render pass begins.
+    fn paint<'a>(&self, info: egui::PaintCallbackInfo, pass: &mut RenderPass<'_, 'a>);
+}
 
 pub struct EguiPlugin<Filter: QueryFilter = With<PrimaryWindow>> {
     /// Whether to convert output colors to linear color space.
@@ -519,35 +551,20 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
 
         let pipeline = pass.retain(pipeline.into_inner()).deref_inner();
 
-        pass.bind_pipeline(pipeline);
-
-        pass.bind_vertex_buffers(0, [vertex_buffer].into_iter());
-        pass.bind_index_buffer(index_buffer, 0, vk::IndexType::UINT32);
-
         let rect = egui_ctx.get_mut().viewport_rect();
         let viewport_logical_size = Vec2::new(rect.max.x - rect.min.x, rect.max.y - rect.min.y);
         let scale_factor = egui_ctx.get_mut().pixels_per_point();
         let viewport_physical_size = viewport_logical_size * scale_factor;
-        pass.set_viewport(
-            0,
-            &[vk::Viewport {
-                x: rect.min.x,
-                y: rect.min.y,
-                width: viewport_physical_size.x,
-                height: viewport_physical_size.y,
-                min_depth: 0.0,
-                max_depth: 1.0,
-            }],
-        );
-        pass.push_constants(
-            pipeline.deref().layout(),
-            vk::ShaderStageFlags::VERTEX,
-            0,
-            bytemuck::cast_slice(&[viewport_logical_size.x, viewport_logical_size.y]),
-        );
+        let screen_size_px = [
+            viewport_physical_size.x.round() as u32,
+            viewport_physical_size.y.round() as u32,
+        ];
 
         let mut current_vertex = 0;
         let mut current_indice = 0;
+        // egui's pipeline and state are bound before the first mesh, and again
+        // after each paint callback, which may bind its own.
+        let mut bind_egui_state = true;
         for egui::epaint::ClippedPrimitive {
             clip_rect,
             primitive,
@@ -555,8 +572,80 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
         {
             let mesh = match primitive {
                 egui::epaint::Primitive::Mesh(mesh) => mesh,
-                egui::epaint::Primitive::Callback(_) => panic!(),
+                egui::epaint::Primitive::Callback(callback) => {
+                    let Some(Callback(callback_impl)) = callback.callback.downcast_ref() else {
+                        tracing::warn!(
+                            "Skipped an egui paint callback that isn't a pumicite_egui::Callback"
+                        );
+                        continue;
+                    };
+                    let info = egui::PaintCallbackInfo {
+                        viewport: callback.rect,
+                        clip_rect: *clip_rect,
+                        pixels_per_point: scale_factor,
+                        screen_size_px,
+                    };
+                    let viewport = info.viewport_in_pixels();
+                    let clip = info.clip_rect_in_pixels();
+                    if viewport.width_px <= 0
+                        || viewport.height_px <= 0
+                        || clip.width_px <= 0
+                        || clip.height_px <= 0
+                    {
+                        continue;
+                    }
+                    pass.set_viewport(
+                        0,
+                        &[vk::Viewport {
+                            x: viewport.left_px as f32,
+                            y: viewport.top_px as f32,
+                            width: viewport.width_px as f32,
+                            height: viewport.height_px as f32,
+                            min_depth: 0.0,
+                            max_depth: 1.0,
+                        }],
+                    );
+                    pass.set_scissor(
+                        0,
+                        &[vk::Rect2D {
+                            offset: vk::Offset2D {
+                                x: clip.left_px,
+                                y: clip.top_px,
+                            },
+                            extent: vk::Extent2D {
+                                width: clip.width_px as u32,
+                                height: clip.height_px as u32,
+                            },
+                        }],
+                    );
+                    callback_impl.paint(info, &mut pass);
+                    bind_egui_state = true;
+                    continue;
+                }
             };
+            if bind_egui_state {
+                bind_egui_state = false;
+                pass.bind_pipeline(pipeline);
+                pass.bind_vertex_buffers(0, [vertex_buffer].into_iter());
+                pass.bind_index_buffer(index_buffer, 0, vk::IndexType::UINT32);
+                pass.set_viewport(
+                    0,
+                    &[vk::Viewport {
+                        x: rect.min.x,
+                        y: rect.min.y,
+                        width: viewport_physical_size.x,
+                        height: viewport_physical_size.y,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                    }],
+                );
+                pass.push_constants(
+                    pipeline.deref().layout(),
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    bytemuck::cast_slice(&[viewport_logical_size.x, viewport_logical_size.y]),
+                );
+            }
             let clip_min = Vec2::new(clip_rect.min.x, clip_rect.min.y) * scale_factor;
             let clip_max = Vec2::new(clip_rect.max.x, clip_rect.max.y) * scale_factor;
             let clip_extent = clip_max - clip_min;
