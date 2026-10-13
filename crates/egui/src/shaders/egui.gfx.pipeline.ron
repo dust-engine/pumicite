@@ -12,6 +12,8 @@ GraphicsPipeline(
     layout: Inline(
         PipelineLayout(
             sets: [
+                ResourceHeap,
+                SamplerHeap,
                 Inline(
                     DescriptorSetLayout(
                         push_descriptor: true,
@@ -27,6 +29,7 @@ GraphicsPipeline(
             ],
             push_constants: {
                 Vertex: (0, 8),
+                Fragment: (8, 24),
             }
         )
     ),

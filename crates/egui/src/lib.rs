@@ -1,3 +1,5 @@
+#![feature(f16)]
+
 use bevy_app::{App, Plugin, PostUpdate, PreUpdate, Startup};
 use bevy_asset::{Assets, Handle};
 use bevy_ecs::prelude::*;
@@ -6,10 +8,12 @@ use bevy_egui::egui::TextureId;
 pub use bevy_egui::*;
 use bevy_pumicite::staging::{BufferInitializer, HostVisibleRingBuffer};
 use bevy_pumicite::{
-    CreateDevice, DefaultTransferSet, SubmissionState, shader::graphics::GraphicsPipeline,
+    CreateDevice, DefaultTransferSet, DescriptorHeap, SubmissionState,
+    shader::graphics::GraphicsPipeline,
 };
 use bevy_window::PrimaryWindow;
 use glam::Vec2;
+use pumicite::bindless::SamplerHandle;
 use pumicite::buffer::BufferLike;
 use pumicite::command::RenderPass;
 use pumicite::device::DeviceBuilder;
@@ -25,11 +29,23 @@ use pumicite::{
 use pumicite::{HasDevice, Sampler, debug::DebugObject, utils::AsVkHandle};
 use std::alloc::Layout;
 use std::collections::{BTreeMap, HashMap, btree_map::Entry};
-use std::ops::Deref;
+use std::ops::{Deref, RangeInclusive};
 use std::sync::Arc;
 
 #[derive(SystemSet, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone)]
 pub struct EguiRenderSet;
+
+/// The [`TextureId::User`] that draws the image `handle` of the descriptor
+/// heap's resource heap. With a `range`, the image's color is remapped so that
+/// `range.start()` draws as black and `range.end()` as white; without one, it
+/// draws as is.
+pub fn user_texture_id(handle: u32, range: Option<RangeInclusive<f32>>) -> TextureId {
+    // egui.slang reads the high 32 bits as the f16 pair (start, end).
+    let range_bits = range.map_or(0, |range| {
+        (*range.start() as f16).to_bits() as u64 | ((*range.end() as f16).to_bits() as u64) << 16
+    });
+    TextureId::User(handle as u64 | range_bits << 32)
+}
 
 /// The `callback` of an [`egui::PaintCallback`] that this renderer draws.
 /// Callbacks of any other type are skipped with a warning.
@@ -62,6 +78,7 @@ pub trait CallbackTrait: Send + Sync {
     fn paint<'a>(&self, info: egui::PaintCallbackInfo, pass: &mut RenderPass<'_, 'a>);
 }
 
+/// Renders egui into a render pass that the app begins, in [`EguiRenderSet`].
 pub struct EguiPlugin<Filter: QueryFilter = With<PrimaryWindow>> {
     /// Whether to convert output colors to linear color space.
     ///
@@ -141,6 +158,8 @@ impl<Filter: QueryFilter + Send + Sync + 'static> Plugin for EguiPlugin<Filter> 
                 device_builder
                     .enable_extension::<ash::khr::push_descriptor::Meta>()
                     .unwrap();
+                // `TextureId::User` textures are sampled from the descriptor heap.
+                device_builder.enable_bindless().unwrap();
             })
             .before(CreateDevice),
         );
@@ -188,11 +207,24 @@ impl<Filter: QueryFilter + Send + Sync + 'static> Plugin for EguiPlugin<Filter> 
                     )]),
                     ..Default::default()
                 };
+                let heap = world.resource::<DescriptorHeap>().clone();
+                let user_texture_sampler = SamplerHandle::new(
+                    heap.sampler_heap().clone(),
+                    &vk::SamplerCreateInfo {
+                        mag_filter: vk::Filter::LINEAR,
+                        min_filter: vk::Filter::LINEAR,
+                        address_mode_u: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                        address_mode_v: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
                 let pipeline =
                     load_embedded_asset!(world, "shaders/egui.gfx.pipeline.ron", move |x| {
                         *x = patch.clone();
                     });
-                let resource: EguiResources<Filter> = EguiResources::new(pipeline);
+                let resource: EguiResources<Filter> =
+                    EguiResources::new(pipeline, heap, user_texture_sampler);
                 world.insert_resource(resource);
             })
             .after(CreateDevice),
@@ -303,9 +335,16 @@ struct EguiResources<Filter> {
     marker: std::marker::PhantomData<Filter>,
 
     pipeline: Handle<GraphicsPipeline>,
+    heap: DescriptorHeap,
+    /// The sampler-heap entry `TextureId::User` textures are sampled with.
+    user_texture_sampler: SamplerHandle,
 }
 impl<Filter> EguiResources<Filter> {
-    fn new(pipeline: Handle<GraphicsPipeline>) -> Self {
+    fn new(
+        pipeline: Handle<GraphicsPipeline>,
+        heap: DescriptorHeap,
+        user_texture_sampler: SamplerHandle,
+    ) -> Self {
         Self {
             index_buffer: None,
             vertex_buffer: None,
@@ -313,6 +352,8 @@ impl<Filter> EguiResources<Filter> {
             textures: Default::default(),
             marker: Default::default(),
             pipeline,
+            heap,
+            user_texture_sampler,
         }
     }
 }
@@ -626,6 +667,23 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
             if bind_egui_state {
                 bind_egui_state = false;
                 pass.bind_pipeline(pipeline);
+                // `DescriptorHeap::bind` binds through the heap's own pipeline
+                // layout, which isn't compatible with egui's: their push
+                // constant ranges differ.
+                let heap_sets = [
+                    buffers.heap.resource_heap().descriptor_set(),
+                    buffers.heap.sampler_heap().descriptor_set(),
+                ];
+                unsafe {
+                    pass.device().cmd_bind_descriptor_sets(
+                        pass.buffer().vk_handle(),
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.deref().layout().vk_handle(),
+                        0,
+                        &heap_sets,
+                        &[],
+                    );
+                }
                 pass.bind_vertex_buffers(0, [vertex_buffer].into_iter());
                 pass.bind_index_buffer(index_buffer, 0, vk::IndexType::UINT32);
                 pass.set_viewport(
@@ -662,16 +720,26 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
                     },
                 }],
             );
-            let texture_id = match mesh.texture_id {
-                TextureId::Managed(id) => id,
-                TextureId::User(_) => unimplemented!(),
+            // The resource-heap handle the shader samples, or all ones for the
+            // pushed managed texture.
+            let (managed_texture_id, texture_handle) = match mesh.texture_id {
+                TextureId::Managed(id) => (id, u64::MAX),
+                // The shader statically uses the managed texture, so it must be
+                // bound for user textures too. Any one does.
+                TextureId::User(handle) => (
+                    *buffers
+                        .textures
+                        .keys()
+                        .next()
+                        .expect("egui uploads its font atlas before drawing"),
+                    handle,
+                ),
             };
-            let (texture, options) = buffers.textures.get(&texture_id).unwrap();
+            let (texture, options) = buffers.textures.get(&managed_texture_id).unwrap();
             let sampler = buffers.samplers.get(options).unwrap();
-
             pass.push_descriptor_set(
                 pipeline.deref().layout(),
-                0,
+                2,
                 &[vk::WriteDescriptorSet {
                     dst_binding: 0,
                     descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
@@ -682,6 +750,15 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
                     image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                     sampler: sampler.vk_handle(),
                 }])],
+            );
+            pass.push_constants(
+                pipeline.deref().layout(),
+                vk::ShaderStageFlags::FRAGMENT,
+                8,
+                bytemuck::cast_slice(&[
+                    texture_handle,
+                    buffers.user_texture_sampler.id() as u64,
+                ]),
             );
 
             pass.draw_indexed(
