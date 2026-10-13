@@ -379,77 +379,88 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                 .copied()
                 .collect();
 
-            // Build subgraph: in-degrees and adjacency for just these systems
-            let mut in_degree: HashMap<SystemKey, usize> =
-                all_systems.iter().map(|&s| (s, 0)).collect();
-            let mut successors: HashMap<SystemKey, Vec<SystemKey>> =
-                all_systems.iter().map(|&s| (s, Vec::new())).collect();
-
-            for &sys in &all_systems {
-                for neighbor in dependency_flattened
-                    .neighbors_directed(sys, bevy_ecs::schedule::graph::Direction::Outgoing)
-                {
-                    if all_systems.contains(&neighbor) {
-                        successors.get_mut(&sys).unwrap().push(neighbor);
-                        *in_degree.get_mut(&neighbor).unwrap() += 1;
-                    }
+            // Modified Kahn's algorithm: prefer render systems to minimize transitions.
+            // It runs over the whole graph, not just this set's systems, because an
+            // ordering between two of them can pass through systems outside the set,
+            // such as the sync point that replaces an edge `a → b` with
+            // `a → apply_deferred → b`. Systems outside the set join no stage.
+            use bevy_ecs::schedule::graph::Direction::{Incoming, Outgoing};
+            let mut in_degree: HashMap<SystemKey, usize> = HashMap::new();
+            let mut newly_ready = Vec::new();
+            for sys in dependency_flattened.nodes() {
+                let deg = dependency_flattened.neighbors_directed(sys, Incoming).count();
+                if deg == 0 {
+                    newly_ready.push(sys);
+                } else {
+                    in_degree.insert(sys, deg);
                 }
             }
 
-            // Modified Kahn's algorithm: prefer render systems to minimize transitions
             let mut ready_render = Vec::new();
-            let mut ready_nonrender = Vec::new();
+            let mut ready_compute = Vec::new();
+            let mut ready_outside = Vec::new();
+            let mut current_is_render = false;
+            let mut stages: Vec<Vec<SystemKey>> = Vec::new();
+            // Systems after the set's last one can't change its stages.
+            let mut unstaged = all_systems.len();
 
-            // Start from systems with no incoming edges
-            for (&sys, &deg) in &in_degree {
-                if deg == 0 {
+            while unstaged > 0 {
+                for sys in newly_ready.drain(..) {
                     if render_set.contains(&sys) {
                         ready_render.push(sys);
+                    } else if all_systems.contains(&sys) {
+                        ready_compute.push(sys);
                     } else {
-                        ready_nonrender.push(sys);
+                        ready_outside.push(sys);
                     }
                 }
-            }
 
-            let mut current_is_render = !ready_render.is_empty();
-            let mut stages: Vec<Vec<SystemKey>> = Vec::new();
-            stages.push(Vec::new());
-
-            while !ready_render.is_empty() || !ready_nonrender.is_empty() {
-                let queue = if current_is_render && !ready_render.is_empty() {
-                    &mut ready_render
-                } else if !current_is_render && !ready_nonrender.is_empty() {
-                    &mut ready_nonrender
+                // Systems outside the set go first, as they may be what holds back
+                // a system of the current stage's kind.
+                let sys = if let Some(sys) = ready_outside.pop() {
+                    sys
                 } else {
-                    current_is_render = !current_is_render;
-                    stages.push(Vec::new());
-                    if current_is_render {
+                    if ready_render.is_empty() && ready_compute.is_empty() {
+                        break;
+                    }
+                    let stay = !stages.is_empty()
+                        && if current_is_render {
+                            !ready_render.is_empty()
+                        } else {
+                            !ready_compute.is_empty()
+                        };
+                    if !stay {
+                        current_is_render = if stages.is_empty() {
+                            !ready_render.is_empty()
+                        } else {
+                            !current_is_render
+                        };
+                        stages.push(Vec::new());
+                    }
+                    let queue = if current_is_render {
                         &mut ready_render
                     } else {
-                        &mut ready_nonrender
-                    }
+                        &mut ready_compute
+                    };
+                    let sys = queue.pop().unwrap();
+                    stages.last_mut().unwrap().push(sys);
+                    unstaged -= 1;
+                    sys
                 };
 
-                let sys = queue.pop().unwrap();
-                stages.last_mut().unwrap().push(sys);
-
-                for &successor in &successors[&sys] {
+                for successor in dependency_flattened.neighbors_directed(sys, Outgoing) {
                     let deg = in_degree.get_mut(&successor).unwrap();
                     *deg -= 1;
                     if *deg == 0 {
-                        if render_set.contains(&successor) {
-                            ready_render.push(successor);
-                        } else {
-                            ready_nonrender.push(successor);
-                        }
+                        newly_ready.push(successor);
                     }
                 }
             }
 
             // Add edges between adjacent stages
-            for i in 0..stages.len() - 1 {
-                for &from in &stages[i] {
-                    for &to in &stages[i + 1] {
+            for pair in stages.windows(2) {
+                for &from in &pair[0] {
+                    for &to in &pair[1] {
                         dependency_flattened.add_edge(from, to);
                     }
                 }
