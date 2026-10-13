@@ -48,6 +48,7 @@
 
 use std::{
     ffi::CString,
+    ops::Deref,
     sync::{Arc, Mutex},
 };
 
@@ -58,6 +59,7 @@ use ash::{
 
 use crate::{
     HasDevice, MissingFeatureError,
+    command::{GPURef, GPURefMut, project_host_metadata},
     descriptor::{DescriptorPool, DescriptorSetLayout},
     device::DeviceBuilder,
     prelude::*,
@@ -352,14 +354,114 @@ impl ResourceHeap {
         }
     }
 
+    /// Removes descriptor `handle`, destroying the view the heap created for
+    /// it. The GPU must be done with it: no pending command buffer may use the
+    /// descriptor.
     pub fn remove(&self, handle: u32) {
         let mut guard = self.0.handles.lock().unwrap();
-        assert!(!matches!(
-            guard.handles[handle as usize],
-            ResourceDescriptorKind::None
-        ));
+        let kind = std::mem::take(&mut guard.handles[handle as usize]);
+        assert!(!matches!(kind, ResourceDescriptorKind::None));
         guard.id_alloc.free(handle, 1);
-        guard.handles[handle as usize] = ResourceDescriptorKind::None;
+        drop(guard);
+        let device = self.0.pool.device();
+        match kind {
+            ResourceDescriptorKind::ImageView(view) => unsafe {
+                device.destroy_image_view(view, None);
+            },
+            ResourceDescriptorKind::BufferView(view) => unsafe {
+                device.destroy_buffer_view(view, None);
+            },
+            ResourceDescriptorKind::Buffer | ResourceDescriptorKind::None => {}
+        }
+    }
+}
+
+/// A resource bundled with its descriptor in a [`ResourceHeap`], which
+/// shaders index by [`handle`](Self::handle). Created by
+/// [`ImageExt::with_resource_handle`].
+///
+/// Dropping it removes the descriptor, so it must outlive the GPU's use of
+/// the descriptor, for example by being kept in a [`GPUMutex`] that each such
+/// use locks.
+pub struct WithResourceHandle<T> {
+    heap: ResourceHeap,
+    resource: T,
+    handle: u32,
+}
+impl<T> WithResourceHandle<T> {
+    pub(crate) fn new(handle: u32, heap: ResourceHeap, resource: T) -> Self {
+        Self {
+            handle,
+            heap,
+            resource,
+        }
+    }
+
+    /// The resource's descriptor index in the heap.
+    pub fn handle(&self) -> u32 {
+        self.handle
+    }
+}
+project_host_metadata! {
+    impl[T] WithResourceHandle<T> {
+        /// The resource's descriptor index in the heap.
+        fn handle(&self) -> u32;
+    }
+}
+impl<'a, T> GPURef<'a, WithResourceHandle<T>> {
+    pub fn deref_inner(self) -> GPURef<'a, T> {
+        unsafe { GPURef::new_unchecked(&self.get_unchecked().resource) }
+    }
+}
+impl<'a, T> GPURefMut<'a, WithResourceHandle<T>> {
+    pub fn deref_inner(self) -> GPURefMut<'a, T> {
+        unsafe { GPURefMut::new_unchecked(&self.get_unchecked().resource) }
+    }
+}
+impl<T> Deref for WithResourceHandle<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.resource
+    }
+}
+impl<T: HasDevice> HasDevice for WithResourceHandle<T> {
+    fn device(&self) -> &Device {
+        self.resource.device()
+    }
+}
+impl<T: AsVkHandle> AsVkHandle for WithResourceHandle<T> {
+    type Handle = T::Handle;
+    fn vk_handle(&self) -> Self::Handle {
+        self.resource.vk_handle()
+    }
+}
+// Safety: the wrapper owns `resource`, which uniquely owns its image since
+// `T: ImageLike`, lends it out only through `Deref`, which can't produce a
+// token, and describes it by forwarding to it. The heap's view of the image is
+// reachable only by shaders, through the handle.
+unsafe impl<T: ImageLike> ImageLike for WithResourceHandle<T> {
+    fn aspects(&self) -> vk::ImageAspectFlags {
+        self.resource.aspects()
+    }
+    fn array_layer_count(&self) -> u32 {
+        self.resource.array_layer_count()
+    }
+    fn mip_level_count(&self) -> u32 {
+        self.resource.mip_level_count()
+    }
+    fn extent(&self) -> glam::UVec3 {
+        self.resource.extent()
+    }
+    fn format(&self) -> vk::Format {
+        self.resource.format()
+    }
+    fn ty(&self) -> vk::ImageType {
+        self.resource.ty()
+    }
+}
+impl<T> Drop for WithResourceHandle<T> {
+    fn drop(&mut self) {
+        self.heap.remove(self.handle);
     }
 }
 

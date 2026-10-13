@@ -7,7 +7,7 @@ use std::ops::Deref;
 use ash::{VkResult, vk, vk::TaggedStructure};
 use glam::UVec3;
 
-use crate::buffer::StagingBufferAllocator;
+use crate::bindless::{ImageAccessMode, ResourceHeap, WithResourceHandle};
 use crate::command::{GPURef, GPURefMut, NoHostMapping, project_host_metadata};
 use crate::prelude::*;
 use vk_mem::Alloc;
@@ -606,6 +606,21 @@ unsafe impl ImageViewLike for ImageViewItem {
 ///
 /// This trait is automatically implemented for all types implementing [`ImageLike`].
 pub trait ImageExt: ImageLike {
+    /// Adds the image to `heap`, for shaders to access it in `layout` as
+    /// `access` says, and bundles it with its descriptor index there.
+    fn with_resource_handle(
+        self,
+        heap: &ResourceHeap,
+        layout: vk::ImageLayout,
+        access: ImageAccessMode,
+    ) -> VkResult<WithResourceHandle<Self>>
+    where
+        Self: Sized,
+    {
+        let handle = heap.add_image_with_layout(&self, layout, access)?;
+        Ok(WithResourceHandle::new(handle, heap.clone(), self))
+    }
+
     /// Creates a full image view covering all mip levels and array layers.
     fn create_full_view(self) -> VkResult<FullImageView<Self>>
     where
