@@ -65,7 +65,7 @@ use bevy_ecs::{
     component::ComponentId,
     prelude::*,
     ptr::OwningPtr,
-    system::{SystemMeta, SystemParam},
+    system::{SystemMeta, SystemParam, SystemParamBuilder},
     world::{Mut, unsafe_world_cell::UnsafeWorldCell},
 };
 
@@ -249,20 +249,8 @@ unsafe impl<'a, T: 'static> SystemParam for Queue<'a, T> {
     type State = ComponentId;
 
     type Item<'world, 'state> = Queue<'world, T>;
-    fn configurate(
-        state: &mut Self::State,
-        _meta: &mut SystemMeta,
-        config: &mut dyn std::any::Any,
-    ) {
-        if let Some(config) = config.downcast_mut::<QueueConfig>() {
-            *state = config.0;
-        }
-    }
 
     fn init_state(world: &mut World) -> ComponentId {
-        if std::any::TypeId::of::<()>() == std::any::TypeId::of::<T>() {
-            return ComponentId::new(usize::MAX);
-        }
         let config = world.resource::<QueueConfiguration>();
 
         config
@@ -311,9 +299,6 @@ unsafe impl<'a, T: 'static> SystemParam for Queue<'a, T> {
         _world: &mut World,
     ) {
         let component_id = *state;
-        if component_id == ComponentId::new(usize::MAX) {
-            return;
-        }
         let component_access_set = system_access.require_shared_access::<Self>(system_meta);
         let combined_access = component_access_set.combined_access();
         if combined_access.has_write(component_id) || combined_access.has_read(component_id) {
@@ -327,8 +312,17 @@ unsafe impl<'a, T: 'static> SystemParam for Queue<'a, T> {
     }
 }
 
-/// Configuration token for associating systems with queues.
+/// Builds a [`Queue`] param bound to the queue resource with this component ID,
+/// regardless of the param's marker type.
 pub struct QueueConfig(pub ComponentId);
+
+// SAFETY: `QueueConfig` is only constructed by `SubmissionSetsPass`, with component IDs
+// registered in `QueueConfiguration`. Those always refer to a `SharedQueue` resource.
+unsafe impl<'w, T: 'static> SystemParamBuilder<Queue<'w, T>> for QueueConfig {
+    fn build(self, _world: &mut World) -> ComponentId {
+        self.0
+    }
+}
 
 /// Marker type for the primary graphics/render queue.
 ///

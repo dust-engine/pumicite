@@ -35,7 +35,7 @@ use bevy_ecs::{
     schedule::{
         InternedSystemSet, NodeId, ScheduleBuildPass, ScheduleGraph, SystemKey, SystemSetKey,
     },
-    system::{IntoSystem, System, SystemAccess},
+    system::{IntoSystem, System, SystemAccess, SystemParamBuilder},
     world::World,
 };
 
@@ -51,6 +51,7 @@ use super::system::{RenderSetSharedState, RenderSetSharedStateConfig};
 struct RenderSetMetaSystems {
     prelude: SystemKey,
     submission: SystemKey,
+    shared_state: ComponentId,
 }
 
 /// Schedule build pass that configures submission sets for GPU command encoding.
@@ -110,7 +111,8 @@ impl ScheduleBuildPass for SubmissionSetsPass {
             systems.insert(ending);
         }
 
-        if !self.submission_sets_to_queue.contains_key(&interned_set) {
+        let Some((queue_component_id, config)) = self.submission_sets_to_queue.get(&interned_set)
+        else {
             return; // not a submission set.
         };
 
@@ -118,13 +120,71 @@ impl ScheduleBuildPass for SubmissionSetsPass {
             return; // Skip empty submission sets
         }
 
-        let submission = add_system(graph, world, super::system::submission_system);
-        let prelude = add_system(graph, world, super::system::prelude_system);
+        let device = world.resource::<Device>().clone();
+        let queue_family_index = unsafe {
+            world
+                .get_resource_by_id(*queue_component_id)
+                .unwrap()
+                .deref::<SharedQueue>()
+                .family_index()
+        };
+        let shared_state_component_id = {
+            // create shared state
+            let shared_state_component_id = world.register_component_with_descriptor(
+                bevy_ecs::component::ComponentDescriptor::new::<RenderSetSharedState>(),
+            );
+            bevy_ptr::OwningPtr::make(
+                RenderSetSharedState::new(
+                    device,
+                    queue_family_index,
+                    format!("{interned_set:?}"),
+                    config.debug_color,
+                )
+                .unwrap(),
+                |ptr| unsafe {
+                    if world
+                        .resource_entities()
+                        .get(shared_state_component_id)
+                        .is_none()
+                    {
+                        world.spawn(bevy_ecs::resource::IsResource::new(
+                            shared_state_component_id,
+                        ));
+                    }
+                    // SAFETY: forwarded from this function's contract.
+                    world.insert_resource_by_id(
+                        shared_state_component_id,
+                        ptr,
+                        MaybeLocation::caller(),
+                    );
+                },
+            );
+            shared_state_component_id
+        };
+
+        // These are built with their param state already set, so their access
+        // is declared by the params themselves.
+        let submission = add_system(
+            graph,
+            world,
+            (
+                RenderSetSharedStateConfig::new(shared_state_component_id),
+                QueueConfig(*queue_component_id),
+            )
+                .build_system(super::system::submission_system),
+        );
+        let prelude = add_system(
+            graph,
+            world,
+            (RenderSetSharedStateConfig::new(shared_state_component_id),)
+                .build_system(super::system::prelude_system),
+        );
         self.submission_sets_to_meta_systems.insert(
             set,
             RenderSetMetaSystems {
                 prelude,
                 submission,
+                shared_state: shared_state_component_id,
             },
         );
         systems.insert(submission);
@@ -135,7 +195,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
         &mut self,
         set: bevy_ecs::schedule::SystemSetKey,
         systems: &indexmap::IndexSet<SystemKey, bevy_platform::hash::FixedHasher>,
-        world: &mut World,
+        _world: &mut World,
         graph: &mut bevy_ecs::schedule::ScheduleGraph,
         dependency_flattened: &bevy_ecs::schedule::graph::DiGraph<NodeId>,
     ) -> impl Iterator<Item = (bevy_ecs::schedule::NodeId, bevy_ecs::schedule::NodeId)> {
@@ -164,71 +224,24 @@ impl ScheduleBuildPass for SubmissionSetsPass {
         }
 
         // --- Handle submission sets ---
-        if let Some((queue_component_id, config)) = self.submission_sets_to_queue.get(&interned_set)
-        {
+        if self.submission_sets_to_queue.contains_key(&interned_set) {
             if systems.is_empty() {
                 return Vec::new().into_iter();
             }
-            let device = world.resource::<Device>().clone();
-            let queue_family_index = unsafe {
-                world
-                    .get_resource_by_id(*queue_component_id)
-                    .unwrap()
-                    .deref::<SharedQueue>()
-                    .family_index()
-            };
-            let shared_state_component_id = {
-                // create shared state
-                let shared_state_component_id = world.register_component_with_descriptor(
-                    bevy_ecs::component::ComponentDescriptor::new::<RenderSetSharedState>(),
-                );
-                bevy_ptr::OwningPtr::make(
-                    RenderSetSharedState::new(
-                        device,
-                        queue_family_index,
-                        format!("{interned_set:?}"),
-                        config.debug_color,
-                    ),
-                    |ptr| unsafe {
-                        if world
-                            .resource_entities()
-                            .get(shared_state_component_id)
-                            .is_none()
-                        {
-                            world.spawn(bevy_ecs::resource::IsResource::new(
-                                shared_state_component_id,
-                            ));
-                        }
-                        // SAFETY: forwarded from this function's contract.
-                        world.insert_resource_by_id(
-                            shared_state_component_id,
-                            ptr,
-                            MaybeLocation::caller(),
-                        );
-                    },
-                );
-                shared_state_component_id
-            };
             let meta_systems = self.submission_sets_to_meta_systems.get(&set).unwrap();
 
-            let mut queue_config = QueueConfig(*queue_component_id);
-            let mut shared_config = RenderSetSharedStateConfig::new(shared_state_component_id);
+            let mut shared_config = RenderSetSharedStateConfig::new(meta_systems.shared_state);
             for system_node in systems.iter() {
                 let system = graph.systems.get_mut(*system_node).unwrap();
                 system.configurate(&mut shared_config);
+                // Systems added by build passes are initialized again after the passes run,
+                // which replaces their access with what their params declare. The access
+                // added here only sticks for user systems, which were initialized before.
                 let access = system.access_mut();
                 access.ensure_metadata_access();
                 if let SystemAccess::Shared(access) = access {
-                    access.add_resource_write(shared_state_component_id);
+                    access.add_resource_write(meta_systems.shared_state);
                 }
-            }
-
-            let submission_system = graph.systems.get_mut(meta_systems.submission).unwrap();
-            submission_system.configurate(&mut queue_config);
-            let access = submission_system.access_mut();
-            access.ensure_metadata_access();
-            if let SystemAccess::Shared(access) = access {
-                access.add_resource_write(*queue_component_id);
             }
 
             let user_systems = systems
@@ -522,19 +535,15 @@ fn add_system<Marker, T: IntoSystem<(), (), Marker>>(
     system: T,
 ) -> SystemKey {
     let mut system: T::System = IntoSystem::into_system(system);
-    let access = system.initialize(world);
+    // Initialize now so that `collapse_set` can call `configurate` on it. The schedule
+    // initializes it again after the build passes run, and takes its access from that.
+    system.initialize(world);
 
     let id = graph.systems.insert(Box::new(system), Vec::new());
 
     // ignore ambiguities with auto sync points
     // They aren't under user control, so no one should know or care.
     graph.ambiguous_with_all.insert(id.into());
-    graph
-        .systems
-        .get_mut(id)
-        .unwrap()
-        .access_mut()
-        .extend(access);
 
     id
 }

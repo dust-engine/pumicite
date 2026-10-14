@@ -50,7 +50,7 @@ use bevy_ecs::{
     change_detection::Tick,
     component::ComponentId,
     resource::Resource,
-    system::{SystemMeta, SystemParam},
+    system::{SystemMeta, SystemParam, SystemParamBuilder},
     world::{Mut, World, unsafe_world_cell::UnsafeWorldCell},
 };
 
@@ -252,11 +252,17 @@ unsafe impl SystemParam for SubmissionState<'_> {
     }
 
     fn init_access(
-        _state: &Self::State,
-        _system_meta: &mut SystemMeta,
-        _system_access: &mut bevy_ecs::system::SystemAccess,
+        state: &Self::State,
+        system_meta: &mut SystemMeta,
+        system_access: &mut bevy_ecs::system::SystemAccess,
         _world: &mut World,
     ) {
+        let component_access_set = system_access.require_shared_access::<Self>(system_meta);
+        // User systems are only configured after initialization, so the build pass
+        // declares their write instead.
+        if *state != ComponentId::new(usize::MAX) {
+            component_access_set.add_resource_write(*state);
+        }
     }
 }
 
@@ -266,6 +272,14 @@ pub(crate) struct RenderSetSharedStateConfig {
 impl RenderSetSharedStateConfig {
     pub(crate) fn new(id: ComponentId) -> Self {
         Self { id }
+    }
+}
+
+// SAFETY: `RenderSetSharedStateConfig` is only constructed by `SubmissionSetsPass`, with
+// component IDs it registered for a `RenderSetSharedState` resource.
+unsafe impl<'w> SystemParamBuilder<SubmissionState<'w>> for RenderSetSharedStateConfig {
+    fn build(self, _world: &mut World) -> ComponentId {
+        self.id
     }
 }
 
@@ -309,7 +323,7 @@ pub(crate) fn render_set_ending_system(mut shared: SubmissionState) {
 
 pub(crate) fn submission_system(
     mut shared: SubmissionState,
-    mut queue: Queue<()>, // to be configured.
+    mut queue: Queue<()>, // built with `QueueConfig`.
 ) {
     shared.record(|_| {}); // Close any open encoders.
     let shared = shared.state.as_mut();
