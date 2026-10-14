@@ -32,6 +32,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use bevy_ecs::{
     change_detection::MaybeLocation,
     component::ComponentId,
+    query::FilteredAccess,
+    resource::IS_RESOURCE,
     schedule::{
         InternedSystemSet, NodeId, ScheduleBuildPass, ScheduleGraph, SystemKey, SystemSetKey,
     },
@@ -290,10 +292,24 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                 // On the build that adds them, systems added by build passes are initialized
                 // again after the passes run, which replaces this access with what their
                 // params declare. For every other system, the access added here sticks.
+                let mut shared_state_write = FilteredAccess::default();
+                shared_state_write.add_write(meta_systems.shared_state);
+                shared_state_write.and_with(IS_RESOURCE);
                 let access = system.access_mut();
-                access.ensure_metadata_access();
-                if let SystemAccess::Shared(access) = access {
-                    access.add_resource_write(meta_systems.shared_state);
+                // Systems already have this access when the schedule is rebuilt.
+                if let SystemAccess::Shared(access) = &*access
+                    && access.filtered_accesses().contains(&shared_state_write)
+                {
+                    continue;
+                }
+                if access.try_add(shared_state_write).is_err() {
+                    panic!(
+                        "error[B0002]: SubmissionState in system {} conflicts with a previous \
+                         system parameter. Consider removing the conflicting access, or using \
+                         `Without<IsResource>` to make queries disjoint from resources. See: \
+                         https://bevy.org/learn/errors/b0002",
+                        system.name()
+                    );
                 }
             }
 

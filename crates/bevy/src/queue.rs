@@ -65,6 +65,8 @@ use bevy_ecs::{
     component::ComponentId,
     prelude::*,
     ptr::OwningPtr,
+    query::FilteredAccess,
+    resource::IS_RESOURCE,
     system::{SystemMeta, SystemParam, SystemParamBuilder},
     world::{Mut, unsafe_world_cell::UnsafeWorldCell},
 };
@@ -298,17 +300,19 @@ unsafe impl<'a, T: 'static> SystemParam for Queue<'a, T> {
         system_access: &mut bevy_ecs::system::SystemAccess,
         _world: &mut World,
     ) {
-        let component_id = *state;
-        let component_access_set = system_access.require_shared_access::<Self>(system_meta);
-        let combined_access = component_access_set.combined_access();
-        if combined_access.has_write(component_id) || combined_access.has_read(component_id) {
+        let mut queue_write = FilteredAccess::default();
+        queue_write.add_write(*state);
+        queue_write.and_with(IS_RESOURCE);
+        if system_access.try_add(queue_write).is_err() {
             panic!(
-                "Initialized multiple Queue{} entries on system {}",
+                "error[B0002]: Queue<{}> in system {} conflicts with a previous system \
+                 parameter, such as another `Queue` for the same or an aliased queue. Consider \
+                 removing the conflicting access, or using `Without<IsResource>` to make queries \
+                 disjoint from resources. See: https://bevy.org/learn/errors/b0002",
                 std::any::type_name::<T>(),
                 system_meta.name()
             );
         }
-        component_access_set.add_resource_write(component_id);
     }
 }
 
@@ -387,5 +391,121 @@ impl QueueWorldExt for World {
         let shared_queue: &SharedQueue =
             unsafe { self.get_resource_by_id(component_id).unwrap().deref() };
         shared_queue.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_ecs::{
+        prelude::*,
+        resource::IsResource,
+        system::{ParamBuilder, SystemAccess, SystemParamBuilder},
+        world::EntityRef,
+    };
+
+    use super::{Queue, QueueConfig};
+
+    // The queues are built with `QueueConfig`, so these tests don't need a device. Only
+    // the queues' component IDs matter for access, so any resource stands in for them.
+    #[derive(Resource, Default)]
+    struct QueueA;
+    #[derive(Resource, Default)]
+    struct QueueB;
+    #[derive(Resource, Default)]
+    struct Other;
+
+    #[test]
+    fn query_without_resources_then_queue() {
+        fn system(_: Query<EntityRef, Without<IsResource>>, _: Queue<()>) {}
+        let mut world = World::new();
+        let queue = world.init_resource::<QueueA>();
+        IntoSystem::into_system((ParamBuilder, QueueConfig(queue)).build_system(system))
+            .initialize(&mut world);
+    }
+
+    #[test]
+    fn queue_then_query_without_resources() {
+        fn system(_: Queue<()>, _: Query<EntityRef, Without<IsResource>>) {}
+        let mut world = World::new();
+        let queue = world.init_resource::<QueueA>();
+        IntoSystem::into_system((QueueConfig(queue), ParamBuilder).build_system(system))
+            .initialize(&mut world);
+    }
+
+    #[test]
+    #[should_panic(expected = "error[B0002]: Queue<()>")]
+    fn query_entity_ref_then_queue() {
+        fn system(_: Query<EntityRef>, _: Queue<()>) {}
+        let mut world = World::new();
+        let queue = world.init_resource::<QueueA>();
+        IntoSystem::into_system((ParamBuilder, QueueConfig(queue)).build_system(system))
+            .initialize(&mut world);
+    }
+
+    #[test]
+    #[should_panic(expected = "error[B0001]")]
+    fn queue_then_query_entity_ref() {
+        fn system(_: Queue<()>, _: Query<EntityRef>) {}
+        let mut world = World::new();
+        let queue = world.init_resource::<QueueA>();
+        IntoSystem::into_system((QueueConfig(queue), ParamBuilder).build_system(system))
+            .initialize(&mut world);
+    }
+
+    #[test]
+    #[should_panic(expected = "error[B0002]: Queue<()>")]
+    fn world_then_queue() {
+        fn system(_: &World, _: Queue<()>) {}
+        let mut world = World::new();
+        let queue = world.init_resource::<QueueA>();
+        IntoSystem::into_system((ParamBuilder, QueueConfig(queue)).build_system(system))
+            .initialize(&mut world);
+    }
+
+    #[test]
+    #[should_panic(expected = "&World in system")]
+    fn queue_then_world() {
+        fn system(_: Queue<()>, _: &World) {}
+        let mut world = World::new();
+        let queue = world.init_resource::<QueueA>();
+        IntoSystem::into_system((QueueConfig(queue), ParamBuilder).build_system(system))
+            .initialize(&mut world);
+    }
+
+    #[test]
+    #[should_panic(expected = "error[B0002]: Queue<()>")]
+    fn same_queue_twice() {
+        // Also what happens when one queue aliases the other.
+        fn system(_: Queue<()>, _: Queue<()>) {}
+        let mut world = World::new();
+        let queue = world.init_resource::<QueueA>();
+        IntoSystem::into_system((QueueConfig(queue), QueueConfig(queue)).build_system(system))
+            .initialize(&mut world);
+    }
+
+    #[test]
+    fn different_queues() {
+        fn system(_: Queue<()>, _: Queue<()>) {}
+        let mut world = World::new();
+        let queue_a = world.init_resource::<QueueA>();
+        let queue_b = world.init_resource::<QueueB>();
+        let access = IntoSystem::into_system(
+            (QueueConfig(queue_a), QueueConfig(queue_b)).build_system(system),
+        )
+        .initialize(&mut world);
+        let SystemAccess::Shared(access) = access else {
+            panic!("expected shared access, got {access:?}");
+        };
+        assert!(access.combined_access().has_write(queue_a));
+        assert!(access.combined_access().has_write(queue_b));
+    }
+
+    #[test]
+    fn res_then_queue() {
+        fn system(_: Res<Other>, _: Queue<()>) {}
+        let mut world = World::new();
+        let queue = world.init_resource::<QueueA>();
+        IntoSystem::into_system((ParamBuilder, QueueConfig(queue)).build_system(system))
+            .initialize(&mut world);
     }
 }

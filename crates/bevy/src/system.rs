@@ -49,7 +49,8 @@
 use bevy_ecs::{
     change_detection::Tick,
     component::ComponentId,
-    resource::Resource,
+    query::FilteredAccess,
+    resource::{IS_RESOURCE, Resource},
     system::{SystemMeta, SystemParam, SystemParamBuilder},
     world::{Mut, World, unsafe_world_cell::UnsafeWorldCell},
 };
@@ -146,7 +147,8 @@ unsafe impl Sync for RenderSetSharedState {}
 ///
 /// # Panics
 ///
-/// Panics if used in a system that isn't part of a submission set.
+/// Panics if used in a system that isn't part of a submission set, or if a system has
+/// more than one `SubmissionState` param or other conflicting access.
 ///
 /// # Example
 ///
@@ -256,16 +258,55 @@ unsafe impl SystemParam for SubmissionState<'_> {
         state: &Self::State,
         system_meta: &mut SystemMeta,
         system_access: &mut bevy_ecs::system::SystemAccess,
-        _world: &mut World,
+        world: &mut World,
     ) {
         let component_access_set = system_access.require_shared_access::<Self>(system_meta);
+
+        // Two `SubmissionState`s in one system would hand out the same shared state
+        // mutably at once. Each declares a read of a marker resource, which doesn't
+        // conflict with other systems, so that the second one finds the first.
+        let mut marker_access = FilteredAccess::default();
+        marker_access.add_read(
+            world
+                .components_registrator()
+                .register_component::<SubmissionStateMarker>(),
+        );
+        marker_access.and_with(IS_RESOURCE);
+        if component_access_set
+            .filtered_accesses()
+            .contains(&marker_access)
+        {
+            panic!(
+                "System {} has more than one `SubmissionState` param. They would all hand out \
+                 the same command encoder mutably at once, so use only one.",
+                system_meta.name()
+            );
+        }
+        component_access_set.add(marker_access);
+
         // User systems are only configured after initialization, so the build pass
         // declares their write instead.
         if *state != ComponentId::new(usize::MAX) {
-            component_access_set.add_resource_write(*state);
+            let mut shared_state_write = FilteredAccess::default();
+            shared_state_write.add_write(*state);
+            shared_state_write.and_with(IS_RESOURCE);
+            if system_access.try_add(shared_state_write).is_err() {
+                panic!(
+                    "error[B0002]: SubmissionState in system {} conflicts with a previous \
+                     system parameter. Consider removing the conflicting access, or using \
+                     `Without<IsResource>` to make queries disjoint from resources. See: \
+                     https://bevy.org/learn/errors/b0002",
+                    system_meta.name()
+                );
+            }
         }
     }
 }
+
+/// Resource that every [`SubmissionState`] declares a read of, so that a system with
+/// more than one can be detected. It is never inserted.
+#[derive(Resource)]
+struct SubmissionStateMarker;
 
 pub(crate) struct RenderSetSharedStateConfig {
     id: ComponentId,
