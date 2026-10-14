@@ -27,7 +27,7 @@
 //! scheduling of render systems, , the actual scheduling of the render systems
 //!
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use bevy_ecs::{
     change_detection::MaybeLocation,
@@ -60,6 +60,9 @@ struct RenderSetMetaSystems {
 /// when submission sets are registered.
 /// It transforms system sets into sequences that share command encoding state.
 ///
+/// It must run before [`AutoInsertApplyDeferredPass`](bevy_ecs::schedule::passes::AutoInsertApplyDeferredPass),
+/// so that the orderings it sees are the user's, not ones created by shared sync points.
+///
 /// # Internal Implementation
 ///
 /// For each registered submission set, this pass:
@@ -70,7 +73,10 @@ struct RenderSetMetaSystems {
 /// For each registered render set, this pass:
 /// 1. Ensures the config system (which begins the render pass) runs before other systems
 /// 2. Validates the render set belongs to exactly one submission set
-/// 3. Adds ordering edges so all render-set work completes before non-render-set work
+/// 3. Runs it as one block: the submission set's other systems that record commands,
+///    including other render sets, run entirely before or after it
+/// 4. Groups it with the submission set's other systems into alternating render and
+///    compute stages, to minimize transitions between them
 #[derive(Debug, Default)]
 pub(super) struct SubmissionSetsPass {
     /// Maps submission set to its associated queue component ID.
@@ -84,6 +90,9 @@ pub(super) struct SubmissionSetsPass {
     /// Maps render sets to its ending system (added during schedule build, and reused
     /// when the schedule is rebuilt)
     render_sets_to_ending_systems: BTreeMap<SystemSetKey, SystemKey>,
+    /// Systems in submission sets that have a `SubmissionState` param, and so record into
+    /// the set's command encoder (collected during schedule build)
+    systems_using_encoder: HashSet<SystemKey>,
 }
 
 impl ScheduleBuildPass for SubmissionSetsPass {
@@ -272,7 +281,12 @@ impl ScheduleBuildPass for SubmissionSetsPass {
             let mut shared_config = RenderSetSharedStateConfig::new(meta_systems.shared_state);
             for system_node in systems.iter() {
                 let system = graph.systems.get_mut(*system_node).unwrap();
+                shared_config.used = false;
                 system.configurate(&mut shared_config);
+                if !shared_config.used {
+                    continue; // It doesn't record into the shared command encoder.
+                }
+                self.systems_using_encoder.insert(*system_node);
                 // On the build that adds them, systems added by build passes are initialized
                 // again after the passes run, which replaces this access with what their
                 // params declare. For every other system, the access added here sticks.
@@ -318,6 +332,9 @@ impl ScheduleBuildPass for SubmissionSetsPass {
         graph: &mut bevy_ecs::schedule::ScheduleGraph,
         mut dependency_flattened: bevy_ecs::schedule::FlattenedDependencies<'_>,
     ) -> Result<(), bevy_ecs::schedule::ScheduleBuildError> {
+        // Collected again on every build.
+        let systems_using_encoder = std::mem::take(&mut self.systems_using_encoder);
+
         if self.render_sets_to_systems.is_empty() {
             return Ok(());
         }
@@ -339,8 +356,14 @@ impl ScheduleBuildPass for SubmissionSetsPass {
 
         let hierarchy = graph.hierarchy().graph();
 
+        // Render sets in each submission set, mapped to their config and ending systems.
+        let mut render_sets_by_submission_set: BTreeMap<
+            SystemSetKey,
+            BTreeMap<SystemSetKey, (SystemKey, SystemKey)>,
+        > = BTreeMap::new();
+
         // --- Validation: each render set must be in exactly one submission set ---
-        for (&render_set_interned, _) in &self.render_sets_to_systems {
+        for (&render_set_interned, &config_system) in &self.render_sets_to_systems {
             let render_set_key = set_key_map
                 .get(&render_set_interned)
                 .copied()
@@ -352,6 +375,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
 
             // Walk ancestors in the hierarchy to find parent submission sets
             let mut count = 0usize;
+            let mut submission_set_key = None;
             let mut to_visit: Vec<NodeId> = hierarchy
                 .neighbors_directed(
                     NodeId::Set(render_set_key),
@@ -371,6 +395,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                             .contains_key(&ancestor_interned)
                         {
                             count += 1;
+                            submission_set_key = Some(ancestor_key);
                         }
                     }
                     to_visit.extend(hierarchy.neighbors_directed(
@@ -392,14 +417,29 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                      A render set must belong to exactly one submission set."
                 );
             }
+
+            let ending_system = self
+                .render_sets_to_ending_systems
+                .get(&render_set_key)
+                .copied()
+                .unwrap();
+            render_sets_by_submission_set
+                .entry(submission_set_key.unwrap())
+                .or_default()
+                .insert(render_set_key, (config_system, ending_system));
         }
 
-        // --- Optimization: minimize render/compute transitions ---
-        // On tile-based GPUs, switching between render and compute is expensive,
-        // and the CommandEncoder auto-ends the render pass when non-rendering
-        // workload is encoded. We group same-type systems into stages using a
-        // modified Kahn's algorithm that prefers render systems first, then add
-        // edges between adjacent stages to enforce the grouping.
+        // --- Ordering within submission sets ---
+        // A submission set's systems share one command encoder, and only render work can
+        // be recorded while a render pass is open. So each render set runs as one block:
+        // the submission set's other systems, including other render sets, run entirely
+        // before or after it.
+        //
+        // On tile-based GPUs, switching between render and compute is also expensive. So
+        // the blocks and the other systems are grouped into alternating render and compute
+        // stages using a modified Kahn's algorithm that prefers render work first. Edges
+        // between adjacent stages enforce the grouping, and edges between consecutive
+        // render sets in a render stage keep them from overlapping.
         for (&submission_set_interned, _) in &self.submission_sets_to_queue {
             let Some(&submission_set_key) = set_key_map.get(&submission_set_interned) else {
                 continue;
@@ -410,40 +450,70 @@ impl ScheduleBuildPass for SubmissionSetsPass {
             else {
                 continue;
             };
+            let Some(render_sets) = render_sets_by_submission_set.get(&submission_set_key)
+            else {
+                continue; // Without render sets, everything is one compute stage.
+            };
 
             let meta_set: HashSet<SystemKey> =
                 [meta.prelude, meta.submission].into_iter().collect();
 
-            let mut render_systems = Vec::new();
-            let mut nonrender_systems = Vec::new();
-
+            // The submission set's systems, each with the render set it's in, if any.
+            let mut systems = HashMap::new();
             collect_descendant_systems(
                 hierarchy,
                 NodeId::Set(submission_set_key),
                 &self.render_sets_to_ending_systems,
-                false,
+                None,
                 &meta_set,
-                &mut render_systems,
-                &mut nonrender_systems,
+                &mut systems,
             );
+            // Systems outside render sets that don't record commands can run anywhere,
+            // so treat them like systems outside the submission set.
+            systems.retain(|sys, render_set| {
+                render_set.is_some() || systems_using_encoder.contains(sys)
+            });
 
-            if render_systems.is_empty() || nonrender_systems.is_empty() {
-                continue;
+            if render_sets.len() < 2 && !systems.values().any(Option::is_none) {
+                continue; // A lone render set is already one block.
             }
 
-            let render_set: HashSet<SystemKey> = render_systems.iter().copied().collect();
-            let all_systems: HashSet<SystemKey> = render_systems
-                .iter()
-                .chain(nonrender_systems.iter())
-                .copied()
-                .collect();
-
-            // Modified Kahn's algorithm: prefer render systems to minimize transitions.
-            // It runs over the whole graph, not just this set's systems, because an
-            // ordering between two of them can pass through systems outside the set,
-            // such as the sync point that replaces an edge `a → b` with
-            // `a → apply_deferred → b`. Systems outside the set join no stage.
             use bevy_ecs::schedule::graph::Direction::{Incoming, Outgoing};
+
+            // A render set can only start once every other system of the submission set
+            // that must run before any of its systems has been staged. Its systems all run
+            // before its ending system, so those are the ancestors of its ending system.
+            let mut blockers: BTreeMap<SystemSetKey, usize> = BTreeMap::new();
+            let mut blocked_render_sets: HashMap<SystemKey, Vec<SystemSetKey>> = HashMap::new();
+            for (&render_set, &(_, ending_system)) in render_sets {
+                let mut count = 0;
+                let mut visited = HashSet::new();
+                let mut to_visit = vec![ending_system];
+                while let Some(sys) = to_visit.pop() {
+                    for prev in dependency_flattened.neighbors_directed(sys, Incoming) {
+                        if !visited.insert(prev) {
+                            continue;
+                        }
+                        to_visit.push(prev);
+                        if let Some(&prev_render_set) = systems.get(&prev)
+                            && prev_render_set != Some(render_set)
+                        {
+                            count += 1;
+                            blocked_render_sets
+                                .entry(prev)
+                                .or_default()
+                                .push(render_set);
+                        }
+                    }
+                }
+                blockers.insert(render_set, count);
+            }
+
+            // The algorithm runs over the whole graph, not just this set's systems, because
+            // an ordering between two of them can pass through systems outside the set.
+            // Systems outside the set join no stage, and may run inside a render set, as
+            // they don't record into this set's command encoder. That includes the sync
+            // points that `AutoInsertApplyDeferredPass` adds after this pass runs.
             let mut in_degree: HashMap<SystemKey, usize> = HashMap::new();
             let mut newly_ready = Vec::new();
             for sys in dependency_flattened.nodes() {
@@ -455,22 +525,35 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                 }
             }
 
-            let mut ready_render = Vec::new();
-            let mut ready_compute = Vec::new();
             let mut ready_outside = Vec::new();
+            let mut ready_compute = Vec::new();
+            // Render sets whose config system is ready.
+            let mut ready_render_sets = BTreeSet::new();
+            // The render set being staged, and its ready systems.
+            let mut open_render_set: Option<SystemSetKey> = None;
+            let mut ready_in_open_render_set = Vec::new();
+            // Ending system of the last render set staged in the current stage.
+            let mut last_ending_system = None;
             let mut current_is_render = false;
             let mut stages: Vec<Vec<SystemKey>> = Vec::new();
+            let mut render_set_edges = Vec::new();
             // Systems after the set's last one can't change its stages.
-            let mut unstaged = all_systems.len();
+            let mut unstaged = systems.len();
 
             while unstaged > 0 {
                 for sys in newly_ready.drain(..) {
-                    if render_set.contains(&sys) {
-                        ready_render.push(sys);
-                    } else if all_systems.contains(&sys) {
-                        ready_compute.push(sys);
-                    } else {
-                        ready_outside.push(sys);
+                    match systems.get(&sys) {
+                        None => ready_outside.push(sys),
+                        Some(None) => ready_compute.push(sys),
+                        Some(&Some(render_set)) => {
+                            if render_sets[&render_set].0 == sys {
+                                ready_render_sets.insert(render_set);
+                            } else {
+                                // Its config system has been staged, so its render set
+                                // is the open one.
+                                ready_in_open_render_set.push(sys);
+                            }
+                        }
                     }
                 }
 
@@ -478,35 +561,79 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                 // a system of the current stage's kind.
                 let sys = if let Some(sys) = ready_outside.pop() {
                     sys
+                } else if let Some(render_set) = open_render_set {
+                    // Finish the open render set before staging anything else.
+                    let sys = ready_in_open_render_set
+                        .pop()
+                        .expect("a render set can't get blocked once it has started");
+                    if sys == render_sets[&render_set].1 {
+                        open_render_set = None;
+                        last_ending_system = Some(sys);
+                    }
+                    stages.last_mut().unwrap().push(sys);
+                    unstaged -= 1;
+                    sys
                 } else {
-                    if ready_render.is_empty() && ready_compute.is_empty() {
-                        break;
+                    // Among render sets that can start, take the one with the smallest key.
+                    let startable_render_set = ready_render_sets
+                        .iter()
+                        .copied()
+                        .find(|render_set| blockers[render_set] == 0);
+                    if startable_render_set.is_none() && ready_compute.is_empty() {
+                        let not_started: Vec<InternedSystemSet> = blockers
+                            .keys()
+                            .map(|&render_set| graph.system_sets.get(render_set).unwrap())
+                            .collect();
+                        panic!(
+                            "Render sets {not_started:?} in submission set \
+                             {submission_set_interned:?} can't be scheduled: ordering \
+                             constraints or shared systems put other systems of the \
+                             submission set between their config and ending systems. Only \
+                             render work can be recorded while a render pass is open, so each \
+                             render set must run entirely before or after the submission \
+                             set's other systems, including other render sets."
+                        );
                     }
                     let stay = !stages.is_empty()
                         && if current_is_render {
-                            !ready_render.is_empty()
+                            startable_render_set.is_some()
                         } else {
                             !ready_compute.is_empty()
                         };
                     if !stay {
                         current_is_render = if stages.is_empty() {
-                            !ready_render.is_empty()
+                            startable_render_set.is_some()
                         } else {
                             !current_is_render
                         };
                         stages.push(Vec::new());
+                        last_ending_system = None;
                     }
-                    let queue = if current_is_render {
-                        &mut ready_render
+                    let sys = if current_is_render {
+                        let render_set = startable_render_set.unwrap();
+                        ready_render_sets.remove(&render_set);
+                        blockers.remove(&render_set);
+                        open_render_set = Some(render_set);
+                        let config_system = render_sets[&render_set].0;
+                        if let Some(ending_system) = last_ending_system {
+                            render_set_edges.push((ending_system, config_system));
+                        }
+                        config_system
                     } else {
-                        &mut ready_compute
+                        ready_compute.pop().unwrap()
                     };
-                    let sys = queue.pop().unwrap();
                     stages.last_mut().unwrap().push(sys);
                     unstaged -= 1;
                     sys
                 };
 
+                if let Some(blocked) = blocked_render_sets.get(&sys) {
+                    for render_set in blocked {
+                        if let Some(count) = blockers.get_mut(render_set) {
+                            *count -= 1;
+                        }
+                    }
+                }
                 for successor in dependency_flattened.neighbors_directed(sys, Outgoing) {
                     let deg = in_degree.get_mut(&successor).unwrap();
                     *deg -= 1;
@@ -524,6 +651,10 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                     }
                 }
             }
+            // Add edges between consecutive render sets in a render stage
+            for (from, to) in render_set_edges {
+                dependency_flattened.add_edge(from, to);
+            }
         }
 
         Ok(())
@@ -531,16 +662,14 @@ impl ScheduleBuildPass for SubmissionSetsPass {
 }
 
 /// Recursively walks the hierarchy graph from `node`, collecting descendant systems
-/// into either `render_systems` or `nonrender_systems` based on whether they are
-/// inside a render set.
+/// into `systems` along with the render set they are inside, if any.
 fn collect_descendant_systems(
     hierarchy: &bevy_ecs::schedule::graph::DiGraph<NodeId>,
     node: NodeId,
     render_sets_to_ending_systems: &BTreeMap<SystemSetKey, SystemKey>,
-    in_render_set: bool,
+    render_set: Option<SystemSetKey>,
     meta_systems: &HashSet<SystemKey>,
-    render_systems: &mut Vec<SystemKey>,
-    nonrender_systems: &mut Vec<SystemKey>,
+    systems: &mut HashMap<SystemKey, Option<SystemSetKey>>,
 ) {
     for child in hierarchy.neighbors_directed(node, bevy_ecs::schedule::graph::Direction::Outgoing)
     {
@@ -549,26 +678,25 @@ fn collect_descendant_systems(
                 if meta_systems.contains(&sys) {
                     continue;
                 }
-                if in_render_set {
-                    render_systems.push(sys);
-                } else {
-                    nonrender_systems.push(sys);
+                // A system reached both inside and outside a render set is render work.
+                let entry = systems.entry(sys).or_default();
+                if entry.is_none() {
+                    *entry = render_set;
                 }
             }
             NodeId::Set(set_key) => {
-                let mut child_in_render = in_render_set;
-                if let Some(ending_system) = render_sets_to_ending_systems.get(&set_key) {
-                    render_systems.push(*ending_system);
-                    child_in_render = true;
+                let mut child_render_set = render_set;
+                if let Some(&ending_system) = render_sets_to_ending_systems.get(&set_key) {
+                    systems.insert(ending_system, Some(set_key));
+                    child_render_set = Some(set_key);
                 }
                 collect_descendant_systems(
                     hierarchy,
                     child,
                     render_sets_to_ending_systems,
-                    child_in_render,
+                    child_render_set,
                     meta_systems,
-                    render_systems,
-                    nonrender_systems,
+                    systems,
                 );
             }
         }

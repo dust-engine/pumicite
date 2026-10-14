@@ -1,6 +1,7 @@
 use bevy_app::prelude::*;
 use bevy_asset::{AssetApp, AssetServer};
 use bevy_ecs::prelude::*;
+use bevy_ecs::schedule::passes::AutoInsertApplyDeferredPass;
 use glam::Vec4;
 use pumicite::{
     ash::{
@@ -314,11 +315,19 @@ impl Plugin for PumicitePlugin {
                 .run_if(resource_exists::<crate::staging::AsyncTransfer>),
         );
 
-        // Add build pass
-        app.get_schedule_mut(PostUpdate)
-            .as_mut()
-            .unwrap()
-            .add_build_pass(super::pass::SubmissionSetsPass::default());
+        // Add build pass. It has to run before `AutoInsertApplyDeferredPass`: that pass
+        // shares one sync point between unrelated systems, and the orderings this creates
+        // could force a system into the middle of a render set. Move the auto sync pass
+        // after it, keeping the state it has collected so far.
+        let schedule = app.get_schedule_mut(PostUpdate).unwrap();
+        let auto_sync_pass = schedule
+            .get_build_pass_mut::<AutoInsertApplyDeferredPass>()
+            .map(std::mem::take);
+        schedule.remove_build_pass::<AutoInsertApplyDeferredPass>();
+        schedule.add_build_pass(super::pass::SubmissionSetsPass::default());
+        if let Some(auto_sync_pass) = auto_sync_pass {
+            schedule.add_build_pass(auto_sync_pass);
+        }
 
         app.add_submission_set::<super::queue::RenderQueue>(
             DefaultRenderSet,
@@ -662,6 +671,15 @@ pub trait PumiciteApp {
     ///
     /// Within a submission set, render systems are scheduled in such a way to minimize
     /// transitions between render and compute workloads.
+    ///
+    /// Only render work can be recorded while a render pass is open, so a render set runs
+    /// as one block: the submission set's other systems that record commands, including
+    /// other render sets, run entirely before or after it. Their order follows any
+    /// ordering between their systems, so use `.before()`/`.after()` on the sets to choose
+    /// it. Systems with no ordering between them run in an unspecified order that stays
+    /// the same from frame to frame. If ordering constraints would put another system of
+    /// the submission set that records commands inside a render set, building the
+    /// schedule panics.
     ///
     /// # Parameters
     ///

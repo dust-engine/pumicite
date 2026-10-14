@@ -246,8 +246,9 @@ unsafe impl SystemParam for SubmissionState<'_> {
         _system_meta: &mut SystemMeta,
         config: &mut dyn std::any::Any,
     ) {
-        if let Some(config) = config.downcast_ref::<RenderSetSharedStateConfig>() {
+        if let Some(config) = config.downcast_mut::<RenderSetSharedStateConfig>() {
             *state = config.id;
+            config.used = true;
         }
     }
 
@@ -268,10 +269,13 @@ unsafe impl SystemParam for SubmissionState<'_> {
 
 pub(crate) struct RenderSetSharedStateConfig {
     id: ComponentId,
+    /// Set when a [`SubmissionState`] param is configured with this, which tells the
+    /// build pass that the system records into the shared command encoder.
+    pub(crate) used: bool,
 }
 impl RenderSetSharedStateConfig {
     pub(crate) fn new(id: ComponentId) -> Self {
-        Self { id }
+        Self { id, used: false }
     }
 }
 
