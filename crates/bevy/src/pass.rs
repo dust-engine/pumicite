@@ -466,8 +466,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
             else {
                 continue;
             };
-            let Some(render_sets) = render_sets_by_submission_set.get(&submission_set_key)
-            else {
+            let Some(render_sets) = render_sets_by_submission_set.get(&submission_set_key) else {
                 continue; // Without render sets, everything is one compute stage.
             };
 
@@ -533,7 +532,9 @@ impl ScheduleBuildPass for SubmissionSetsPass {
             let mut in_degree: HashMap<SystemKey, usize> = HashMap::new();
             let mut newly_ready = Vec::new();
             for sys in dependency_flattened.nodes() {
-                let deg = dependency_flattened.neighbors_directed(sys, Incoming).count();
+                let deg = dependency_flattened
+                    .neighbors_directed(sys, Incoming)
+                    .count();
                 if deg == 0 {
                     newly_ready.push(sys);
                 } else {

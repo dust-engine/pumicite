@@ -13,6 +13,7 @@ impl IdAlloc {
     }
     pub fn alloc_one(&mut self) -> u32 {
         if let Some(indice) = self.bits.first_zero() {
+            self.bits.set(indice, true);
             return indice as u32;
         }
         let indice = self.bits.len();
@@ -60,5 +61,22 @@ impl IdAlloc {
 
     pub fn iter_all(&self) -> impl Iterator<Item = u32> {
         self.bits.iter_ones().map(|x| x as u32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IdAlloc;
+
+    #[test]
+    fn alloc_one_takes_a_freed_id_once() {
+        let mut ids = IdAlloc::new();
+        let a = ids.alloc_one();
+        let b = ids.alloc_one();
+        ids.free(a, 1);
+        assert_eq!(ids.alloc_one(), a);
+        let c = ids.alloc_one();
+        assert_ne!(c, a);
+        assert_ne!(c, b);
     }
 }

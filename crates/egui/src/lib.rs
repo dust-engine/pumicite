@@ -755,10 +755,7 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
                 pipeline.deref().layout(),
                 vk::ShaderStageFlags::FRAGMENT,
                 8,
-                bytemuck::cast_slice(&[
-                    texture_handle,
-                    buffers.user_texture_sampler.id() as u64,
-                ]),
+                bytemuck::cast_slice(&[texture_handle, buffers.user_texture_sampler.id() as u64]),
             );
 
             pass.draw_indexed(

@@ -285,6 +285,13 @@ impl<'a> RenderPassAttachmentBuilder<'_, 'a> {
         self
     }
 
+    /// Sets the layout of the resolve target during rendering. Required when a
+    /// [`resolve_view`](Self::resolve_view) is set.
+    pub fn resolve_image_layout(&mut self, layout: vk::ImageLayout) -> &mut Self {
+        self.attachment.resolve_image_layout = layout;
+        self
+    }
+
     /// Configures whether to load the attachment's previous contents.
     pub fn load(&mut self, should_load: bool) -> &mut Self {
         if should_load {
