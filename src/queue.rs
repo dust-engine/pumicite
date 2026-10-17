@@ -105,6 +105,7 @@ impl Queue {
                 .chain(std::iter::once(vk::SemaphoreSubmitInfo {
                     semaphore: timestamp.semaphore().vk_handle(),
                     value: timestamp.value() - 1,
+                    stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
                     ..Default::default()
                 }));
             self.reused_semaphore_submit_info.extend(waits);
