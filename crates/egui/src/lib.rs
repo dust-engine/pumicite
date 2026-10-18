@@ -332,6 +332,9 @@ struct EguiResources<Filter> {
 
     /// Textures shall be presumed to be in SHADER_READ_ONLY_OPTIMAL layout
     textures: BTreeMap<u64, (GPUMutex<FullImageView<Image>>, egui::TextureOptions)>,
+    /// Managed textures egui freed last frame. egui frees a texture after the frame's
+    /// paint jobs, which may still sample it, so removal waits until the next frame.
+    pending_free: Vec<u64>,
     marker: std::marker::PhantomData<Filter>,
 
     pipeline: Handle<GraphicsPipeline>,
@@ -350,6 +353,7 @@ impl<Filter> EguiResources<Filter> {
             vertex_buffer: None,
             samplers: Default::default(),
             textures: Default::default(),
+            pending_free: Vec::new(),
             marker: Default::default(),
             pipeline,
             heap,
@@ -361,16 +365,21 @@ impl<Filter> EguiResources<Filter> {
 /// Create the target images.
 fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
     device_buffers: ResMut<EguiResources<Filter>>,
-    egui_render_output: Query<&EguiRenderOutput, Filter>,
+    mut egui_render_output: Query<&mut EguiRenderOutput, Filter>,
     allocator: Res<Allocator>,
     mut ctx: SubmissionState,
     mut host_visible_ring_buffer: ResMut<HostVisibleRingBuffer>,
 ) {
-    let Ok(output) = egui_render_output.single() else {
+    let Ok(mut output) = egui_render_output.single_mut() else {
         return;
     };
+    let mut textures_delta = std::mem::take(&mut output.textures_delta);
     let device_buffers = device_buffers.into_inner();
-    for (texture_id, image_deltas) in output.textures_delta.set.iter() {
+    // Dropping the GPUMutex defers destruction until the GPU is done with the texture.
+    for texture_id in device_buffers.pending_free.drain(..) {
+        device_buffers.textures.remove(&texture_id);
+    }
+    for (texture_id, image_deltas) in textures_delta.set.iter() {
         let texture_id = match texture_id {
             TextureId::Managed(id) => *id,
             TextureId::User(_) => unimplemented!(),
@@ -550,6 +559,14 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
             encoder.emit_barriers();
         });
     }
+    // `TextureId::User` textures are owned by the user, not this renderer.
+    device_buffers
+        .pending_free
+        .extend(textures_delta.free.iter().filter_map(|id| match id {
+            TextureId::Managed(id) => Some(*id),
+            TextureId::User(_) => None,
+        }));
+    textures_delta.clear();
 }
 
 /// Issue draw commands for egui.

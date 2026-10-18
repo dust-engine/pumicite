@@ -23,6 +23,9 @@ pub struct Swapchain {
     /// Tracks whether the swapchain is still valid. Once `VK_ERROR_OUT_OF_DATE_KHR` is returned,
     /// calling Vulkan functions on the swapchain is an error, so we mark it invalid.
     is_valid: bool,
+    /// Set when a recreate attempt failed after passing the current swapchain as `oldSwapchain`,
+    /// which retires it. The next recreate must then pass `VK_NULL_HANDLE` instead.
+    is_retired: bool,
 }
 impl Swapchain {
     pub fn extent(&self) -> UVec2 {
@@ -278,10 +281,18 @@ impl Swapchain {
             extra_acquire_semaphore: SharedSemaphore::new_binary(device, false)?
                 .with_name(c"Swapchain Acquire Semaphore"),
             is_valid: true,
+            is_retired: false,
         })
     }
 
+    /// Recreates the swapchain. On failure (including a zero-sized extent, e.g. a minimized
+    /// window, reported as `VK_ERROR_OUT_OF_DATE_KHR`) the swapchain is marked invalid so that
+    /// `acquire` keeps failing with `VK_ERROR_OUT_OF_DATE_KHR` until a later recreate succeeds.
     pub fn recreate(&mut self, info: &SwapchainCreateInfo) -> VkResult<()> {
+        if info.image_extent.x == 0 || info.image_extent.y == 0 {
+            self.is_valid = false;
+            return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
+        }
         tracing::info!(
             width = %info.image_extent.x,
             height = %info.image_extent.y,
@@ -290,16 +301,38 @@ impl Swapchain {
             "Recreating swapchain"
         );
 
-        let (inner, images) = SwapchainInner::create(
+        let old_swapchain = if self.is_retired {
+            vk::SwapchainKHR::null()
+        } else {
+            self.inner.inner
+        };
+        match SwapchainInner::create(
             self.device().clone(),
             self.inner.surface.clone(),
             info,
-            self.inner.inner,
-        )?;
-        self.inner = inner;
-        self.images = images;
-        self.is_valid = true;
-        Ok(())
+            old_swapchain,
+        ) {
+            Ok((inner, images)) => {
+                self.inner = inner;
+                self.images = images;
+                self.is_valid = true;
+                self.is_retired = false;
+                Ok(())
+            }
+            Err(e) => {
+                // oldSwapchain is retired even if vkCreateSwapchainKHR fails, and a retired
+                // swapchain must not be passed as oldSwapchain again.
+                self.is_valid = false;
+                self.is_retired = true;
+                Err(e)
+            }
+        }
+    }
+
+    /// Returns false once the swapchain has reported `VK_ERROR_OUT_OF_DATE_KHR`
+    /// or a recreate failed; it must be recreated before further use.
+    pub fn is_valid(&self) -> bool {
+        self.is_valid
     }
 
     pub fn acquire(&mut self) -> DeviceResult<(GPUMutex<SwapchainImageInner>, bool)> {

@@ -104,8 +104,18 @@ use pumicite::{
 ///  use bevy_pumicite::DefaultRenderSet;
 ///  App::new().add_systems(PostUpdate, my_render_system.in_set(DefaultRenderSet));
 /// ```
+///
+/// The set is skipped on frames where the primary window has a swapchain but no image was
+/// acquired (e.g. the window is minimized or the swapchain is out of date).
+/// See [`swapchain_image_acquired`].
 #[derive(SystemSet, Hash, PartialEq, Eq, Debug, Clone)]
 pub struct SwapchainSet;
+
+/// Run condition for [`SwapchainSet`]. Returns false only when the primary window has a
+/// [`SwapchainImage`] but no image was acquired this frame, so headless apps still run the set.
+pub fn swapchain_image_acquired(query: Query<&SwapchainImage, With<PrimaryWindow>>) -> bool {
+    query.single().map_or(true, |image| image.inner.is_some())
+}
 
 /// Plugin that manages swapchain creation and presentation.
 ///
@@ -163,7 +173,8 @@ impl Plugin for SwapchainPlugin {
             bevy_app::PostUpdate,
             SwapchainSet
                 .before(present::<With<PrimaryWindow>>)
-                .after(acquire_swapchain_image::<With<PrimaryWindow>>),
+                .after(acquire_swapchain_image::<With<PrimaryWindow>>)
+                .run_if(swapchain_image_acquired),
         );
 
         app.add_message::<SuboptimalMessage>();
@@ -285,7 +296,15 @@ fn recreate_swapchain(
         window,
         config,
     );
-    swapchain.recreate(&create_info).unwrap();
+    match swapchain.recreate(&create_info) {
+        Ok(()) => {}
+        // The surface changed again or has a zero extent (e.g. minimized window).
+        // The swapchain stays invalid, so acquire keeps requesting a recreate until this succeeds.
+        Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+            tracing::debug!("Swapchain recreate deferred: surface out of date");
+        }
+        Err(e) => panic!("Error recreating swapchain: {:?}", e),
+    }
 }
 
 pub(super) fn extract_swapchains(
@@ -530,6 +549,11 @@ pub fn acquire_swapchain_image<Filter: QueryFilter>(
         swapchain_image.inner.is_none(),
         "This swapchain image has already been acquired!"
     );
+    if !swapchain.is_valid() {
+        // Already known to be out of date (e.g. window minimized); retry the recreate quietly.
+        suboptimal_messages.write(SuboptimalMessage { window: entity });
+        return;
+    }
     let new_image = match swapchain.acquire() {
         Ok((image, suboptimal)) => {
             if suboptimal {
@@ -574,7 +598,8 @@ pub fn present<Filter: QueryFilter>(
     };
     let image_state = std::mem::take(&mut swapchain_image.state);
     let Some(swapchain_image) = swapchain_image.inner.take() else {
-        tracing::warn!("Missing swapchain image; present skipped");
+        // Expected while the window is minimized or the swapchain is out of date.
+        tracing::debug!("Missing swapchain image; present skipped");
         return;
     };
     queue.begin_label(c"Swapchain Present", Vec4::new(0.0, 0.0, 0.0, 1.0));
