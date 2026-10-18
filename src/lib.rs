@@ -121,6 +121,7 @@ pub mod debug;
 pub mod descriptor;
 pub mod device;
 mod extension;
+pub mod fault;
 mod future;
 pub mod image;
 pub mod instance;

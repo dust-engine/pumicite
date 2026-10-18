@@ -2,13 +2,17 @@
 //!
 //! This module provides [`DebugUtilsPlugin`] for enabling Vulkan debug messaging,
 //! which routes validation layer messages to Rust's tracing framework.
+//! [`DeviceFaultPlugin`] enables driver fault details for device losses.
 
-use bevy_app::Plugin;
+use bevy_app::{Plugin, Startup};
+use bevy_ecs::prelude::*;
 use pumicite::ash::ext::debug_utils::Meta as DebugUtilsExt;
+use pumicite::ash::ext::device_fault::Meta as DeviceFaultExt;
+use pumicite::ash::vk;
 
-use pumicite::{Instance, debug::DebugUtilsMessenger};
+use pumicite::{Instance, debug::DebugUtilsMessenger, device::DeviceBuilder};
 
-use super::PumiciteApp;
+use super::{CreateDevice, PumiciteApp};
 
 /// Plugin that enables Vulkan debug messaging.
 ///
@@ -39,5 +43,36 @@ impl Plugin for DebugUtilsPlugin {
     fn finish(&self, app: &mut bevy_app::App) {
         let instance: Instance = app.world().resource::<Instance>().clone();
         app.insert_resource(DebugUtilsMessenger::new(instance).unwrap());
+    }
+}
+
+/// Plugin that enables `VK_EXT_device_fault` and its `deviceFault` feature when the
+/// device supports them.
+///
+/// This is a **device plugin** and may be added in any order relative to
+/// [`PumicitePlugin`](crate::PumicitePlugin).
+///
+/// With it enabled, a [`DeviceError`] for `ERROR_DEVICE_LOST` includes the driver's
+/// [`DeviceFaultReport`] (faulting GPU addresses and vendor fault codes) when it is
+/// formatted, so unwrapping the [`DeviceResult`] of a lost submission, present,
+/// or GPU wait prints the report in the panic message.
+///
+/// [`DeviceError`]: pumicite::fault::DeviceError
+/// [`DeviceResult`]: pumicite::fault::DeviceResult
+/// [`DeviceFaultReport`]: pumicite::fault::DeviceFaultReport
+#[derive(Default)]
+pub struct DeviceFaultPlugin;
+
+impl Plugin for DeviceFaultPlugin {
+    fn build(&self, app: &mut bevy_app::App) {
+        app.add_systems(Startup, enable_device_fault.before(CreateDevice));
+    }
+}
+
+fn enable_device_fault(mut device_builder: ResMut<DeviceBuilder>) {
+    if device_builder.enable_extension::<DeviceFaultExt>().is_ok() {
+        device_builder
+            .enable_feature::<vk::PhysicalDeviceFaultFeaturesEXT>(|f| &mut f.device_fault)
+            .ok();
     }
 }

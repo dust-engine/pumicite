@@ -92,7 +92,7 @@ mod system;
 pub use pumicite;
 mod heap;
 
-pub use debug::DebugUtilsPlugin;
+pub use debug::{DebugUtilsPlugin, DeviceFaultPlugin};
 pub use heap::DescriptorHeap;
 pub use plugin::{
     CreateDevice, DefaultComputeSet, DefaultRenderSet, DefaultTransferSet,

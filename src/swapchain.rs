@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::command::{GPURef, GPURefMut};
 use crate::debug::DebugObject;
+use crate::fault::{DeviceError, DeviceResult, ResultWithDevice};
 use crate::image::{ImageLike, ImageViewLike};
 use crate::physical_device::PhysicalDevice;
 use crate::tracking::ResourceState;
@@ -301,11 +302,11 @@ impl Swapchain {
         Ok(())
     }
 
-    pub fn acquire(&mut self) -> VkResult<(GPUMutex<SwapchainImageInner>, bool)> {
+    pub fn acquire(&mut self) -> DeviceResult<(GPUMutex<SwapchainImageInner>, bool)> {
         // Check if swapchain is still valid. Once invalidated by VK_ERROR_OUT_OF_DATE_KHR,
         // the swapchain must be recreated before further use.
         if !self.is_valid {
-            return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
+            return Err(vk::Result::ERROR_OUT_OF_DATE_KHR.into());
         }
 
         unsafe {
@@ -323,9 +324,9 @@ impl Swapchain {
                 Ok(val) => val,
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                     self.is_valid = false;
-                    return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
+                    return Err(vk::Result::ERROR_OUT_OF_DATE_KHR.into());
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(DeviceError::new(e, self.device())),
             };
 
             let mut image = self.images[indice as usize].take().unwrap();
@@ -349,11 +350,11 @@ impl Swapchain {
         image: GPUMutex<SwapchainImageInner>,
         image_state: ResourceState,
         queue: &mut Queue,
-    ) -> VkResult<()> {
+    ) -> DeviceResult<()> {
         // Check if swapchain is still valid. Once invalidated by VK_ERROR_OUT_OF_DATE_KHR,
         // the swapchain must be recreated before further use.
         if !self.is_valid {
-            return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
+            return Err(vk::Result::ERROR_OUT_OF_DATE_KHR.into());
         }
 
         unsafe {
@@ -408,34 +409,36 @@ impl Swapchain {
                 // last_present_queue to be the last presented queue.
                 image.last_present_queue = queue.vk_handle();
             }
-            self.device().queue_submit2(
-                queue.vk_handle(),
-                &[vk::SubmitInfo2::default()
-                    .command_buffer_infos(&[vk::CommandBufferSubmitInfo {
-                        command_buffer: image.command_buffer,
-                        ..Default::default()
-                    }])
-                    .wait_semaphore_infos(&[vk::SemaphoreSubmitInfo {
-                        // unwrap the semaphore because there should always be a semaphore here
-                        // because we need to at least wait on the swapchain acquire semaphore.
-                        semaphore: semaphore.unwrap().vk_handle(),
-                        value: wait_value,
-                        stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-                        ..Default::default()
-                    }])
-                    .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo {
-                        semaphore: image.present_semaphore.vk_handle(),
-                        stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-                        value: 0,
-                        ..Default::default()
-                    }])],
-                if has_maintenance_1 {
-                    vk::Fence::null()
-                } else {
-                    // If without maintenance 1, signal the fence at the end of this submission.
-                    image.present_semaphore.raw_fence()
-                },
-            )?;
+            self.device()
+                .queue_submit2(
+                    queue.vk_handle(),
+                    &[vk::SubmitInfo2::default()
+                        .command_buffer_infos(&[vk::CommandBufferSubmitInfo {
+                            command_buffer: image.command_buffer,
+                            ..Default::default()
+                        }])
+                        .wait_semaphore_infos(&[vk::SemaphoreSubmitInfo {
+                            // unwrap the semaphore because there should always be a semaphore here
+                            // because we need to at least wait on the swapchain acquire semaphore.
+                            semaphore: semaphore.unwrap().vk_handle(),
+                            value: wait_value,
+                            stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
+                            ..Default::default()
+                        }])
+                        .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo {
+                            semaphore: image.present_semaphore.vk_handle(),
+                            stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
+                            value: 0,
+                            ..Default::default()
+                        }])],
+                    if has_maintenance_1 {
+                        vk::Fence::null()
+                    } else {
+                        // If without maintenance 1, signal the fence at the end of this submission.
+                        image.present_semaphore.raw_fence()
+                    },
+                )
+                .with_device(self.device())?;
 
             {
                 let wait_semaphores = [image.present_semaphore.vk_handle()];
@@ -467,9 +470,9 @@ impl Swapchain {
                     Ok(true) => Ok(()), // suboptimal is not an error
                     Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                         self.is_valid = false;
-                        Err(vk::Result::ERROR_OUT_OF_DATE_KHR)
+                        Err(vk::Result::ERROR_OUT_OF_DATE_KHR.into())
                     }
-                    Err(e) => Err(e),
+                    Err(e) => Err(DeviceError::new(e, self.device())),
                 }
             }
         }
@@ -535,6 +538,7 @@ impl Drop for SwapchainImageInner {
                 self.swapchain
                     .device
                     .queue_wait_idle(self.last_present_queue)
+                    .with_device(&self.swapchain.device)
                     .unwrap();
             }
         }

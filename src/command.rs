@@ -80,6 +80,7 @@ mod transfer;
 use crate::{
     Device, HasDevice,
     buffer::BufferLike,
+    fault::DeviceResult,
     image::ImageLike,
     sync::{GPUMutex, SharedSemaphore, Timestamp},
     tracking::{Access, MemoryBarrier, ResourceState},
@@ -90,7 +91,7 @@ pub use render::*;
 use std::{
     alloc::Layout,
     collections::BTreeMap,
-    ops::{Deref, DerefMut, Range},
+    ops::{Deref, Range},
     pin::Pin,
     sync::{Arc, atomic::AtomicBool},
     task::Poll,
@@ -1332,7 +1333,7 @@ impl CommandBuffer {
     /// cmd.block_until_completion().unwrap();
     /// assert_eq!(cmd.state(), CommandBufferState::Invalid);
     /// ```
-    pub fn block_until_completion(&mut self) -> VkResult<()> {
+    pub fn block_until_completion(&mut self) -> DeviceResult<()> {
         match self.state {
             CommandBufferState::Pending => (),
             CommandBufferState::Invalid => return Ok(()),
@@ -1350,7 +1351,7 @@ impl CommandBuffer {
         Ok(())
     }
 
-    pub async fn block_async_until_completion(&mut self) -> VkResult<()> {
+    pub async fn block_async_until_completion(&mut self) -> DeviceResult<()> {
         match self.state {
             CommandBufferState::Pending => (),
             CommandBufferState::Invalid => return Ok(()),

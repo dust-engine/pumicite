@@ -925,6 +925,10 @@ impl_feature_for_ext!(
     vk::PhysicalDeviceMaintenance4Features<'static>,
     khr::maintenance4::Meta
 );
+impl_feature_for_ext!(
+    vk::PhysicalDeviceFaultFeaturesEXT<'static>,
+    ext::device_fault::Meta
+);
 
 #[cfg(test)]
 mod tests {

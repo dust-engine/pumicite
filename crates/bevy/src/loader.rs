@@ -15,7 +15,9 @@ use bevy_asset::{Asset, AssetLoader, AsyncReadExt};
 use bevy_ecs::world::FromWorld;
 use bevy_reflect::TypePath;
 use bevy_tasks::futures_lite::AsyncSeekExt;
-use pumicite::{ash::VkResult, bindless::ResourceHeap, image::FullImageView, prelude::*};
+use pumicite::{
+    ash::VkResult, bindless::ResourceHeap, fault::DeviceError, image::FullImageView, prelude::*,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{DescriptorHeap, staging::AsyncTransfer};
@@ -82,14 +84,20 @@ mod img_loader {
         #[cfg(feature = "png")]
         PngDecodingError(#[from] PngDecodingError),
 
-        #[error("VulkanError")]
-        VulkanError(#[from] vk::Result),
+        #[error("Vulkan error: {0}")]
+        VulkanError(#[from] DeviceError),
 
         #[error("IoError")]
         IoError(#[from] std::io::Error),
 
         #[error("FormatRequiresTranscodingError")]
         FormatRequiresTranscodingError,
+    }
+
+    impl From<vk::Result> for ImageLoadingError {
+        fn from(result: vk::Result) -> Self {
+            Self::VulkanError(result.into())
+        }
     }
 
     #[derive(bevy_reflect::TypePath)]

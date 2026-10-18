@@ -11,11 +11,12 @@
 //! For logically ordered sequences where each submission must complete before the
 //! next begins, use [`Timeline`](crate::sync::Timeline) instead.
 
-use ash::{VkResult, vk};
+use ash::vk;
 
 use crate::{
     Device, HasDevice,
     command::{CommandBuffer, CommandBufferState},
+    fault::{DeviceResult, ResultWithDevice},
     utils::AsVkHandle,
 };
 
@@ -81,7 +82,7 @@ impl Queue {
     ///
     /// Note: Submission order does not guarantee completion order. Use
     /// [`Timeline`](crate::sync::Timeline) for sequential execution guarantees.
-    pub fn submit(&mut self, cb: &mut CommandBuffer) -> VkResult<()> {
+    pub fn submit(&mut self, cb: &mut CommandBuffer) -> DeviceResult<()> {
         assert_eq!(
             cb.state(),
             CommandBufferState::Executable,
@@ -109,22 +110,24 @@ impl Queue {
                     ..Default::default()
                 }));
             self.reused_semaphore_submit_info.extend(waits);
-            self.device.queue_submit2(
-                self.handle,
-                &[vk::SubmitInfo2::default()
-                    .command_buffer_infos(&[vk::CommandBufferSubmitInfo {
-                        command_buffer: cb.buffer,
-                        ..Default::default()
-                    }])
-                    .wait_semaphore_infos(&self.reused_semaphore_submit_info)
-                    .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo {
-                        semaphore: timestamp.semaphore().vk_handle(),
-                        stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-                        value: timestamp.value(),
-                        ..Default::default()
-                    }])],
-                vk::Fence::null(),
-            )?;
+            self.device
+                .queue_submit2(
+                    self.handle,
+                    &[vk::SubmitInfo2::default()
+                        .command_buffer_infos(&[vk::CommandBufferSubmitInfo {
+                            command_buffer: cb.buffer,
+                            ..Default::default()
+                        }])
+                        .wait_semaphore_infos(&self.reused_semaphore_submit_info)
+                        .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo {
+                            semaphore: timestamp.semaphore().vk_handle(),
+                            stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
+                            value: timestamp.value(),
+                            ..Default::default()
+                        }])],
+                    vk::Fence::null(),
+                )
+                .with_device(&self.device)?;
             self.reused_semaphore_submit_info.clear();
             cb.wait_semaphores.clear();
             cb.state = CommandBufferState::Pending;

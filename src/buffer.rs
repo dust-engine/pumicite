@@ -30,7 +30,6 @@ use std::{
     collections::VecDeque,
     ffi::{CStr, CString},
     fmt::Debug,
-    ops::RangeBounds,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -45,7 +44,7 @@ use vk_mem::Alloc;
 
 use crate::{
     Allocator, Device, HasDevice,
-    command::{CommandEncoder, GPURef, GPURefMut, NoHostMapping, project_host_metadata},
+    command::{CommandEncoder, GPURef, GPURefMut, project_host_metadata},
     tracking::Access,
     utils::AsVkHandle,
 };

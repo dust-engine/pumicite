@@ -538,7 +538,7 @@ pub fn acquire_swapchain_image<Filter: QueryFilter>(
             }
             image
         }
-        Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+        Err(e) if e == vk::Result::ERROR_OUT_OF_DATE_KHR => {
             tracing::warn!("Swapchain acquire out-of-date: {:?}", entity);
             suboptimal_messages.write(SuboptimalMessage { window: entity });
             return;
@@ -580,11 +580,11 @@ pub fn present<Filter: QueryFilter>(
     queue.begin_label(c"Swapchain Present", Vec4::new(0.0, 0.0, 0.0, 1.0));
     match swapchain.present(swapchain_image, image_state, &mut queue) {
         Ok(_) => {}
-        Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+        Err(e) if e == vk::Result::ERROR_OUT_OF_DATE_KHR => {
             tracing::warn!("Swapchain present out-of-date: {:?}", entity);
             suboptimal_messages.write(SuboptimalMessage { window: entity });
         }
-        Err(vk::Result::SUBOPTIMAL_KHR) => {
+        Err(e) if e == vk::Result::SUBOPTIMAL_KHR => {
             tracing::warn!("Swapchain present suboptimal: {:?}", entity);
             suboptimal_messages.write(SuboptimalMessage { window: entity });
         }

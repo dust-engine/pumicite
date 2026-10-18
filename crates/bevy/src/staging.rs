@@ -46,6 +46,7 @@ use pumicite::{
     buffer::{RingBuffer, RingBufferSuballocation, StagingBufferAllocator},
     command::{CommandEncoderRenderPassState, CommandPool, GPURefMut},
     device::DeviceBuilder,
+    fault::{DeviceError, DeviceResult},
     prelude::*,
     sync::{Timeline, Timestamp},
 };
@@ -488,7 +489,7 @@ struct AsyncTransferCommandContext {
 impl AsyncTransferCommandContext {
     /// Reclaims completed command buffers, then, if anything has been recorded, submits the
     /// current command buffer and starts recording a new one.
-    fn submit_current(&mut self, queue: &SharedQueue) -> VkResult<()> {
+    fn submit_current(&mut self, queue: &SharedQueue) -> DeviceResult<()> {
         // Every command buffer waits for the previous one on the timeline, so they complete in
         // submission order.
         while let Some(oldest) = self.in_flight.front_mut()
@@ -562,7 +563,7 @@ impl<T: ImageLike> ImageUpload<T> {
     ///
     /// Because completion may depend on the frame loop, never block on this future from a system
     /// (for example with `block_on`): the frame would stop before the upload is submitted.
-    pub async fn wait(mut self) -> VkResult<T> {
+    pub async fn wait(mut self) -> DeviceResult<T> {
         // `image` is only taken once the wait completes, so if this future is cancelled
         // mid-wait, `Drop` still waits.
         self.timestamp.wait_async().await?;
@@ -609,7 +610,11 @@ impl AsyncTransfer {
     /// // Waits until the upload has completed on the GPU.
     /// let image = upload.wait().await?;
     /// ```
-    pub async fn update_image<T: ImageLike, A: StagingBufferAllocator, E: From<vk::Result>>(
+    pub async fn update_image<
+        T: ImageLike,
+        A: StagingBufferAllocator,
+        E: From<vk::Result> + From<DeviceError>,
+    >(
         &self,
         image: T,
         writer: impl AsyncFnOnce(&mut [u8]) -> Result<(), E>,

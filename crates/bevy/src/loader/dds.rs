@@ -9,14 +9,20 @@ pub enum DdsError {
     #[error("Failed to parse the ktx texture file: {0}")]
     DdsParseError(#[from] ddsfile::Error),
 
-    #[error("VulkanError")]
-    VulkanError(#[from] vk::Result),
+    #[error("Vulkan error: {0}")]
+    VulkanError(#[from] DeviceError),
 
     #[error("IoError")]
     IoError(#[from] std::io::Error),
 
     #[error("FormatRequiresTranscodingError")]
     FormatRequiresTranscodingError,
+}
+
+impl From<vk::Result> for DdsError {
+    fn from(result: vk::Result) -> Self {
+        Self::VulkanError(result.into())
+    }
 }
 
 #[derive(bevy_reflect::TypePath)]

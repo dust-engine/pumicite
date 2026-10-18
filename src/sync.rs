@@ -31,7 +31,11 @@ use ash::{
     vk::{self, Handle, TaggedStructure},
 };
 
-use crate::{Device, HasDevice, utils::AsVkHandle};
+use crate::{
+    Device, HasDevice,
+    fault::{DeviceError, DeviceResult, ResultWithDevice},
+    utils::AsVkHandle,
+};
 
 /// A mutex for resources with read/write access from multiple queues, or from both
 /// the device and the queue.
@@ -219,7 +223,7 @@ impl<T: Send> GPUMutex<T> {
     ///
     /// If waiting fails, the error is returned and the mutex is dropped as usual, so the
     /// resource is not freed while the GPU may still be using it.
-    pub fn unwrap_block(mut self) -> VkResult<Box<T>> {
+    pub fn unwrap_block(mut self) -> DeviceResult<Box<T>> {
         let (semaphore_ptr, wait_value): (*const Semaphore, u64) =
             decode_semaphore(*self.ptr.get_mut());
         if !semaphore_ptr.is_null() {
@@ -236,7 +240,7 @@ impl<T: Send> GPUMutex<T> {
     }
 
     /// Async version of [`unwrap_block`](Self::unwrap_block).
-    pub async fn unwrap_block_async(mut self) -> VkResult<Box<T>> {
+    pub async fn unwrap_block_async(mut self) -> DeviceResult<Box<T>> {
         let (semaphore_ptr, wait_value): (*const Semaphore, u64) =
             decode_semaphore(*self.ptr.get_mut());
         if !semaphore_ptr.is_null() {
@@ -461,6 +465,7 @@ impl Semaphore {
         let new_value = unsafe {
             self.device
                 .get_semaphore_counter_value(self.handle)
+                .with_device(&self.device)
                 .unwrap()
         };
         let old_value = self
@@ -537,13 +542,14 @@ impl Timestamp {
     ///
     /// For binary semaphores, waits on the fence and resets it.
     /// For timeline semaphores, returns early if already signaled.
-    pub fn wait_blocked(&self, timeout: u64) -> VkResult<()> {
+    pub fn wait_blocked(&self, timeout: u64) -> DeviceResult<()> {
         let semaphore = &self.semaphore.0;
         if semaphore.is_binary() {
             unsafe {
                 semaphore
                     .device
-                    .wait_for_fences(&[semaphore.fence], false, timeout)?;
+                    .wait_for_fences(&[semaphore.fence], false, timeout)
+                    .with_device(&semaphore.device)?;
                 semaphore.device.reset_fences(&[semaphore.fence])?;
             }
             Ok(())
@@ -552,15 +558,18 @@ impl Timestamp {
                 return Ok(());
             }
             unsafe {
-                semaphore.device.wait_semaphores(
-                    &vk::SemaphoreWaitInfo {
-                        semaphore_count: 1,
-                        p_semaphores: &semaphore.handle,
-                        p_values: &self.value,
-                        ..Default::default()
-                    },
-                    timeout,
-                )?;
+                semaphore
+                    .device
+                    .wait_semaphores(
+                        &vk::SemaphoreWaitInfo {
+                            semaphore_count: 1,
+                            p_semaphores: &semaphore.handle,
+                            p_values: &self.value,
+                            ..Default::default()
+                        },
+                        timeout,
+                    )
+                    .with_device(&semaphore.device)?;
             }
             semaphore
                 .value
@@ -591,15 +600,17 @@ impl Timestamp {
     }
 
     /// Async version of [`wait_blocked`](Self::wait_blocked).
-    pub async fn wait_async(&self) -> VkResult<()> {
+    pub async fn wait_async(&self) -> DeviceResult<()> {
         let semaphore = &self.semaphore.0;
         if semaphore.is_binary() {
             let fence = semaphore.fence;
             let device = semaphore.device.clone();
             blocking::unblock(move || unsafe {
-                device.wait_for_fences(&[fence], false, !0)?;
+                device
+                    .wait_for_fences(&[fence], false, !0)
+                    .with_device(&device)?;
                 device.reset_fences(&[fence])?;
-                Ok::<(), vk::Result>(())
+                Ok::<(), DeviceError>(())
             })
             .await?;
             Ok(())
@@ -931,6 +942,7 @@ pub(crate) fn spawn_recycler_thread(receiver: crossbeam_channel::Receiver<Retire
                                 .values(&semaphore_values),
                                 !0,
                             )
+                            .with_device(device)
                             .unwrap();
                     }
                 }
@@ -940,7 +952,10 @@ pub(crate) fn spawn_recycler_thread(receiver: crossbeam_channel::Receiver<Retire
                     // this thread would make that wait hang.
                     let device = binary_items[0].semaphore.device();
                     unsafe {
-                        device.wait_for_fences(&fences, false, !0).unwrap();
+                        device
+                            .wait_for_fences(&fences, false, !0)
+                            .with_device(device)
+                            .unwrap();
                     }
                 }
                 semaphores.clear();
