@@ -150,7 +150,7 @@ pub enum CommandEncoderRenderPassState {
 pub struct GPURef<'a, T: ?Sized>(&'a T);
 impl<T: ?Sized> Clone for GPURef<'_, T> {
     fn clone(&self) -> Self {
-        Self(self.0)
+        *self
     }
 }
 impl<T: ?Sized> Copy for GPURef<'_, T> {}
@@ -194,7 +194,7 @@ impl<'a, T: ?Sized> GPURef<'a, T> {
 pub struct GPURefMut<'a, T: ?Sized>(&'a T);
 impl<T: ?Sized> Clone for GPURefMut<'_, T> {
     fn clone(&self) -> Self {
-        Self(self.0)
+        *self
     }
 }
 impl<T: ?Sized> Copy for GPURefMut<'_, T> {}
@@ -234,8 +234,10 @@ impl<'a, T: ?Sized> GPURefMut<'a, T> {
 
 /// By default, `GPURef<T>` does not allow the host to access any fields of the underlying resource,
 /// being pessimistic that the GPU will access everything about the property.
+/// 
+/// # Safety
 ///
-/// Types can implement [`NoHostMapping`] to indicate that the GPU has exclusive access to the resource
+/// Types that implement [`NoHostMapping`] are indicating that the GPU has exclusive access to the resource
 /// and the host has all but a handle and some metadata.
 ///
 /// Types that do not implement [`NoHostMapping`] will have to implement projections to metadata and properties
@@ -1089,7 +1091,7 @@ impl ArcRetainer {
         self.ptr = std::ptr::null_mut();
         // `drain` takes the entries out of `meta` before any destructor runs.
         let mut rest = DropRest(self.meta.drain(..));
-        while let Some((drop_fn, ptr)) = rest.0.next() {
+        for (drop_fn, ptr) in rest.0.by_ref() {
             unsafe { (drop_fn)(ptr as *mut ()) };
         }
     }

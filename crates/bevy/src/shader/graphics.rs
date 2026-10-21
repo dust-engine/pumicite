@@ -74,7 +74,7 @@ impl AssetLoader for GraphicsPipelineLoader {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let ext = load_context.path().get_full_extension().unwrap_or_default();
-        let mut pipeline: pumicite_types::GraphicsPipeline = super::deserialize(&bytes, &ext)?;
+        let mut pipeline: pumicite_types::GraphicsPipeline = super::deserialize(&bytes, ext)?;
         settings.apply_on(&mut pipeline);
 
         let layout = match &pipeline.layout {
@@ -106,7 +106,7 @@ impl AssetLoader for GraphicsPipelineLoader {
 
         let mut dynamic_states = Vec::<vk::DynamicState>::new();
         let mut shader_modules = Vec::with_capacity(pipeline.shaders.len());
-        for (_, shader) in pipeline.shaders.iter() {
+        for shader in pipeline.shaders.values() {
             let module: LoadedAsset<ShaderModule> =
                 load_context.load_builder().load_value(&shader.path).await?;
             shader_modules.push(module.take());
@@ -122,7 +122,7 @@ impl AssetLoader for GraphicsPipelineLoader {
         let mut specialization_map_entries: Vec<Vec<vk::SpecializationMapEntry>> = Vec::new();
         let mut specialization_data: Vec<Vec<u8>> = Vec::new();
 
-        for (_, shader) in pipeline.shaders.iter() {
+        for shader in pipeline.shaders.values() {
             if shader.specialization_constants.is_empty() {
                 specialization_map_entries.push(Vec::new());
                 specialization_data.push(Vec::new());

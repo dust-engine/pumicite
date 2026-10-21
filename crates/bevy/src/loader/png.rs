@@ -125,9 +125,8 @@ impl AssetLoader for PngLoader {
                 .update_image(
                     texture,
                     async |slice| -> Result<(), ImageLoadingError> {
-                        let num_bytes_per_frame = reader.info().width as usize
-                            * reader.info().height as usize
-                            * bpp as usize;
+                        let num_bytes_per_frame =
+                            reader.info().width as usize * reader.info().height as usize * bpp;
 
                         match color_type {
                             (png::ColorType::Rgb, png::BitDepth::Eight) => {
@@ -139,7 +138,8 @@ impl AssetLoader for PngLoader {
                                     let dst = &mut slice[i as usize * dst_bytes_per_frame
                                         ..(i as usize + 1) * dst_bytes_per_frame];
                                     reader.next_frame(&mut buffer)?;
-                                    for (dst, src) in dst.chunks_exact_mut(4).zip(buffer.chunks(3))
+                                    for (dst, src) in
+                                        dst.as_chunks_mut::<4>().0.iter_mut().zip(buffer.chunks(3))
                                     {
                                         dst[0..3].copy_from_slice(src);
                                         dst[3] = 255;
@@ -155,7 +155,8 @@ impl AssetLoader for PngLoader {
                                     let dst = &mut slice[i as usize * dst_bytes_per_frame
                                         ..(i as usize + 1) * dst_bytes_per_frame];
                                     reader.next_frame(&mut buffer)?;
-                                    for (dst, src) in dst.chunks_exact_mut(8).zip(buffer.chunks(6))
+                                    for (dst, src) in
+                                        dst.as_chunks_mut::<8>().0.iter_mut().zip(buffer.chunks(6))
                                     {
                                         dst[0..6].copy_from_slice(src);
                                         dst[6..8].copy_from_slice(&[0xFF, 0xFF]);

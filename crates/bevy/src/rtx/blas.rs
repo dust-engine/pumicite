@@ -308,10 +308,8 @@ fn build_blas_system<T: BLASBuilder>(
             .get::<vk::PhysicalDeviceAccelerationStructurePropertiesKHR>()
             .min_acceleration_structure_scratch_offset_alignment;
 
-        for ((entity, query), geometries) in entities
-            .iter()
-            .take(batch_size)
-            .zip(geometry_transfers.into_iter())
+        for ((entity, query), geometries) in
+            entities.iter().take(batch_size).zip(geometry_transfers)
         {
             assert!(
                 !geometries.is_empty(),

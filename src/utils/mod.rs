@@ -33,7 +33,7 @@ impl VkTaggedObject {
     pub unsafe fn new_unchecked<T>(obj: T) -> Box<Self> {
         unsafe {
             let boxed = Box::new(obj);
-            let boxed_ptr = NonNull::new_unchecked(Box::into_raw(boxed));
+            let boxed_ptr = NonNull::from_mut(Box::leak(boxed));
             let fat_ptr = NonNull::<Self>::from_raw_parts(
                 boxed_ptr,
                 std::mem::size_of::<T>() - std::mem::size_of::<vk::BaseInStructure>(),

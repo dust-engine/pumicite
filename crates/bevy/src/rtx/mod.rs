@@ -186,9 +186,7 @@ impl RtxPipelineManager {
             .pipelines
             .get_mut(pipeline)
             .expect("Pipeline was never added to the RtxPipelineManager");
-        let Some(library) = managed_pipeline.libraries[library_id as usize].take() else {
-            return None;
-        };
+        let library = managed_pipeline.libraries[library_id as usize].take()?;
         managed_pipeline.library_dependencies.remove(&library.id());
         managed_pipeline.library_mask &= !(1 << library_id);
         Some(library)

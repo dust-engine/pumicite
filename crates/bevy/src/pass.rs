@@ -405,14 +405,13 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                     continue;
                 }
                 if let NodeId::Set(ancestor_key) = ancestor {
-                    if let Some(ancestor_interned) = graph.system_sets.get(ancestor_key) {
-                        if self
+                    if let Some(ancestor_interned) = graph.system_sets.get(ancestor_key)
+                        && self
                             .submission_sets_to_queue
                             .contains_key(&ancestor_interned)
-                        {
-                            count += 1;
-                            submission_set_key = Some(ancestor_key);
-                        }
+                    {
+                        count += 1;
+                        submission_set_key = Some(ancestor_key);
                     }
                     to_visit.extend(hierarchy.neighbors_directed(
                         ancestor,
@@ -456,7 +455,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
         // stages using a modified Kahn's algorithm that prefers render work first. Edges
         // between adjacent stages enforce the grouping, and edges between consecutive
         // render sets in a render stage keep them from overlapping.
-        for (&submission_set_interned, _) in &self.submission_sets_to_queue {
+        for &submission_set_interned in self.submission_sets_to_queue.keys() {
             let Some(&submission_set_key) = set_key_map.get(&submission_set_interned) else {
                 continue;
             };

@@ -91,7 +91,7 @@ pub fn build_descriptor_set_layout(
         });
     }
 
-    (!bindings.is_empty()).then(|| DescriptorSetLayout {
+    (!bindings.is_empty()).then_some(DescriptorSetLayout {
         push_descriptor: false,
         update_after_bind_pool: false,
         descriptor_buffer: false,
@@ -177,11 +177,11 @@ pub fn build_pipeline_layout(reflection: &slang::reflection::Shader) -> Pipeline
             })
             .sum();
 
-        if ep_uniform_size > 0 {
-            if let Some(stage) = slang_stage_to_shader_stage(entry_point.stage()) {
-                push_constants.insert(stage, (offset, ep_uniform_size as u32));
-                offset += ep_uniform_size as u32;
-            }
+        if ep_uniform_size > 0
+            && let Some(stage) = slang_stage_to_shader_stage(entry_point.stage())
+        {
+            push_constants.insert(stage, (offset, ep_uniform_size as u32));
+            offset += ep_uniform_size as u32;
         }
     }
 

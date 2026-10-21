@@ -1,7 +1,7 @@
 use crate::HasDevice;
 use crate::utils::AsVkHandle;
-use ash::vk;
 use ash::vk::Handle;
+use ash::vk::{self, TaggedStructure};
 
 pub trait AsMTLTexture: AsVkHandle<Handle = vk::Image> + HasDevice {
     /// Returns the underlying Metal texture (`id<MTLTexture>`) backing this image.
@@ -18,8 +18,7 @@ pub trait AsMTLTexture: AsVkHandle<Handle = vk::Image> + HasDevice {
         let mut texture_info = vk::ExportMetalTextureInfoEXT::default()
             .image(self.vk_handle())
             .plane(plane);
-        let mut info = vk::ExportMetalObjectsInfoEXT::default();
-        info.p_next = (&mut texture_info as *mut vk::ExportMetalTextureInfoEXT).cast();
+        let mut info = vk::ExportMetalObjectsInfoEXT::default().push(&mut texture_info);
         unsafe {
             self.device()
                 .extension::<ash::ext::metal_objects::Meta>()
@@ -41,8 +40,7 @@ pub trait AsMTLIOSurface: AsVkHandle<Handle = vk::Image> + HasDevice {
     fn io_surface(&self) -> vk::IOSurfaceRef {
         let mut io_surface_info =
             vk::ExportMetalIOSurfaceInfoEXT::default().image(self.vk_handle());
-        let mut info = vk::ExportMetalObjectsInfoEXT::default();
-        info.p_next = (&mut io_surface_info as *mut vk::ExportMetalIOSurfaceInfoEXT).cast();
+        let mut info = vk::ExportMetalObjectsInfoEXT::default().push(&mut io_surface_info);
         unsafe {
             self.device()
                 .extension::<ash::ext::metal_objects::Meta>()
@@ -63,8 +61,7 @@ pub trait AsMTLCommandQueue: AsVkHandle<Handle = vk::Queue> + HasDevice {
         &self,
     ) -> &objc2::runtime::ProtocolObject<dyn objc2_metal::MTL4CommandQueue> {
         let mut queue_info = vk::ExportMetalCommandQueueInfoEXT::default().queue(self.vk_handle());
-        let mut info = vk::ExportMetalObjectsInfoEXT::default();
-        info.p_next = (&mut queue_info as *mut vk::ExportMetalCommandQueueInfoEXT).cast();
+        let mut info = vk::ExportMetalObjectsInfoEXT::default().push(&mut queue_info);
         unsafe {
             self.device()
                 .extension::<ash::ext::metal_objects::Meta>()
@@ -88,8 +85,7 @@ pub trait AsMTLSharedEvent: AsVkHandle<Handle = vk::Semaphore> + HasDevice {
     ) -> &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLSharedEvent> {
         let mut event_info =
             vk::ExportMetalSharedEventInfoEXT::default().semaphore(self.vk_handle());
-        let mut info = vk::ExportMetalObjectsInfoEXT::default();
-        info.p_next = (&mut event_info as *mut vk::ExportMetalSharedEventInfoEXT).cast();
+        let mut info = vk::ExportMetalObjectsInfoEXT::default().push(&mut event_info);
         unsafe {
             self.device()
                 .extension::<ash::ext::metal_objects::Meta>()
@@ -110,8 +106,7 @@ pub trait AsMTLDevice: HasDevice {
     /// Requires the [`VK_EXT_metal_objects`](ash::ext::metal_objects) extension.
     fn mtl_device(&self) -> &objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice> {
         let mut device_info = vk::ExportMetalDeviceInfoEXT::default();
-        let mut info = vk::ExportMetalObjectsInfoEXT::default();
-        info.p_next = (&mut device_info as *mut vk::ExportMetalDeviceInfoEXT).cast();
+        let mut info = vk::ExportMetalObjectsInfoEXT::default().push(&mut device_info);
         unsafe {
             self.device()
                 .extension::<ash::ext::metal_objects::Meta>()
@@ -131,11 +126,12 @@ pub trait AsMTLCommandBuffer: AsVkHandle<Handle = vk::CommandBuffer> + HasDevice
     fn mtl_command_buffer(
         &self,
     ) -> &objc2::runtime::ProtocolObject<dyn objc2_metal::MTL4CommandBuffer> {
-        let mut queue_info = vk::ExportMetalCommandQueueInfoEXT::default();
-        queue_info.s_type = vk::StructureType::from_raw(1000311012);
-        queue_info.queue = vk::Queue::from_raw(self.vk_handle().as_raw());
-        let mut info = vk::ExportMetalObjectsInfoEXT::default();
-        info.p_next = (&mut queue_info as *mut vk::ExportMetalCommandQueueInfoEXT).cast();
+        let mut queue_info = vk::ExportMetalCommandQueueInfoEXT {
+            s_type: vk::StructureType::from_raw(1000311012),
+            queue: vk::Queue::from_raw(self.vk_handle().as_raw()),
+            ..Default::default()
+        };
+        let mut info = vk::ExportMetalObjectsInfoEXT::default().push(&mut queue_info);
         unsafe {
             self.device()
                 .extension::<ash::ext::metal_objects::Meta>()

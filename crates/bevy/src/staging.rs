@@ -694,14 +694,14 @@ impl AsyncTransfer {
             });
         let timestamp = command_ctx.current_timestamp.clone();
         command_ctx.pending_bytes += bytes_required;
-        if command_ctx.pending_bytes >= self.0.submit_threshold {
-            if let Err(err) = command_ctx.submit_current(&self.0.queue) {
-                // Depending on where submission failed, the copy may still be submitted later,
-                // or `timestamp` may never be reached. Leak the image rather than destroy it
-                // while it may be in use, or wait for a timestamp that never comes.
-                std::mem::forget(image);
-                return Err(err.into());
-            }
+        if command_ctx.pending_bytes >= self.0.submit_threshold
+            && let Err(err) = command_ctx.submit_current(&self.0.queue)
+        {
+            // Depending on where submission failed, the copy may still be submitted later,
+            // or `timestamp` may never be reached. Leak the image rather than destroy it
+            // while it may be in use, or wait for a timestamp that never comes.
+            std::mem::forget(image);
+            return Err(err.into());
         }
 
         Ok(ImageUpload {

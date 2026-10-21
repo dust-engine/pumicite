@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use pumicite_cli::build_pipeline_layout;
@@ -268,7 +268,7 @@ fn cmd_slang(args: SlangArgs) {
 // subcommand: ron2bin
 // ---------------------------------------------------------------------------
 
-fn infer_ron_type(path: &PathBuf) -> Option<RonType> {
+fn infer_ron_type(path: &Path) -> Option<RonType> {
     let name = path.to_string_lossy();
     if name.ends_with(".playout.ron") {
         Some(RonType::PipelineLayout)
@@ -285,7 +285,7 @@ fn infer_ron_type(path: &PathBuf) -> Option<RonType> {
     }
 }
 
-fn default_postcard_output(input: &PathBuf) -> PathBuf {
+fn default_postcard_output(input: &Path) -> PathBuf {
     let name = input.to_string_lossy();
     if let Some(stripped) = name.strip_suffix(".ron") {
         PathBuf::from(format!("{stripped}.bin"))

@@ -577,10 +577,10 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
 
     pipeline_assets: Res<Assets<GraphicsPipeline>>,
 ) {
-    let Some(mut index_buffer) = buffers.index_buffer.take() else {
+    let Some(index_buffer) = buffers.index_buffer.take() else {
         return;
     };
-    let Some(mut vertex_buffer) = buffers.vertex_buffer.take() else {
+    let Some(vertex_buffer) = buffers.vertex_buffer.take() else {
         return;
     };
     let Some(pipeline) = pipeline_assets.get(&buffers.pipeline) else {
@@ -593,9 +593,9 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
     };
 
     state.render(move |mut pass| {
-        let index_buffer = pass.lock(&mut index_buffer, vk::PipelineStageFlags2::INDEX_INPUT);
+        let index_buffer = pass.lock(&index_buffer, vk::PipelineStageFlags2::INDEX_INPUT);
         let vertex_buffer = pass.lock(
-            &mut vertex_buffer,
+            &vertex_buffer,
             vk::PipelineStageFlags2::VERTEX_ATTRIBUTE_INPUT,
         );
         for (texture, _) in buffers.textures.values_mut() {
@@ -701,7 +701,7 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
                         &[],
                     );
                 }
-                pass.bind_vertex_buffers(0, [vertex_buffer].into_iter());
+                pass.bind_vertex_buffers(0, [vertex_buffer]);
                 pass.bind_index_buffer(index_buffer, 0, vk::IndexType::UINT32);
                 pass.set_viewport(
                     0,

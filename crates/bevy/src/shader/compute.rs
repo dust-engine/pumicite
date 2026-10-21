@@ -64,7 +64,7 @@ impl AssetLoader for ComputePipelineLoader {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let ext = load_context.path().get_full_extension().unwrap_or_default();
-        let pipeline: pumicite_types::ComputePipeline = super::deserialize(&bytes, &ext)?;
+        let pipeline: pumicite_types::ComputePipeline = super::deserialize(&bytes, ext)?;
 
         let layout = match &pipeline.layout {
             pumicite_types::PipelineLayoutRef::Inline(pipeline_layout) => {

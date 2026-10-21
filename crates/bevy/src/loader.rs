@@ -223,22 +223,31 @@ mod img_loader {
                         async |slice| {
                             match image.color() {
                                 ColorType::Rgb8 => {
-                                    for (dst, src) in
-                                        slice.chunks_exact_mut(4).zip(image.as_bytes().chunks(3))
+                                    for (dst, src) in slice
+                                        .as_chunks_mut::<4>()
+                                        .0
+                                        .iter_mut()
+                                        .zip(image.as_bytes().chunks(3))
                                     {
                                         dst[0..3].copy_from_slice(src);
                                     }
                                 }
                                 ColorType::Rgb16 => {
-                                    for (dst, src) in
-                                        slice.chunks_exact_mut(8).zip(image.as_bytes().chunks(6))
+                                    for (dst, src) in slice
+                                        .as_chunks_mut::<8>()
+                                        .0
+                                        .iter_mut()
+                                        .zip(image.as_bytes().chunks(6))
                                     {
                                         dst[0..6].copy_from_slice(src);
                                     }
                                 }
                                 ColorType::Rgb32F => {
-                                    for (dst, src) in
-                                        slice.chunks_exact_mut(16).zip(image.as_bytes().chunks(12))
+                                    for (dst, src) in slice
+                                        .as_chunks_mut::<16>()
+                                        .0
+                                        .iter_mut()
+                                        .zip(image.as_bytes().chunks(12))
                                     {
                                         dst[0..12].copy_from_slice(src);
                                     }
