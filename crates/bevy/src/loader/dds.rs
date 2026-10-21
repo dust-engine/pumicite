@@ -1,8 +1,5 @@
-use std::ffi::CString;
-
-use pumicite::image::ImageExt;
-
 use super::*;
+use std::ffi::CString;
 
 #[derive(thiserror::Error, Debug)]
 pub enum DdsError {

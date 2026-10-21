@@ -95,8 +95,4 @@ impl Component for crate::Surface {
     type Mutability = Immutable;
 }
 
-impl Component for crate::swapchain::Swapchain {
-    const STORAGE_TYPE: StorageType = StorageType::SparseSet;
-
-    type Mutability = Mutable;
-}
+impl_resource!(crate::swapchain::Swapchain);

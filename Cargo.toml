@@ -32,7 +32,7 @@ bevy_reflect = { version = "0.20", optional = true }
 [features]
 bevy = ["bevy_ecs", "bevy_asset", "bevy_reflect"]
 
-[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+[target.'cfg(target_vendor = "apple")'.dependencies]
 raw-window-metal = "1.1"
 
 [patch.crates-io]

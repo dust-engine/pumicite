@@ -86,7 +86,9 @@ mod queue;
 pub mod rtx;
 pub mod shader;
 pub mod staging;
+#[cfg(feature = "bevy_window")]
 mod surface;
+#[cfg(feature = "bevy_window")]
 pub mod swapchain;
 mod system;
 pub use pumicite;
@@ -99,6 +101,7 @@ pub use plugin::{
     PhysicalDeviceSearchStrategy, PumiciteApp, PumicitePlugin,
 };
 pub use queue::Queue;
+#[cfg(feature = "bevy_window")]
 pub use surface::{SurfaceCapabilities, SurfacePlugin};
 pub use system::SubmissionState;
 
@@ -108,13 +111,14 @@ pub mod prelude {
 
     pub use crate::{
         DefaultComputeSet, DefaultRenderSet, DefaultTransferSet, DescriptorHeap, PumiciteApp,
-        SubmissionState, SurfaceCapabilities,
+        SubmissionState,
         shader::{compute::ComputePipeline, graphics::GraphicsPipeline},
         staging::{
             BufferInitializer, DeviceLocalRingBuffer, HostVisibleRingBuffer, UniformRingBuffer,
         },
-        swapchain::{SwapchainConfig, SwapchainImage},
     };
+    #[cfg(feature = "bevy_window")]
+    pub use crate::{SurfaceCapabilities, swapchain::SwapchainConfig, swapchain::SwapchainImage};
 }
 
 /// A plugin group that configures Bevy with Pumicite as the rendering backend.
@@ -131,10 +135,12 @@ pub mod prelude {
 ///
 /// # Included Pumicite Plugins
 ///
-/// - [`SurfacePlugin`] - Creates Vulkan surfaces for windows (instance plugin)
+/// - [`SurfacePlugin`] - Creates Vulkan surfaces for windows (instance plugin; with the
+///   `bevy_window` feature)
 /// - [`DebugUtilsPlugin`] - Enables Vulkan debug messaging
 /// - [`PumicitePlugin`] - Core plugin that creates the Vulkan instance and device
-/// - [`SwapchainPlugin`](swapchain::SwapchainPlugin) - Manages swapchain creation and presentation
+/// - [`SwapchainPlugin`](swapchain::SwapchainPlugin) - Manages the primary window's swapchain
+///   (with the `bevy_window` feature)
 ///
 /// # Example
 ///
@@ -150,11 +156,14 @@ pub struct DefaultPlugins;
 
 impl bevy_app::PluginGroup for DefaultPlugins {
     fn build(self) -> bevy_app::PluginGroupBuilder {
-        bevy_internal::DefaultPlugins
-            .build()
-            .add(crate::SurfacePlugin)
+        let plugins = bevy_internal::DefaultPlugins.build();
+        #[cfg(feature = "bevy_window")]
+        let plugins = plugins.add(crate::SurfacePlugin);
+        let plugins = plugins
             .add(crate::DebugUtilsPlugin)
-            .add(crate::PumicitePlugin::default())
-            .add(crate::swapchain::SwapchainPlugin)
+            .add(crate::PumicitePlugin::default());
+        #[cfg(feature = "bevy_window")]
+        let plugins = plugins.add(crate::swapchain::SwapchainPlugin);
+        plugins
     }
 }

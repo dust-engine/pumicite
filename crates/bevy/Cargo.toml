@@ -7,9 +7,8 @@ edition = "2024"
 tracing = "0.1"
 bevy_ecs = "0.20"
 bevy_app = "0.20"
-bevy_window = "0.20"
+bevy_window = { version = "0.20", optional = true }
 bevy_ptr = "0.20"
-bevy_winit = "0.20"
 bevy_asset = "0.20"
 bevy_tasks = "0.20"
 bevy_reflect = "0.20"
@@ -22,7 +21,6 @@ async-lock = "3"
 glam = "0.33"
 pumicite = { path = "../../", features = ["bevy"] }
 pumicite_types = { path = "../types" }
-raw-window-handle = "0.6"
 ron = { version = "0.12", optional = true }
 postcard = { version = "1", optional = true }
 thiserror = "2"
@@ -40,7 +38,8 @@ png = { version = "0.18", default-features = false, optional = true }
 bevy = { version = "0.20", default-features = false, features=["bevy_winit", "bevy_asset", "multi_threaded"] }
 
 [features]
-default = ["ktx2", "dds", "png", "jpeg", "tiff", "ron", "postcard"]
+default = ["bevy_window", "ktx2", "dds", "png", "jpeg", "tiff", "ron", "postcard"]
+bevy_window = ["dep:bevy_window"]
 dds = ["ddsfile", "byteorder"]
 jpeg = ["image", "image/jpeg"]
 tiff = ["image", "image/tiff"]

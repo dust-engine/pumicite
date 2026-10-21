@@ -26,10 +26,8 @@
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 use bevy_window::{RawHandleWrapper, Window};
-use bevy_winit::DisplayHandleWrapper;
 use pumicite::ash::{amd::display_native_hdr, ext, vk};
 use pumicite::utils::{AsVkHandle, NextChainMap};
-use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 
 use pumicite::ash::ext::swapchain_colorspace::Meta as ExtSwapchainColorspace;
 use pumicite::ash::khr::get_surface_capabilities2::Meta as KhrSurfaceCapabilities2;
@@ -264,43 +262,24 @@ impl Plugin for SurfacePlugin {
         app.add_instance_extension::<KhrSurfaceCapabilities2>().ok();
         app.add_instance_extension::<KhrSurfaceMaintenance1>().ok();
 
-        if let Some(display_handle) = app.world().get_resource::<DisplayHandleWrapper>() {
-            match display_handle.display_handle().unwrap().as_raw() {
-                #[cfg(target_os = "windows")]
-                RawDisplayHandle::Windows(_) => {
-                    app.add_instance_extension::<ash::khr::win32_surface::Meta>()
-                        .unwrap();
-                }
-                #[cfg(target_os = "linux")]
-                RawDisplayHandle::Xlib(_) => {
-                    app.add_instance_extension::<ash::khr::xlib_surface::Meta>()
-                        .unwrap();
-                }
-                #[cfg(target_os = "linux")]
-                RawDisplayHandle::Xcb(_) => {
-                    app.add_instance_extension::<ash::khr::xcb_surface::Meta>()
-                        .unwrap();
-                }
-                #[cfg(target_os = "linux")]
-                RawDisplayHandle::Wayland(_) => {
-                    app.add_instance_extension::<ash::khr::wayland_surface::Meta>()
-                        .unwrap();
-                }
-                #[cfg(target_os = "android")]
-                RawDisplayHandle::Android(_) => {
-                    app.add_instance_extension::<ash::khr::android_surface::Meta>()
-                        .unwrap();
-                }
-                #[cfg(any(target_os = "macos", target_os = "ios"))]
-                RawDisplayHandle::UiKit(_) | RawDisplayHandle::AppKit(_) => {
-                    app.add_instance_extension::<ash::ext::metal_surface::Meta>()
-                        .unwrap();
-                }
-                _ => tracing::warn!("Your display is not supported."),
-            };
-        } else {
-            panic!("pumicite::SurfacePlugin must be inserted after bevy_winit::WinitPlugin.")
-        };
+        #[cfg(target_os = "windows")]
+        app.add_instance_extension::<ash::khr::win32_surface::Meta>()
+            .unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            app.add_instance_extension::<ash::khr::xlib_surface::Meta>()
+                .ok();
+            app.add_instance_extension::<ash::khr::xcb_surface::Meta>()
+                .ok();
+            app.add_instance_extension::<ash::khr::wayland_surface::Meta>()
+                .ok();
+        }
+        #[cfg(target_os = "android")]
+        app.add_instance_extension::<ash::khr::android_surface::Meta>()
+            .unwrap();
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        app.add_instance_extension::<ash::ext::metal_surface::Meta>()
+            .unwrap();
 
         app.add_systems(PostUpdate, extract_surfaces);
     }

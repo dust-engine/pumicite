@@ -14,10 +14,10 @@ use pumicite::{
 };
 use std::ffi::{CStr, CString};
 
-use crate::{
-    DescriptorHeap, SubmissionState, shader::ShaderModule, staging::AsyncTransfer,
-    swapchain::SwapchainSet,
-};
+use crate::{DescriptorHeap, SubmissionState, shader::ShaderModule, staging::AsyncTransfer};
+
+#[cfg(feature = "bevy_window")]
+use crate::swapchain::SwapchainSet;
 
 use super::pass::SubmissionSetsPass;
 use super::queue::QueueConfiguration;
@@ -350,12 +350,13 @@ impl Plugin for PumicitePlugin {
         app.configure_sets(
             PostUpdate,
             (
-                DefaultRenderSet
-                    .in_set(SwapchainSet)
-                    .after(DefaultTransferSet),
+                DefaultRenderSet.after(DefaultTransferSet),
                 DefaultComputeSet.after(DefaultTransferSet),
             ),
         );
+
+        #[cfg(feature = "bevy_window")]
+        app.configure_sets(PostUpdate, DefaultRenderSet.in_set(SwapchainSet));
 
         // Optional extensions
         app.add_device_extension::<khr::deferred_host_operations::Meta>()
