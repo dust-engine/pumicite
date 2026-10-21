@@ -384,7 +384,7 @@ impl crate::Device {
     }
 }
 
-impl crate::Queue {
+impl crate::queue::Queue {
     /// Open a new queue debug label region.
     pub fn begin_label(&mut self, name: &CStr, color: Vec4) {
         unsafe {

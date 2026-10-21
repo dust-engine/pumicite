@@ -82,7 +82,7 @@ mod debug;
 pub mod loader;
 mod pass;
 mod plugin;
-mod queue;
+pub mod queue;
 pub mod rtx;
 pub mod shader;
 pub mod staging;
@@ -100,7 +100,6 @@ pub use plugin::{
     CreateDevice, DefaultComputeSet, DefaultRenderSet, DefaultTransferSet,
     PhysicalDeviceSearchStrategy, PumiciteApp, PumicitePlugin,
 };
-pub use queue::Queue;
 #[cfg(feature = "bevy_window")]
 pub use surface::{SurfaceCapabilities, SurfacePlugin};
 pub use system::SubmissionState;

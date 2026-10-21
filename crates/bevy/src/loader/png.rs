@@ -6,7 +6,7 @@ use pumicite::{
     Allocator, HasDevice,
     ash::{ext::debug_utils::Meta as DebugUtilsExt, vk},
     debug::DebugObject,
-    image::{Image, ImageExt},
+    image::Image,
 };
 
 use super::{ImageLoadingError, TextureAsset, TextureLoadPreferences};

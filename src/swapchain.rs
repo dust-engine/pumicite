@@ -11,7 +11,7 @@ use crate::image::{ImageLike, ImageViewLike};
 use crate::physical_device::PhysicalDevice;
 use crate::tracking::ResourceState;
 use crate::{Device, Surface};
-use crate::{HasDevice, Queue, sync::GPUMutex};
+use crate::{HasDevice, queue::Queue, sync::GPUMutex};
 use crate::{sync::SharedSemaphore, utils::AsVkHandle};
 use ash::khr::swapchain::Meta as KhrSwapchain;
 use ash::{VkResult, vk};

@@ -41,8 +41,8 @@ use crate::{Device, HasDevice, utils::AsVkHandle};
 #[derive(Clone)]
 pub struct Allocator(Arc<AllocatorInner>);
 struct AllocatorInner {
+    inner: vk_mem::Allocator, // Declared before `device` so it drops first
     device: Device,
-    inner: vk_mem::Allocator,
 }
 
 impl HasDevice for Allocator {

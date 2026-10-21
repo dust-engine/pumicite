@@ -24,7 +24,7 @@ use pumicite::{
 };
 use smallvec::SmallVec;
 
-use crate::queue::AsyncComputeQueue;
+use crate::queue::{AsyncComputeQueue, Queue};
 /// Component holding a built bottom-level acceleration structure for an entity.
 ///
 /// Inserted by the [`BLASBuilder`] pipeline once the GPU build command buffer
@@ -267,7 +267,7 @@ fn build_blas_system<T: BLASBuilder>(
     cmd_pool: ResMut<ASBuildCommandPool>,
     entities: Query<(Entity, T::QueryData), (T::QueryFilter, Without<BLASBuildPending>)>,
     params: StaticSystemParam<T::Params>,
-    mut queue: crate::Queue<AsyncComputeQueue>,
+    mut queue: Queue<AsyncComputeQueue>,
 ) {
     if entities.is_empty() {
         return;
@@ -625,7 +625,7 @@ fn compact_blas_system(
     allocator: Res<Allocator>,
     device: Res<Device>,
     needs_compaction: Query<(Entity, &BLAS, &BLASNeedsCompaction), Without<BLASBuildPending>>,
-    mut queue: crate::Queue<AsyncComputeQueue>,
+    mut queue: Queue<AsyncComputeQueue>,
     mut pending: Local<VecDeque<PendingCompaction>>,
 ) {
     let cmd_pool = cmd_pool.into_inner();

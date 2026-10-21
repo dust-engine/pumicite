@@ -427,21 +427,21 @@ macro_rules! project_host_metadata {
         {
             $(
                 fn $name(&self) -> $ret {
-                    unsafe { self.unwrap().$name() }
+                    unsafe { self.get_unchecked().$name() }
                 }
             )*
         }
         impl<$($generics)*> $trait_name for $crate::command::GPURef<'_, $ty> {
             $(
                 fn $name(&self) -> $ret {
-                    unsafe { self.unwrap().$name() }
+                    unsafe { self.get_unchecked().$name() }
                 }
             )*
         }
         impl<$($generics)*> $trait_name for $crate::command::GPURefMut<'_, $ty> {
             $(
                 fn $name(&self) -> $ret {
-                    unsafe { self.unwrap().$name() }
+                    unsafe { self.get_unchecked().$name() }
                 }
             )*
         }
