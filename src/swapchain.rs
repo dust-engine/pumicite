@@ -101,6 +101,15 @@ impl SwapchainInner {
             ..Default::default()
         }
         .push(&mut possible_formats);
+        let mut present_scaling = vk::SwapchainPresentScalingCreateInfoKHR {
+            scaling_behavior: info.present_scaling,
+            present_gravity_x: info.present_gravity[0],
+            present_gravity_y: info.present_gravity[1],
+            ..Default::default()
+        };
+        if !info.present_scaling.is_empty() {
+            create_info = create_info.push(&mut present_scaling);
+        }
         if !info
             .image_usage
             .intersects(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::STORAGE)
@@ -256,6 +265,12 @@ pub struct SwapchainCreateInfo {
     pub composite_alpha: vk::CompositeAlphaFlagsKHR,
     pub present_mode: vk::PresentModeKHR,
     pub clipped: bool,
+    /// How the presentation engine shows an image whose extent doesn't match the surface.
+    /// Requires the `swapchainMaintenance1` feature.
+    pub present_scaling: vk::PresentScalingFlagsKHR,
+    /// When `present_scaling` is enabled, this specifies
+    /// where a scaled image is placed on the surface, along x and y.
+    pub present_gravity: [vk::PresentGravityFlagsKHR; 2],
     /// Queue family index for the command pool used for pre-present layout transitions.
     /// This should match the queue family of the queue used for presentation.
     pub queue_family_index: u32,

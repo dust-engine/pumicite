@@ -465,6 +465,8 @@ fn get_create_info(
             bevy_window::PresentMode::FifoRelaxed => vk::PresentModeKHR::FIFO_RELAXED,
         },
         clipped: config.clipped,
+        present_scaling: vk::PresentScalingFlagsKHR::empty(),
+        present_gravity: [vk::PresentGravityFlagsKHR::empty(); 2],
         queue_family_index: config.queue_family_index,
     }
 }
