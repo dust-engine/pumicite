@@ -5,7 +5,7 @@
 //!
 //! # Key Types
 //!
-//! - [`Semaphore`]: A wrapper around Vulkan timeline or binary semaphores with cached
+//! - [`Semaphore`]: A wrapper around Vulkan timeline semaphores with cached
 //!   counter values for efficient polling.
 //! - [`SharedSemaphore`]: Reference-counted semaphore for shared ownership.
 //! - [`GPUMutex<T>`]: A mutex that tracks GPU access to a resource, enabling safe
@@ -28,12 +28,12 @@ use std::{
 
 use ash::{
     VkResult,
-    vk::{self, Handle, TaggedStructure},
+    vk::{self, TaggedStructure},
 };
 
 use crate::{
     Device, HasDevice,
-    fault::{DeviceError, DeviceResult, ResultWithDevice},
+    fault::{DeviceResult, ResultWithDevice},
     utils::AsVkHandle,
 };
 
@@ -81,6 +81,17 @@ impl<T: Send> GPUMutex<T> {
         GPUMutex {
             ptr: AtomicU128::new(0),
             inner: ManuallyDrop::new(Box::new(item)),
+        }
+    }
+
+    /// Creates a new unlocked GPU mutex from an already boxed item.
+    pub fn from_boxed(item: Box<T>) -> Self
+    where
+        T: Sized,
+    {
+        GPUMutex {
+            ptr: AtomicU128::new(0),
+            inner: ManuallyDrop::new(item),
         }
     }
 
@@ -362,50 +373,27 @@ fn drop_box<T>(ptr_to_drop: *mut ()) {
 
 //region TimelineSemaphore
 
-/// A Vulkan semaphore wrapper representing either a timeline semaphore or a binary semaphore.
+/// A Vulkan timeline semaphore wrapper.
 ///
 /// # Cached Counter Value
 ///
-/// For timeline semaphores, the counter value is cached in an [`AtomicU64`] to reduce
-/// API calls when polling. The cache is updated on every [`value()`](Self::value) call.
-///
-/// # Binary vs Timeline
-///
-/// Timeline semaphores are used on most scenarios. They have an associated counter that can be
-/// signaled to specific values and waited on.
-///
-/// Binary semaphores are useful for syncronization with swapchain acquire-present and was used
-/// exclusively in that context. We always pair a binary semaphore with a [`vk::Fence`] to enable
-/// CPU-side waiting.
-///
-/// Use [`is_binary()`](Self::is_binary) to check the semaphore type.
+/// The counter value is cached in an [`AtomicU64`] to reduce API calls when polling.
+/// The cache is updated on every [`value()`](Self::value) call.
 pub struct Semaphore {
     device: Device,
     handle: vk::Semaphore,
     value: AtomicU64,
-
-    /// Binary semaphore will always have a non-null Fence.
-    fence: vk::Fence,
 }
 impl Debug for Semaphore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple(if self.is_binary() {
-            "BinarySemaphore"
-        } else {
-            "TimelineSemaphore"
-        })
-        .field(&self.handle)
-        .field(&self.value())
-        .finish()
+        f.debug_tuple("Semaphore")
+            .field(&self.handle)
+            .field(&self.value())
+            .finish()
     }
 }
 
 impl Semaphore {
-    /// Returns `true` if this is a binary semaphore.
-    pub fn is_binary(&self) -> bool {
-        !self.fence.is_null()
-    }
-
     /// Creates a new timeline semaphore with the given initial value.
     pub fn new(device: Device, initial_value: u64) -> VkResult<Self> {
         let semaphore = unsafe {
@@ -420,48 +408,13 @@ impl Semaphore {
             device,
             handle: semaphore,
             value: AtomicU64::new(initial_value),
-            fence: vk::Fence::null(),
         })
     }
 
-    /// Creates a new binary semaphore with an associated fence.
-    ///
-    /// Binary semaphores use a fence for CPU-side waiting since binary semaphores
-    /// cannot be waited on directly from the CPU in Vulkan.
-    pub fn new_binary(device: Device, signaled: bool) -> VkResult<Self> {
-        let semaphore = unsafe {
-            let info = vk::SemaphoreCreateInfo::default();
-            device.create_semaphore(&info, None)
-        }?;
-        let fence = unsafe {
-            let info = vk::FenceCreateInfo {
-                flags: if signaled {
-                    vk::FenceCreateFlags::SIGNALED
-                } else {
-                    vk::FenceCreateFlags::empty()
-                },
-                ..Default::default()
-            };
-            device.create_fence(&info, None)?
-        };
-        Ok(Self {
-            device,
-            handle: semaphore,
-            value: AtomicU64::new(0),
-            fence,
-        })
-    }
-
-    /// Returns the raw fence handle (binary semaphores only).
-    pub fn raw_fence(&self) -> vk::Fence {
-        self.fence
-    }
-
-    /// Returns the current counter value (timeline semaphores only).
+    /// Returns the current counter value.
     ///
     /// Queries the device and updates the cached value.
     pub fn value(&self) -> u64 {
-        assert!(!self.is_binary());
         let new_value = unsafe {
             self.device
                 .get_semaphore_counter_value(self.handle)
@@ -476,25 +429,17 @@ impl Semaphore {
     }
 
     /// Returns `true` if the semaphore has reached the specified value.
-    ///
-    /// For binary semaphores, checks the fence status.
-    /// For timeline semaphores, compares against the cached counter.
     pub fn is_signaled(&self, val: u64) -> bool {
-        if self.is_binary() {
-            unsafe { self.device.get_fence_status(self.fence).unwrap() }
-        } else {
-            if val == 0 {
-                return true;
-            }
-            self.value() >= val
+        if val == 0 {
+            return true;
         }
+        self.value() >= val
     }
 
-    /// Signals the semaphore to the specified value from the CPU (timeline only).
+    /// Signals the semaphore to the specified value from the CPU.
     ///
     /// No-op if the semaphore is already at or past the given value.
     pub fn signal(&self, val: u64) {
-        assert!(!self.is_binary());
         let old_value = self.value.load(std::sync::atomic::Ordering::Relaxed);
         if old_value >= val {
             return;
@@ -521,8 +466,6 @@ impl Semaphore {
 }
 
 /// A point on a semaphore's timeline: the moment the semaphore reaches `value`.
-///
-/// For binary semaphores the value is ignored, and waiting waits for the semaphore's fence.
 #[derive(Clone)]
 pub struct Timestamp {
     semaphore: SharedSemaphore,
@@ -538,44 +481,31 @@ impl Timestamp {
     pub fn value(&self) -> u64 {
         self.value
     }
-    /// Blocks until the semaphore reaches this timestamp.
-    ///
-    /// For binary semaphores, waits on the fence and resets it.
-    /// For timeline semaphores, returns early if already signaled.
+    /// Blocks until the semaphore reaches this timestamp. Returns early if already signaled.
     pub fn wait_blocked(&self, timeout: u64) -> DeviceResult<()> {
         let semaphore = &self.semaphore.0;
-        if semaphore.is_binary() {
-            unsafe {
-                semaphore
-                    .device
-                    .wait_for_fences(&[semaphore.fence], false, timeout)
-                    .with_device(&semaphore.device)?;
-                semaphore.device.reset_fences(&[semaphore.fence])?;
-            }
-            Ok(())
-        } else {
-            if semaphore.value.load(std::sync::atomic::Ordering::Relaxed) >= self.value {
-                return Ok(());
-            }
-            unsafe {
-                semaphore
-                    .device
-                    .wait_semaphores(
-                        &vk::SemaphoreWaitInfo {
-                            semaphore_count: 1,
-                            p_semaphores: &semaphore.handle,
-                            p_values: &self.value,
-                            ..Default::default()
-                        },
-                        timeout,
-                    )
-                    .with_device(&semaphore.device)?;
-            }
-            semaphore
-                .value
-                .fetch_max(self.value, std::sync::atomic::Ordering::Relaxed);
-            Ok(())
+
+        if semaphore.value.load(std::sync::atomic::Ordering::Relaxed) >= self.value {
+            return Ok(());
         }
+        unsafe {
+            semaphore
+                .device
+                .wait_semaphores(
+                    &vk::SemaphoreWaitInfo {
+                        semaphore_count: 1,
+                        p_semaphores: &semaphore.handle,
+                        p_values: &self.value,
+                        ..Default::default()
+                    },
+                    timeout,
+                )
+                .with_device(&semaphore.device)?;
+        }
+        semaphore
+            .value
+            .fetch_max(self.value, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
 
     /// Drops `resource` once the semaphore reaches this timestamp, without blocking.
@@ -602,43 +532,28 @@ impl Timestamp {
     /// Async version of [`wait_blocked`](Self::wait_blocked).
     pub async fn wait_async(&self) -> DeviceResult<()> {
         let semaphore = &self.semaphore.0;
-        if semaphore.is_binary() {
-            let fence = semaphore.fence;
-            let device = semaphore.device.clone();
-            blocking::unblock(move || unsafe {
-                device
-                    .wait_for_fences(&[fence], false, !0)
-                    .with_device(&device)?;
-                device.reset_fences(&[fence])?;
-                Ok::<(), DeviceError>(())
-            })
-            .await?;
-            Ok(())
-        } else {
-            if semaphore.is_signaled(self.value) {
-                return Ok(());
-            }
 
-            let event = event_listener::Event::new();
-            let listener = event.listen();
-
-            unsafe fn drop_event(event: *mut ()) {
-                let event: event_listener::Event = unsafe { std::mem::transmute(event) };
-                event.notify_relaxed(1);
-            }
-            semaphore
-                .device
-                .schedule_resource_for_deferred_drop(RetiredGPUMutex {
-                    semaphore: self.semaphore.clone(),
-                    value: self.value,
-                    resource: unsafe {
-                        std::mem::transmute::<event_listener::Event, *mut ()>(event)
-                    },
-                    drop: drop_event,
-                });
-            listener.await;
-            Ok(())
+        if semaphore.is_signaled(self.value) {
+            return Ok(());
         }
+
+        let event = event_listener::Event::new();
+        let listener = event.listen();
+
+        unsafe fn drop_event(event: *mut ()) {
+            let event: event_listener::Event = unsafe { std::mem::transmute(event) };
+            event.notify_relaxed(1);
+        }
+        semaphore
+            .device
+            .schedule_resource_for_deferred_drop(RetiredGPUMutex {
+                semaphore: self.semaphore.clone(),
+                value: self.value,
+                resource: unsafe { std::mem::transmute::<event_listener::Event, *mut ()>(event) },
+                drop: drop_event,
+            });
+        listener.await;
+        Ok(())
     }
 }
 
@@ -658,9 +573,6 @@ impl Drop for Semaphore {
     fn drop(&mut self) {
         unsafe {
             self.device.destroy_semaphore(self.handle, None);
-            if !self.fence.is_null() {
-                self.device.destroy_fence(self.fence, None);
-            }
         }
     }
 }
@@ -712,11 +624,6 @@ impl SharedSemaphore {
         Ok(SharedSemaphore(Arc::new(Semaphore::new(
             device,
             initial_value,
-        )?)))
-    }
-    pub fn new_binary(device: Device, signaled: bool) -> VkResult<Self> {
-        Ok(SharedSemaphore(Arc::new(Semaphore::new_binary(
-            device, signaled,
         )?)))
     }
     pub fn as_ptr(&self) -> *const Semaphore {
@@ -878,15 +785,12 @@ pub(crate) fn spawn_recycler_thread(receiver: crossbeam_channel::Receiver<Retire
             let mut container_pool: Vec<Vec<RetiredGPUMutex>> = Vec::new();
             let mut container_pool2: Vec<BTreeMap<u64, Vec<RetiredGPUMutex>>> = Vec::new();
 
-            let mut binary_items: Vec<RetiredGPUMutex> = Vec::new();
-
             let mut semaphores: Vec<vk::Semaphore> = Vec::new();
             let mut semaphore_values: Vec<u64> = Vec::new();
-            let mut fences: Vec<vk::Fence> = Vec::new();
 
             'outer: loop {
                 'inner: loop {
-                    let item = if queues.is_empty() && binary_items.is_empty() {
+                    let item = if queues.is_empty() {
                         match receiver.recv() {
                             Ok(a) => a,
                             Err(_) => break 'outer, // disconnected
@@ -905,10 +809,6 @@ pub(crate) fn spawn_recycler_thread(receiver: crossbeam_channel::Receiver<Retire
                         drop(item);
                         continue;
                     }
-                    if item.semaphore.is_binary() {
-                        binary_items.push(item);
-                        continue;
-                    }
                     let queue = queues
                         .entry(item.semaphore.clone())
                         .or_insert_with(|| container_pool2.pop().unwrap_or_default());
@@ -923,11 +823,8 @@ pub(crate) fn spawn_recycler_thread(receiver: crossbeam_channel::Receiver<Retire
                     semaphores.push(timeline_semaphore.vk_handle());
                     semaphore_values.push(*timestamps.first_entry().unwrap().key());
                 }
-                for item in binary_items.iter() {
-                    fences.push(item.semaphore.raw_fence());
-                }
                 // There shouldn't be any empty waits. If the wait list is empty we would've blocked at receiver.recv
-                debug_assert!(!semaphores.is_empty() || !fences.is_empty());
+                debug_assert!(!semaphores.is_empty());
 
                 if !semaphores.is_empty() {
                     let device = queues.keys().next().unwrap().device();
@@ -946,24 +843,8 @@ pub(crate) fn spawn_recycler_thread(receiver: crossbeam_channel::Receiver<Retire
                             .unwrap();
                     }
                 }
-                if !fences.is_empty() {
-                    // Deliberately never reset the fences here: `Semaphore::wait_blocked` is
-                    // the only consumer of a binary semaphore's fence, and resetting it from
-                    // this thread would make that wait hang.
-                    let device = binary_items[0].semaphore.device();
-                    unsafe {
-                        device
-                            .wait_for_fences(&fences, false, !0)
-                            .with_device(device)
-                            .unwrap();
-                    }
-                }
                 semaphores.clear();
                 semaphore_values.clear();
-                fences.clear();
-
-                // Destroy binary-locked resources whose fence was signaled
-                binary_items.retain(|item| !item.semaphore.is_signaled(item.value));
 
                 // Destroy resources for which the semaphore was signaled
                 for (timeline_semamphore, timestamps) in queues.iter_mut() {

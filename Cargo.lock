@@ -3879,7 +3879,6 @@ dependencies = [
  "bevy_pumicite",
  "bevy_reflect",
  "bitvec",
- "blocking",
  "bytemuck",
  "crossbeam-channel",
  "event-listener",
@@ -5848,13 +5847,3 @@ checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]
-
-[[patch.unused]]
-name = "bevy_core_pipeline"
-version = "0.20.0"
-source = "git+https://github.com/dust-engine/bevy?branch=release-0.20.0#12cf1e2dfd3839984a77a26f2487d143bc47b4c4"
-
-[[patch.unused]]
-name = "bevy_pbr"
-version = "0.20.0"
-source = "git+https://github.com/dust-engine/bevy?branch=release-0.20.0#12cf1e2dfd3839984a77a26f2487d143bc47b4c4"

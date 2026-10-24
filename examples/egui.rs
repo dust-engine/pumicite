@@ -18,7 +18,7 @@ fn main() {
 
     app.configure_sets(
         PostUpdate,
-        pumicite_egui::EguiRenderSet.in_set(DefaultRenderSet),
+        pumicite_egui::EguiRenderSet.in_set(SwapchainSet),
     );
 
     app.run();
@@ -48,13 +48,7 @@ fn ui_example_system(mut contexts: EguiContexts, mut state: Local<UIState>) {
 /// For egui, you are always responsible for setting up the render pass. This
 /// is so that egui can piggy-back on an already existing render pass and doesn't
 /// have to start a new one - important for mobile performance.
-fn start_main_render_pass(
-    mut ctx: SubmissionState,
-    mut swapchain_image: Query<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
-) {
-    let Ok(mut swapchain_image) = swapchain_image.single_mut() else {
-        return;
-    };
+fn start_main_render_pass(mut ctx: SubmissionState, mut swapchain_image: ResMut<SwapchainImage>) {
     ctx.record(|encoder| {
         let Some(current_swapchain_image) = swapchain_image.current_image() else {
             return;

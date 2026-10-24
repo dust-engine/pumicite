@@ -17,19 +17,11 @@ fn main() {
             ..Default::default()
         });
 
-    app.add_systems(PostUpdate, clear.in_set(DefaultRenderSet));
+    app.add_systems(PostUpdate, clear.in_set(SwapchainSet));
     app.run();
 }
 
-fn clear(
-    mut swapchain_image: Query<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
-    mut state: SubmissionState,
-    time: Res<Time>,
-) {
-    let Ok(mut swapchain_image) = swapchain_image.single_mut() else {
-        return;
-    };
-
+fn clear(mut swapchain_image: ResMut<SwapchainImage>, mut state: SubmissionState, time: Res<Time>) {
     // Cycle through hues over time (full cycle every 5 seconds)
     let hue = (time.elapsed_secs() * 72.0) % 360.0;
     let color = bevy::color::Hsla::new(hue, 0.8, 0.5, 1.0);

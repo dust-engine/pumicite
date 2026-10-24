@@ -10,7 +10,7 @@ fn main() {
         .unwrap();
     app.enable_feature::<vk::PhysicalDeviceDynamicRenderingFeatures>(|x| &mut x.dynamic_rendering)
         .unwrap();
-    app.add_systems(PostUpdate, triangle_rendering.in_set(DefaultRenderSet));
+    app.add_systems(PostUpdate, triangle_rendering.in_set(SwapchainSet));
 
     app.add_systems(Startup, setup.after(bevy_pumicite::CreateDevice));
     app.run();
@@ -28,15 +28,12 @@ fn setup(mut commands: Commands, asset_server: ResMut<AssetServer>) {
 }
 
 fn triangle_rendering(
-    mut swapchain_image: Query<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
+    mut swapchain_image: ResMut<SwapchainImage>,
     mut state: SubmissionState,
     pipeline: Res<TrianglePipeline>,
     graphics_pipelines: Res<Assets<GraphicsPipeline>>,
     mut ring_buffer: ResMut<DeviceLocalRingBuffer>,
 ) {
-    let Ok(mut swapchain_image) = swapchain_image.single_mut() else {
-        return;
-    };
     let pipeline = graphics_pipelines.get(&pipeline.draw);
 
     #[repr(C)]

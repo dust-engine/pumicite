@@ -183,7 +183,7 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                     RenderSetSharedState::new(
                         device,
                         queue_family_index,
-                        format!("{interned_set:?}"),
+                        interned_set,
                         config.debug_color,
                     )
                     .unwrap(),

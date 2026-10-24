@@ -26,17 +26,11 @@ use bevy_pumicite::prelude::*;
 fn main() {
     let mut app = App::new();
     app.add_plugins(bevy_pumicite::DefaultPlugins);
-    app.add_systems(PostUpdate, clear.in_set(DefaultRenderSet));
+    app.add_systems(PostUpdate, clear.in_set(SwapchainSet));
     app.run();
 }
 
-fn clear(
-    mut swapchain_image: Query<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
-    mut state: SubmissionState,
-    time: Res<Time>,
-) {
-    let Ok(mut swapchain_image) = swapchain_image.single_mut() else { return };
-
+fn clear(mut swapchain_image: ResMut<SwapchainImage>, mut state: SubmissionState, time: Res<Time>) {
     state.record(|encoder| {
         let Some(current) = swapchain_image.current_image() else { return };
         let current = encoder.lock(current, vk::PipelineStageFlags2::CLEAR);

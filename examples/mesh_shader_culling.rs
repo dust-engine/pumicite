@@ -38,7 +38,7 @@ fn main() {
     );
 
     app.add_render_set(MainRenderPass, start_main_render_pass);
-    app.configure_sets(PostUpdate, MainRenderPass.in_set(DefaultRenderSet));
+    app.configure_sets(PostUpdate, MainRenderPass.in_set(SwapchainSet));
     app.configure_sets(PostUpdate, EguiRenderSet.in_set(MainRenderPass));
 
     app.run();
@@ -66,13 +66,7 @@ struct PushConstants {
     cull_radius: f32,
 }
 
-fn start_main_render_pass(
-    mut ctx: SubmissionState,
-    mut swapchain_image: Query<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
-) {
-    let Ok(mut swapchain_image) = swapchain_image.single_mut() else {
-        return;
-    };
+fn start_main_render_pass(mut ctx: SubmissionState, mut swapchain_image: ResMut<SwapchainImage>) {
     ctx.record(|encoder| {
         let Some(current_swapchain_image) = swapchain_image.current_image() else {
             return;

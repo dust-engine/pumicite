@@ -22,7 +22,6 @@ serde = { version = "1", features = ["derive"] }
 crossbeam-channel = "0.5"
 portable-atomic = "1.5"
 event-listener = "5"
-blocking = "1.6"
 pin-project-lite = "0.2"
 
 bevy_ecs = { version = "0.20", optional = true }
@@ -57,11 +56,6 @@ bevy_internal = { git = "https://github.com/dust-engine/bevy", branch = "release
 bevy_asset = { git = "https://github.com/dust-engine/bevy", branch = "release-0.20.0" }
 bevy_scene = { git = "https://github.com/dust-engine/bevy", branch = "release-0.20.0" }
 bevy_world_serialization = { git = "https://github.com/dust-engine/bevy", branch = "release-0.20.0" }
-
-
-bevy_pbr = { git = "https://github.com/dust-engine/bevy", branch = "release-0.20.0" }
-bevy_render = { git = "https://github.com/dust-engine/bevy", branch = "release-0.20.0" }
-bevy_core_pipeline = { git = "https://github.com/dust-engine/bevy", branch = "release-0.20.0" }
 
 
 bevy = { git = "https://github.com/dust-engine/bevy", branch = "release-0.20.0" }

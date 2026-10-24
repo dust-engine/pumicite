@@ -23,7 +23,7 @@ fn main() {
             ..Default::default()
         });
 
-    app.add_systems(PostUpdate, clear.in_set(DefaultRenderSet));
+    app.add_systems(PostUpdate, clear.in_set(SwapchainSet));
     app.add_systems(Startup, setup.after(bevy_pumicite::CreateDevice));
     app.init_asset::<MyBindlessImageAsset>();
     app.enable_bindless().expect("Bindless not supported!");
@@ -97,7 +97,7 @@ struct ExamplePushConstant {
 }
 
 fn clear(
-    mut swapchain_image: Query<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
+    mut swapchain_image: ResMut<SwapchainImage>,
     mut state: SubmissionState,
     example_resource: Res<ExampleResource>,
     pipelines: Res<Assets<ComputePipeline>>,
@@ -105,9 +105,6 @@ fn clear(
     time: Res<bevy::time::Time>,
     heap: Res<DescriptorHeap>,
 ) {
-    let Ok(mut swapchain_image) = swapchain_image.single_mut() else {
-        return;
-    };
     let Some(pipeline) = pipelines.get(&example_resource.pipeline) else {
         return;
     };
@@ -118,7 +115,6 @@ fn clear(
         let Some(current_swapchain_image) = swapchain_image.current_image() else {
             return;
         };
-
         let target_image = encoder.retain(example.image.clone()).deref_inner();
 
         encoder.use_image_resource(

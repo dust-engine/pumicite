@@ -6,24 +6,27 @@ handles swapchain creation, image acquisition, and presentation for Bevy windows
 
 # Swapchain Image Lifecycle
 
-1. **Creation**: When a window with a surface is created, a swapchain is automatically
-   created with default or custom [`SwapchainConfig`].
+1. **Creation**: When the primary window gets a surface, the [`Swapchain`] resource is
+   automatically created with default or custom [`SwapchainConfig`]. There's one swapchain
+   per world.
 
 2. **Acquisition**: Before rendering each frame, an image is acquired from the swapchain
    via [`acquire_swapchain_image`].
 
-3. **Rendering**: Systems in [`SwapchainSet`] can access the current image via
-   [`SwapchainImage`] and render to it.
+3. **Rendering**: Systems in [`SwapchainSet`] get the current image from the
+   [`SwapchainImage`] resource with [`SwapchainImage::current_image`], and render to it.
 
-4. **Presentation**: After rendering, the image is presented to the display via
-   [`present`].
+4. **Presentation**: After [`SwapchainSet`], the image is transitioned into
+   [`vk::ImageLayout::PRESENT_SRC_KHR`]. The submission that [`SwapchainSet`] is part of
+   waits for the image to be acquired, and signals the semaphore that presentation waits
+   on. Then the image is presented via [`present`].
 
 5. **Recreation**: The swapchain is automatically recreated when the window is resized
    or becomes suboptimal.
 
 # Configuration
 
-Add a [`SwapchainConfig`] component to a window entity to customize swapchain behavior:
+Add a [`SwapchainConfig`] component to the primary window entity to customize swapchain behavior:
 
 ```no_run
 use bevy::prelude::*;
@@ -50,8 +53,9 @@ fn main() {
 ```
 
 # System Ordering
-Every system that needs to access the swapchain image stored in the [`SwapchainImage`] component needs to be ordered
-to run in set [`SwapchainSet`]. This ensures your system runs after image acquisition and before presentation.
+Every system that needs to access the swapchain image stored in the [`SwapchainImage`] resource needs to be ordered
+to run in set [`SwapchainSet`]. This ensures your system runs after image acquisition and before presentation, and
+that its commands are part of the one submission that waits for the image to be acquired.
 ```no_run
 # use bevy::prelude::*;
 # fn my_render_system(){}
@@ -60,61 +64,70 @@ App::new().add_systems(PostUpdate, my_render_system.in_set(SwapchainSet));
 ```
 */
 
-use std::collections::BTreeSet;
-
 use bevy_app::{App, Plugin, Startup};
-use bevy_ecs::{prelude::*, query::QueryFilter};
-use bevy_window::{PrimaryWindow, Window};
-use glam::{UVec2, Vec4};
+use bevy_ecs::prelude::*;
+use glam::Vec4;
 use pumicite::ash::vk;
 use pumicite::device::DeviceBuilder;
 use pumicite::{
     ash::khr::surface_maintenance1::Meta as KhrSurfaceMaintenance1,
     ash::khr::swapchain_maintenance1::Meta as KhrSwapchainMaintenance1,
-    ash::khr::swapchain_mutable_format::Meta as ExtSwapchainMutableFormat, tracking::ResourceState,
+    ash::khr::swapchain_mutable_format::Meta as ExtSwapchainMutableFormat,
+    tracking::{Access, ResourceState},
 };
-use pumicite::{ash::khr::swapchain::Meta as KhrSwapchain, swapchain::SwapchainColorMode};
+use pumicite::ash::khr::swapchain::Meta as KhrSwapchain;
+#[cfg(feature = "bevy_window")]
+use pumicite::swapchain::SwapchainColorMode;
 
-use crate::CreateDevice;
+use crate::plugin::SubmissionSetConfig;
 use crate::queue::RenderQueue;
+use crate::{CreateDevice, DefaultRenderSet, PumiciteApp, SubmissionState};
 
 use super::queue::Queue;
-use pumicite::{
-    Device, HasDevice, Surface,
-    physical_device::PhysicalDevice,
-    swapchain::{Swapchain, SwapchainCreateInfo},
-    sync::GPUMutex,
-};
+use pumicite::{swapchain::Swapchain, sync::GPUMutex};
 
 /// System set for rendering to the swapchain image.
 ///
 /// Systems in this set run between swapchain image acquisition and presentation,
-/// giving them access to the current [`SwapchainImage`].
+/// giving them access to the current [`SwapchainImage`]. The set is part of a submission set
+/// on the [`RenderQueue`], so they all record into one command buffer, and there's exactly one
+/// `vkQueueSubmit` between `vkAcquireNextImageKHR` and `vkQueuePresentKHR`. That submission
+/// waits for the image to be acquired, and signals the semaphore that presentation waits on.
 ///
 /// # Ordering
 ///
-/// - Runs **after** `acquire_swapchain_image` (image is ready after a call to `vkAcquireNextImageKHR`)
-/// - Runs **before** `present` (image will be presented with a call to `vkQueuePresentKHR`)
+/// - Runs **after** [`acquire_swapchain_image`] (image is ready after a call to `vkAcquireNextImageKHR`)
+/// - Runs **after** [`DefaultRenderSet`], which can render offscreen images for this set to use
+/// - Runs **before** the image is transitioned into [`vk::ImageLayout::PRESENT_SRC_KHR`], and
+///   before [`present`] (image will be presented with a call to `vkQueuePresentKHR`)
 ///
-/// Every system that needs to access the swapchain image stored in the [`SwapchainImage`] component needs to be ordered
-/// to run in set [`SwapchainSet`]. This ensures your system runs after image acquisition and before presentation.
-/// ```ignore
+/// Every system that needs to access the swapchain image stored in the [`SwapchainImage`] resource needs to be ordered
+/// to run in set [`SwapchainSet`]. Elsewhere, [`SwapchainImage::current_image`] returns `None` before the image
+/// is acquired (e.g. in [`DefaultRenderSet`]), or an image that the submission doesn't wait for.
+/// ```no_run
 ///# use bevy::prelude::*;
 ///# fn my_render_system(){}
-///  use bevy_pumicite::DefaultRenderSet;
-///  App::new().add_systems(PostUpdate, my_render_system.in_set(DefaultRenderSet));
+///  use bevy_pumicite::swapchain::SwapchainSet;
+///  App::new().add_systems(PostUpdate, my_render_system.in_set(SwapchainSet));
 /// ```
 ///
-/// The set is skipped on frames where the primary window has a swapchain but no image was
-/// acquired (e.g. the window is minimized or the swapchain is out of date).
+/// The set is skipped on frames where there's a swapchain but no image was acquired
+/// (e.g. the window is minimized or the swapchain is out of date).
 /// See [`swapchain_image_acquired`].
-#[derive(SystemSet, Hash, PartialEq, Eq, Debug, Clone)]
+#[derive(SystemSet, Hash, PartialEq, Eq, Debug, Clone, Copy)]
 pub struct SwapchainSet;
 
-/// Run condition for [`SwapchainSet`]. Returns false only when the primary window has a
-/// [`SwapchainImage`] but no image was acquired this frame, so headless apps still run the set.
-pub fn swapchain_image_acquired(query: Query<&SwapchainImage, With<PrimaryWindow>>) -> bool {
-    query.single().map_or(true, |image| image.inner.is_some())
+/// The submission set that [`acquire_swapchain_image`] and [`SwapchainSet`] are in.
+#[derive(SystemSet, Hash, PartialEq, Eq, Debug, Clone, Copy)]
+struct SwapchainSubmissionSet;
+
+/// Run condition for [`SwapchainSet`]. Returns false only when there's a [`Swapchain`] but no
+/// image was acquired this frame, so headless apps still run the set.
+pub fn swapchain_image_acquired(
+    swapchain: Option<Res<Swapchain>>,
+    swapchain_image: Res<SwapchainImage>,
+) -> bool {
+    swapchain.is_none() || swapchain_image.inner.is_some()
 }
 
 /// Plugin that manages swapchain creation and presentation.
@@ -160,30 +173,41 @@ impl Plugin for SwapchainPlugin {
         app.add_systems(
             bevy_app::PostUpdate,
             (
+                #[cfg(feature = "bevy_window")]
                 extract_swapchains.after(super::surface::extract_surfaces),
-                // Always present on the Graphics queue.
-                // TODO: this isn't exactly the best. Ideally we check surface-pdevice-queuefamily compatibility
-                // using vkGetPhysicalDeviceSurfaceSupportKHR select the best one.
-                acquire_swapchain_image::<With<PrimaryWindow>>,
-                present::<With<PrimaryWindow>>,
+                acquire_swapchain_image.in_set(SwapchainSubmissionSet),
+                prepare_present
+                    .in_set(SwapchainSubmissionSet)
+                    .after(SwapchainSet),
+                present.after(SwapchainSubmissionSet),
             )
                 .chain(),
         );
+        app.add_submission_set::<RenderQueue>(
+            SwapchainSubmissionSet,
+            SubmissionSetConfig {
+                debug_color: Vec4::new(1.0, 0.0, 1.0, 1.0),
+            },
+        );
         app.configure_sets(
             bevy_app::PostUpdate,
-            SwapchainSet
-                .before(present::<With<PrimaryWindow>>)
-                .after(acquire_swapchain_image::<With<PrimaryWindow>>)
-                .run_if(swapchain_image_acquired),
+            (
+                SwapchainSet
+                    .in_set(SwapchainSubmissionSet)
+                    .after(acquire_swapchain_image)
+                    .run_if(swapchain_image_acquired),
+                DefaultRenderSet.before(SwapchainSubmissionSet),
+            ),
         );
 
+        app.init_resource::<SwapchainImage>();
         app.add_message::<SuboptimalMessage>();
     }
 }
 
 /// Configuration for swapchain creation.
 ///
-/// Add this component to a window entity to customize swapchain behavior.
+/// Add this component to the primary window entity to customize swapchain behavior.
 /// If not present, defaults are used.
 ///
 ///
@@ -208,6 +232,7 @@ impl Plugin for SwapchainPlugin {
 ///     app.run();
 /// }
 /// ```
+#[cfg(feature = "bevy_window")]
 #[derive(Component)]
 pub struct SwapchainConfig {
     /// Additional swapchain creation flags.
@@ -253,13 +278,8 @@ pub struct SwapchainConfig {
     ///
     /// Default: `SDR { prefer_10bit: false }`
     pub color_mode: SwapchainColorMode,
-
-    /// Queue family index for pre-present layout transitions. Should match
-    /// the queue family used for presentation (typically 0 for graphics).
-    ///
-    /// Default: 0
-    pub queue_family_index: u32,
 }
+#[cfg(feature = "bevy_window")]
 impl Default for SwapchainConfig {
     fn default() -> Self {
         Self {
@@ -272,22 +292,22 @@ impl Default for SwapchainConfig {
             pre_transform: vk::SurfaceTransformFlagsKHR::IDENTITY,
             clipped: true,
             color_mode: SwapchainColorMode::SDR8Bit,
-            queue_family_index: 0,
         }
     }
 }
 
+/// Requests that the swapchain be recreated.
 #[derive(Message)]
-pub struct SuboptimalMessage {
-    window: Entity,
-}
+pub struct SuboptimalMessage;
 
+#[cfg(feature = "bevy_window")]
 fn recreate_swapchain(
     swapchain: &mut Swapchain,
-    surface: &Surface,
-    window: &Window,
+    surface: &pumicite::Surface,
+    window: &bevy_window::Window,
     config: Option<&SwapchainConfig>,
 ) {
+    use pumicite::HasDevice;
     let default_config = SwapchainConfig::default();
     let config = config.unwrap_or(&default_config);
     let create_info = get_create_info(
@@ -307,45 +327,47 @@ fn recreate_swapchain(
     }
 }
 
+#[cfg(feature = "bevy_window")]
 pub(super) fn extract_swapchains(
     mut commands: Commands,
-    device: Res<Device>,
-    mut window_created_messages: MessageReader<bevy_window::WindowCreated>,
+    device: Res<pumicite::Device>,
+    queue_config: Res<crate::queue::QueueConfiguration>,
     mut window_resized_messages: MessageReader<bevy_window::WindowResized>,
     mut suboptimal_messages: MessageReader<SuboptimalMessage>,
-    mut query: Query<(
-        &Window,
-        Option<&SwapchainConfig>,
-        Option<&mut Swapchain>,
-        &Surface,
-    )>,
-    #[cfg(any(target_os = "macos", target_os = "ios"))] _marker: Option<
-        NonSend<bevy_ecs::system::NonSendMarker>,
+    window: Query<
+        (
+            Entity,
+            &bevy_window::Window,
+            Option<&SwapchainConfig>,
+            &pumicite::Surface,
+        ),
+        With<bevy_window::PrimaryWindow>,
     >,
+    swapchain: Option<ResMut<Swapchain>>,
+    mut swapchain_image: ResMut<SwapchainImage>,
+    #[cfg(target_vendor = "apple")] _marker: Option<NonSend<bevy_ecs::system::NonSendMarker>>,
 ) {
-    // https://gist.github.com/nanokatze/bb03a486571e13a7b6a8709368bd87cf#file-handling-window-resize-md
-    let mut windows_to_rebuild: BTreeSet<Entity> = BTreeSet::new();
-    windows_to_rebuild.extend(window_resized_messages.read().filter_map(|message| {
-        let (window, _, swapchain, _) = query.get(message.window).ok()?;
-        let swapchain = swapchain?;
-        if window.physical_height() != swapchain.extent().y
-            || window.physical_width() != swapchain.extent().x
-        {
-            Some(message.window)
-        } else {
-            None
+    let Ok((entity, window, config, surface)) = window.single() else {
+        if swapchain.is_some() {
+            // The primary window was closed.
+            swapchain_image.inner = None;
+            commands.remove_resource::<Swapchain>();
         }
-    }));
-    windows_to_rebuild.extend(suboptimal_messages.read().map(|a| a.window));
-    for resized_window in windows_to_rebuild.into_iter() {
-        let (window, config, swapchain, surface) = query.get_mut(resized_window).unwrap();
-        if let Some(mut swapchain) = swapchain {
-            recreate_swapchain(&mut swapchain, surface, window, config);
-        }
-    }
-    for create_message in window_created_messages.read() {
-        let (window, config, swapchain, surface) = query.get(create_message.window).unwrap();
-        assert!(swapchain.is_none());
+        return;
+    };
+    let Some(mut swapchain) = swapchain else {
+        // `present` presents on the render queue.
+        let render_queue_family = queue_config
+            .queue_info::<RenderQueue>()
+            .unwrap()
+            .family_index;
+        assert!(
+            device
+                .physical_device()
+                .supports_surface(surface, render_queue_family)
+                .unwrap(),
+            "The render queue (family {render_queue_family}) can't present to the primary window's surface. The selected GPU may be unable to present to this display."
+        );
         let default_config = SwapchainConfig::default();
         let swapchain_config = config.unwrap_or(&default_config);
         let create_info =
@@ -357,22 +379,32 @@ pub(super) fn extract_swapchains(
         );
         let new_swapchain =
             Swapchain::create(device.clone(), surface.clone(), &create_info).unwrap();
-        commands
-            .entity(create_message.window)
-            .insert(new_swapchain)
-            .insert(SwapchainImage {
-                inner: None,
-                state: ResourceState::default(),
-            });
+        commands.insert_resource(new_swapchain);
+        return;
+    };
+
+    // https://gist.github.com/nanokatze/bb03a486571e13a7b6a8709368bd87cf#file-handling-window-resize-md
+    let resized = window_resized_messages
+        .read()
+        .filter(|message| message.window == entity)
+        .count()
+        > 0
+        && glam::UVec2::new(window.physical_width(), window.physical_height())
+            != swapchain.extent();
+    let suboptimal = suboptimal_messages.read().count() > 0;
+    if resized || suboptimal {
+        recreate_swapchain(&mut swapchain, surface, window, config);
     }
 }
 
+#[cfg(feature = "bevy_window")]
 fn get_create_info(
-    surface: &Surface,
-    pdevice: &PhysicalDevice,
-    window: &Window,
+    surface: &pumicite::Surface,
+    pdevice: &pumicite::physical_device::PhysicalDevice,
+    window: &bevy_window::Window,
     config: &SwapchainConfig,
-) -> SwapchainCreateInfo {
+) -> pumicite::swapchain::SwapchainCreateInfo {
+    use glam::UVec2;
     let surface_capabilities = pdevice.get_surface_capabilities(surface).unwrap();
     let supported_present_modes = pdevice.get_surface_present_modes(surface).unwrap();
     let image_format = config.image_format.unwrap_or_else(|| {
@@ -404,7 +436,7 @@ fn get_create_info(
         surface_capabilities.min_image_extent.width,
         surface_capabilities.min_image_extent.height,
     ));
-    SwapchainCreateInfo {
+    pumicite::swapchain::SwapchainCreateInfo {
         flags: config.flags,
         min_image_count: config
             .min_image_count
@@ -467,13 +499,11 @@ fn get_create_info(
         clipped: config.clipped,
         present_scaling: vk::PresentScalingFlagsKHR::empty(),
         present_gravity: [vk::PresentGravityFlagsKHR::empty(); 2],
-        queue_family_index: config.queue_family_index,
     }
 }
 
-/// Component providing access to the current swapchain image for a window.
+/// Resource providing access to the current swapchain image.
 ///
-/// This component is automatically added to window entities with swapchains.
 /// It contains the currently acquired swapchain image (if any) and its
 /// synchronization state.
 ///
@@ -486,13 +516,10 @@ fn get_create_info(
 ///
 /// ```no_run
 /// use bevy::prelude::*;
+/// use bevy_pumicite::SubmissionState;
 /// use bevy_pumicite::swapchain::{SwapchainImage, SwapchainSet};
 ///
-/// fn render_to_swapchain(
-///     query: Query<&SwapchainImage, With<bevy_window::PrimaryWindow>>,
-/// ) {
-///     let swapchain_image = query.single().unwrap();
-///
+/// fn render_to_swapchain(mut swapchain_image: ResMut<SwapchainImage>, mut state: SubmissionState) {
 ///     // Image may be None if acquisition failed this frame
 ///     if let Some(image) = swapchain_image.current_image() {
 ///         // Render to image...
@@ -502,50 +529,51 @@ fn get_create_info(
 /// // Must be in SwapchainSet to access the image
 /// App::new().add_systems(PostUpdate, render_to_swapchain.in_set(SwapchainSet));
 /// ```
-#[derive(Component)]
+#[derive(Resource, Default)]
 pub struct SwapchainImage {
-    /// The acquired swapchain image for this frame, if acquired and available.
+    /// The acquired swapchain image, if any.
+    ///
+    /// A new `GPUMutex` is made for every acquired image. Locking it doesn't wait on anything,
+    /// as the [`SwapchainSet`] submission waits for the image to be acquired instead.
     inner: Option<GPUMutex<pumicite::swapchain::SwapchainImageInner>>,
     /// Current resource state for synchronization.
     pub state: ResourceState,
 }
 
 impl SwapchainImage {
-    /// Returns the swapchain image for the current frame. May be None if swapchain image acquire
-    /// was unsuccessful for the current frame, or if this function was called prior to swapchain
-    /// creation.
+    /// Returns the swapchain image for the current frame, along with its resource state. May be
+    /// None if swapchain image acquire was unsuccessful for the current frame, or if this
+    /// function was called prior to swapchain creation.
     ///
-    /// If this function returns None unexpectedly, check that your system was added to the
-    /// [`SwapchainSet`] system set.
-    pub fn current_image(&self) -> Option<&GPUMutex<pumicite::swapchain::SwapchainImageInner>> {
+    /// The [`SwapchainSet`] submission waits for the image to be acquired before any of its
+    /// commands start. The image is transitioned into [`vk::ImageLayout::PRESENT_SRC_KHR`]
+    /// after [`SwapchainSet`].
+    ///
+    /// The resource state starts with a write at [`vk::PipelineStageFlags2::ALL_COMMANDS`], so
+    /// that the first barrier on the image waits for it to be acquired. Don't reset it.
+    ///
+    /// Only call this from systems in [`SwapchainSet`]. Systems that run before
+    /// [`acquire_swapchain_image`], such as those in [`DefaultRenderSet`], get `None`. Systems in
+    /// other submission sets that run between acquire and present get the image, but their
+    /// submission doesn't wait for it to be acquired.
+    pub fn current_image(&mut self) -> Option<&GPUMutex<pumicite::swapchain::SwapchainImageInner>> {
         self.inner.as_ref()
     }
 }
 
 /// Acquires the next image from the swapchain by calling `vkAcquireNextImageKHR`.
-/// Generic parameter `Filter` is used to uniquely specify the swapchain to acquire from.
-/// For example, `With<PrimaryWindow>` will only acquire the next image from the swapchain
-/// associated with the primary window.
-pub fn acquire_swapchain_image<Filter: QueryFilter>(
-    mut query: Query<
-        (
-            Entity,
-            &mut Swapchain, // Need mutable reference to swapchain to call acquire_next_image
-            &mut SwapchainImage,
-        ),
-        Filter,
-    >,
+///
+/// Runs in the submission set that [`SwapchainSet`] is in, and makes that submission wait for
+/// the acquire and signal the semaphore that [`present`] waits on.
+pub fn acquire_swapchain_image(
+    mut submission: SubmissionState,
+    swapchain: Option<ResMut<Swapchain>>,
+    mut swapchain_image: ResMut<SwapchainImage>,
     mut suboptimal_messages: MessageWriter<SuboptimalMessage>,
 ) {
-    use bevy_ecs::query::QuerySingleError;
-    let (entity, mut swapchain, mut swapchain_image) = match query.single_mut() {
-        Ok(item) => item,
-        Err(QuerySingleError::NoEntities(_str)) => {
-            return;
-        }
-        Err(QuerySingleError::MultipleEntities(str)) => {
-            panic!("{}", str)
-        }
+    let Some(mut swapchain) = swapchain else {
+        swapchain_image.inner = None;
+        return;
     };
     assert!(
         swapchain_image.inner.is_none(),
@@ -553,20 +581,20 @@ pub fn acquire_swapchain_image<Filter: QueryFilter>(
     );
     if !swapchain.is_valid() {
         // Already known to be out of date (e.g. window minimized); retry the recreate quietly.
-        suboptimal_messages.write(SuboptimalMessage { window: entity });
+        suboptimal_messages.write(SuboptimalMessage);
         return;
     }
     let new_image = match swapchain.acquire() {
         Ok((image, suboptimal)) => {
             if suboptimal {
-                tracing::warn!("Swapchain acquire received suboptimal: {:?}", entity);
-                suboptimal_messages.write(SuboptimalMessage { window: entity });
+                tracing::warn!("Swapchain acquire received suboptimal");
+                suboptimal_messages.write(SuboptimalMessage);
             }
             image
         }
         Err(e) if e == vk::Result::ERROR_OUT_OF_DATE_KHR => {
-            tracing::warn!("Swapchain acquire out-of-date: {:?}", entity);
-            suboptimal_messages.write(SuboptimalMessage { window: entity });
+            tracing::warn!("Swapchain acquire out-of-date");
+            suboptimal_messages.write(SuboptimalMessage);
             return;
         }
         Err(e) => {
@@ -574,46 +602,81 @@ pub fn acquire_swapchain_image<Filter: QueryFilter>(
         }
     };
 
-    swapchain_image.inner = Some(new_image);
+    // Safety: the acquire signals the acquire semaphore, and only this submission waits on it.
+    // The present semaphore is unsignaled: the image's previous present waited on it, and was
+    // done with the image before the image could be acquired again. `present` presents the
+    // image this frame, and the image destroys both semaphores only after its last present
+    // finishes.
+    unsafe {
+        submission
+            .set_binary_semaphores(new_image.acquire_semaphore(), new_image.present_semaphore());
+    }
+    swapchain_image.inner = Some(GPUMutex::from_boxed(new_image));
     swapchain_image.state = ResourceState::default();
+    // The submission waits for the acquire at ALL_COMMANDS. The first barrier on the image
+    // must include that stage in its source stages, so that its layout transition happens
+    // after the acquire.
     swapchain_image.state.write.stage = vk::PipelineStageFlags2::ALL_COMMANDS;
 }
 
+/// Transitions the swapchain image into [`vk::ImageLayout::PRESENT_SRC_KHR`], after the systems
+/// in [`SwapchainSet`] are done with it.
+fn prepare_present(mut submission: SubmissionState, swapchain_image: ResMut<SwapchainImage>) {
+    let swapchain_image = swapchain_image.into_inner();
+    submission.record(|encoder| {
+        let Some(image) = swapchain_image.current_image() else {
+            return;
+        };
+        let image = encoder.lock(image, vk::PipelineStageFlags2::ALL_COMMANDS);
+        // ALL_COMMANDS orders the layout transition before the present semaphore's signal,
+        // which is also at ALL_COMMANDS.
+        encoder.use_image_resource(
+            image,
+            &mut swapchain_image.state,
+            Access::ALL_COMMANDS,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            0..1,
+            0..image.array_layer_count(),
+            false,
+        );
+        encoder.emit_barriers();
+    });
+}
+
 /// Present the swapchain image by calling `vkQueuePresentKHR`.
-/// Generic parameter `Filter` is used to uniquely specify the swapchain to acquire from.
-/// For example, `With<PrimaryWindow>` will only acquire the next image from the swapchain
-/// associated with the primary window.
-pub fn present<Filter: QueryFilter>(
-    mut queue: Queue<RenderQueue>, // TODO: this assumes that the render queue is capable of present
-    mut query: Query<(Entity, &mut Swapchain, &mut SwapchainImage)>,
+///
+/// Runs after the submission that [`SwapchainSet`] is part of, which signals the semaphore that
+/// presentation waits on.
+pub fn present(
+    // The SwapchainSet submission is on this queue too, so the swapchain images never change
+    // queue family. extract_swapchains checks that this family can present to the surface.
+    mut queue: Queue<RenderQueue>,
+    swapchain: Option<ResMut<Swapchain>>,
+    mut swapchain_image: ResMut<SwapchainImage>,
     mut suboptimal_messages: MessageWriter<SuboptimalMessage>,
 ) {
-    use bevy_ecs::query::QuerySingleError;
-    let (entity, mut swapchain, mut swapchain_image) = match query.single_mut() {
-        Ok(item) => item,
-        Err(QuerySingleError::NoEntities(_str)) => {
-            return;
-        }
-        Err(QuerySingleError::MultipleEntities(str)) => {
-            panic!("{}", str)
-        }
+    let Some(mut swapchain) = swapchain else {
+        return;
     };
-    let image_state = std::mem::take(&mut swapchain_image.state);
     let Some(swapchain_image) = swapchain_image.inner.take() else {
         // Expected while the window is minimized or the swapchain is out of date.
         tracing::debug!("Missing swapchain image; present skipped");
         return;
     };
+    // Safety: the host only uses the image's handles from here on. `vkQueuePresentKHR` waits
+    // for the semaphore that the submission signals once it's done with the image, and the
+    // next submission to use the image waits for it to be acquired again.
+    let (swapchain_image, _, _) = unsafe { swapchain_image.into_inner() };
     queue.begin_label(c"Swapchain Present", Vec4::new(0.0, 0.0, 0.0, 1.0));
-    match swapchain.present(swapchain_image, image_state, &mut queue) {
+    match swapchain.present(swapchain_image, &mut queue) {
         Ok(_) => {}
         Err(e) if e == vk::Result::ERROR_OUT_OF_DATE_KHR => {
-            tracing::warn!("Swapchain present out-of-date: {:?}", entity);
-            suboptimal_messages.write(SuboptimalMessage { window: entity });
+            tracing::warn!("Swapchain present out-of-date");
+            suboptimal_messages.write(SuboptimalMessage);
         }
         Err(e) if e == vk::Result::SUBOPTIMAL_KHR => {
-            tracing::warn!("Swapchain present suboptimal: {:?}", entity);
-            suboptimal_messages.write(SuboptimalMessage { window: entity });
+            tracing::warn!("Swapchain present suboptimal");
+            suboptimal_messages.write(SuboptimalMessage);
         }
         Err(e) => {
             panic!("Error presenting swapchain image: {:?}", e);

@@ -88,7 +88,7 @@ pub mod shader;
 pub mod staging;
 #[cfg(feature = "bevy_window")]
 mod surface;
-#[cfg(feature = "bevy_window")]
+#[cfg(feature = "swapchain")]
 pub mod swapchain;
 mod system;
 pub use pumicite;
@@ -108,6 +108,12 @@ pub use system::SubmissionState;
 pub mod prelude {
     pub use pumicite::prelude::*;
 
+    #[cfg(feature = "bevy_window")]
+    pub use crate::SurfaceCapabilities;
+    #[cfg(all(feature = "bevy_window", feature = "swapchain"))]
+    pub use crate::swapchain::SwapchainConfig;
+    #[cfg(feature = "swapchain")]
+    pub use crate::swapchain::{SwapchainImage, SwapchainSet};
     pub use crate::{
         DefaultComputeSet, DefaultRenderSet, DefaultTransferSet, DescriptorHeap, PumiciteApp,
         SubmissionState,
@@ -116,8 +122,6 @@ pub mod prelude {
             BufferInitializer, DeviceLocalRingBuffer, HostVisibleRingBuffer, UniformRingBuffer,
         },
     };
-    #[cfg(feature = "bevy_window")]
-    pub use crate::{SurfaceCapabilities, swapchain::SwapchainConfig, swapchain::SwapchainImage};
 }
 
 /// A plugin group that configures Bevy with Pumicite as the rendering backend.
@@ -161,7 +165,7 @@ impl bevy_app::PluginGroup for DefaultPlugins {
         let plugins = plugins
             .add(crate::DebugUtilsPlugin)
             .add(crate::PumicitePlugin::default());
-        #[cfg(feature = "bevy_window")]
+        #[cfg(feature = "swapchain")]
         let plugins = plugins.add(crate::swapchain::SwapchainPlugin);
         plugins
     }

@@ -28,7 +28,7 @@ fn main() {
         .unwrap();
     app.add_systems(Update, get_user_input);
 
-    app.add_systems(PostUpdate, mandelbrot_rendering.in_set(DefaultRenderSet));
+    app.add_systems(PostUpdate, mandelbrot_rendering.in_set(SwapchainSet));
 
     app.add_systems(Startup, setup.after(bevy_pumicite::CreateDevice));
     app.run();
@@ -71,19 +71,19 @@ fn setup(mut commands: Commands, asset_server: ResMut<AssetServer>) {
 }
 
 fn mandelbrot_rendering(
-    mut swapchain_image: Query<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
+    mut swapchain_image: ResMut<SwapchainImage>,
     mut state: SubmissionState,
     pipeline: Res<MandelbrotPipeline>,
     compute_pipelines: Res<Assets<ComputePipeline>>,
     mut ring_buffer: ResMut<UniformRingBuffer>,
     mandelbrot_state: Res<MandelbrotState>,
 ) {
-    let Ok(mut swapchain_image) = swapchain_image.single_mut() else {
-        return;
-    };
     let pipeline = compute_pipelines.get(&pipeline.draw);
 
     state.record(|encoder| {
+        let Some(current_swapchain_image) = swapchain_image.current_image() else {
+            return;
+        };
         // allocate new portion of ring buffer
         let mut buffer =
             ring_buffer.allocate_buffer(std::mem::size_of::<MandelbrotState>() as u64, 128);
@@ -93,10 +93,6 @@ fn mandelbrot_rendering(
             .copy_from_slice(bytemuck::bytes_of(&*mandelbrot_state));
         // retain to extend lifetime
         let buffer = encoder.retain(buffer);
-
-        let Some(current_swapchain_image) = swapchain_image.current_image() else {
-            return;
-        };
 
         let current_swapchain_image = encoder.lock(
             current_swapchain_image,

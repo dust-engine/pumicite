@@ -16,9 +16,6 @@ use std::ffi::{CStr, CString};
 
 use crate::{DescriptorHeap, SubmissionState, shader::ShaderModule, staging::AsyncTransfer};
 
-#[cfg(feature = "bevy_window")]
-use crate::swapchain::SwapchainSet;
-
 use super::pass::SubmissionSetsPass;
 use super::queue::QueueConfiguration;
 use pumicite::{
@@ -53,13 +50,14 @@ pub struct CreateDevice;
 ///
 /// # Ordering
 ///
-/// - Runs **within** [`SwapchainSet`](crate::swapchain::SwapchainSet) (after acquire and before present)
 /// - Runs **after** [`DefaultTransferSet`]
+/// - Runs **before** [`SwapchainSet`](crate::swapchain::SwapchainSet)
 ///
 /// # Usage
 ///
-/// Add rendering systems to this set to ensure they have access to the current
-/// swapchain image and run in the correct order relative to swapchain image acquire and presentation.
+/// Add rendering systems that don't touch the swapchain image to this set, such as
+/// rendering a scene into an offscreen image. Systems that touch the swapchain image go in
+/// [`SwapchainSet`](crate::swapchain::SwapchainSet) instead.
 ///
 /// ```no_run
 ///# use bevy::prelude::*;
@@ -354,9 +352,6 @@ impl Plugin for PumicitePlugin {
                 DefaultComputeSet.after(DefaultTransferSet),
             ),
         );
-
-        #[cfg(feature = "bevy_window")]
-        app.configure_sets(PostUpdate, DefaultRenderSet.in_set(SwapchainSet));
 
         // Optional extensions
         app.add_device_extension::<khr::deferred_host_operations::Meta>()

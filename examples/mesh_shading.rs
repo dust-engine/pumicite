@@ -15,7 +15,7 @@ fn main() {
         .unwrap();
     app.enable_feature::<vk::PhysicalDeviceMeshShaderFeaturesEXT>(|x| &mut x.mesh_shader)
         .unwrap();
-    app.add_systems(PostUpdate, mesh_shading.in_set(DefaultRenderSet));
+    app.add_systems(PostUpdate, mesh_shading.in_set(SwapchainSet));
 
     app.add_systems(Startup, setup.after(bevy_pumicite::CreateDevice));
     app.run();
@@ -33,7 +33,7 @@ fn setup(mut commands: Commands, asset_server: ResMut<AssetServer>) {
 }
 
 fn mesh_shading(
-    mut swapchain_image: Single<&mut SwapchainImage, With<bevy::window::PrimaryWindow>>,
+    mut swapchain_image: ResMut<SwapchainImage>,
     mut state: SubmissionState,
     pipeline: Res<MeshShadingPipeline>,
     graphics_pipelines: Res<Assets<GraphicsPipeline>>,

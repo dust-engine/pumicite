@@ -51,6 +51,7 @@ use bevy_ecs::{
     component::ComponentId,
     query::FilteredAccess,
     resource::{IS_RESOURCE, Resource},
+    schedule::InternedSystemSet,
     system::{SystemMeta, SystemParam, SystemParamBuilder},
     world::{Mut, World, unsafe_world_cell::UnsafeWorldCell},
 };
@@ -58,7 +59,7 @@ use bevy_ecs::{
 use glam::Vec4;
 use pumicite::{
     Device,
-    ash::VkResult,
+    ash::{VkResult, vk},
     command::{
         CommandBuffer, CommandEncoder, CommandEncoderRenderPassState, CommandPool, RenderPass,
     },
@@ -95,10 +96,15 @@ pub(crate) struct RenderSetSharedState {
     timeline: Timeline,
     /// Current stage index for barrier emission.
     stage_index: u32,
+    /// The submission set this state belongs to.
+    set: InternedSystemSet,
     /// Debug name for this submission set.
     name: CString,
     /// Debug color for the debug region of this submission set.
     color: Vec4,
+    /// Binary semaphores the next submission waits on and signals, for swapchain images.
+    binary_wait: Option<vk::Semaphore>,
+    binary_signal: Option<vk::Semaphore>,
 }
 impl Drop for RenderSetSharedState {
     fn drop(&mut self) {
@@ -113,10 +119,10 @@ impl RenderSetSharedState {
     pub(crate) fn new(
         device: Device,
         queue_family_index: u32,
-        name: String,
+        set: InternedSystemSet,
         color: Vec4,
     ) -> VkResult<Self> {
-        let cstring = CString::new(name).unwrap();
+        let cstring = CString::new(format!("{set:?}")).unwrap();
         Ok(Self {
             command_pool: CommandPool::new_resettable(device.clone(), queue_family_index)?
                 .with_name(cstring.as_c_str()),
@@ -125,8 +131,11 @@ impl RenderSetSharedState {
             encoder: unsafe { CommandEncoder::new() },
             timeline: Timeline::new(device)?.with_name(cstring.as_c_str()),
             stage_index: 0,
+            set,
             name: cstring,
             color,
+            binary_wait: None,
+            binary_signal: None,
         })
     }
 }
@@ -211,6 +220,20 @@ impl SubmissionState<'_> {
 
     pub fn state(&self) -> &CommandEncoderRenderPassState {
         self.state.encoder.render_pass_state()
+    }
+
+    /// Makes this frame's submission wait on the binary semaphore `wait` and signal the binary
+    /// semaphore `signal`.
+    ///
+    /// # Safety
+    /// Same as [`pumicite::Queue::submit_with_binary_semaphores`].
+    pub(crate) unsafe fn set_binary_semaphores(
+        &mut self,
+        wait: vk::Semaphore,
+        signal: vk::Semaphore,
+    ) {
+        self.state.binary_wait = Some(wait);
+        self.state.binary_signal = Some(signal);
     }
 }
 
@@ -375,12 +398,16 @@ pub(crate) fn submission_system(
     unsafe {
         shared.encoder.reset();
     }
+    let binary_wait = shared.binary_wait.take();
+    let binary_signal = shared.binary_signal.take();
     let Some(mut cb) = shared.recording_command_buffer.take() else {
         return;
     };
     shared.command_pool.finish(&mut cb).unwrap();
     queue.begin_label(shared.name.as_c_str(), shared.color);
-    queue.submit(&mut cb).unwrap();
+    // Safety: the binary semaphores were set with `SubmissionState::set_binary_semaphores`,
+    // whose caller upholds this.
+    unsafe { queue.submit_with_binary_semaphores(&mut cb, binary_wait, binary_signal) }.unwrap();
     queue.end_label();
     shared.pending_command_buffers.push(cb);
 }

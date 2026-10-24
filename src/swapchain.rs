@@ -5,27 +5,27 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::command::{GPURef, GPURefMut};
-use crate::debug::DebugObject;
 use crate::fault::{DeviceError, DeviceResult, ResultWithDevice};
 use crate::image::{ImageLike, ImageViewLike};
 use crate::physical_device::PhysicalDevice;
-use crate::tracking::ResourceState;
+use crate::utils::AsVkHandle;
 use crate::{Device, Surface};
-use crate::{HasDevice, queue::Queue, sync::GPUMutex};
-use crate::{sync::SharedSemaphore, utils::AsVkHandle};
+use crate::{HasDevice, queue::Queue};
 use ash::khr::swapchain::Meta as KhrSwapchain;
 use ash::{VkResult, vk};
 
 pub struct Swapchain {
     inner: Arc<SwapchainInner>,
     images: SmallVec<[Option<Box<SwapchainImageInner>>; 3]>,
-    extra_acquire_semaphore: SharedSemaphore,
+    extra_acquire_semaphore: vk::Semaphore,
+    extra_acquire_fence: vk::Fence,
     /// Tracks whether the swapchain is still valid. Once `VK_ERROR_OUT_OF_DATE_KHR` is returned,
     /// calling Vulkan functions on the swapchain is an error, so we mark it invalid.
     is_valid: bool,
     /// Set when a recreate attempt failed after passing the current swapchain as `oldSwapchain`,
     /// which retires it. The next recreate must then pass `VK_NULL_HANDLE` instead.
     is_retired: bool,
+    has_maintenance_1: bool,
 }
 impl Swapchain {
     pub fn extent(&self) -> UVec2 {
@@ -35,6 +35,21 @@ impl Swapchain {
 impl HasDevice for Swapchain {
     fn device(&self) -> &Device {
         &self.inner.device
+    }
+}
+impl Drop for Swapchain {
+    fn drop(&mut self) {
+        // Drop the images first, so their Drop waits for pending acquires and presents.
+        self.images.clear();
+        unsafe {
+            // The extra fence was reset after its last acquire completed, so it isn't in use.
+            self.inner
+                .device
+                .destroy_semaphore(self.extra_acquire_semaphore, None);
+            self.inner
+                .device
+                .destroy_fence(self.extra_acquire_fence, None);
+        }
     }
 }
 
@@ -47,7 +62,6 @@ struct SwapchainInner {
     color_space: vk::ColorSpaceKHR,
     extent: UVec2,
     layer_count: u32,
-    command_pool: vk::CommandPool,
 }
 impl SwapchainInner {
     fn create(
@@ -92,7 +106,7 @@ impl SwapchainInner {
             },
             image_array_layers: info.image_array_layers,
             image_usage: info.image_usage,
-            image_sharing_mode: vk::SharingMode::CONCURRENT,
+            image_sharing_mode: vk::SharingMode::EXCLUSIVE,
             pre_transform: info.pre_transform,
             composite_alpha: info.composite_alpha,
             present_mode: info.present_mode,
@@ -122,17 +136,6 @@ impl SwapchainInner {
 
         let images = unsafe { swapchain_loader.get_swapchain_images(new_swapchain)? };
 
-        let command_pool = unsafe {
-            device.create_command_pool(
-                &vk::CommandPoolCreateInfo {
-                    flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER
-                        | vk::CommandPoolCreateFlags::TRANSIENT,
-                    queue_family_index: info.queue_family_index,
-                    ..Default::default()
-                },
-                None,
-            )?
-        };
         let inner = SwapchainInner {
             device,
             surface,
@@ -141,7 +144,6 @@ impl SwapchainInner {
             layer_count: info.image_array_layers,
             format: info.image_format,
             color_space: info.image_color_space,
-            command_pool,
         };
         let inner = Arc::new(inner);
 
@@ -198,6 +200,46 @@ impl SwapchainInner {
                         None,
                     )?
                 };
+
+                let acquire_semaphore = unsafe {
+                    inner
+                        .device
+                        .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?
+                };
+                inner
+                    .device
+                    .set_debug_name(acquire_semaphore, c"Swapchain Acquire Semaphore")
+                    .ok();
+
+                let present_semaphore = unsafe {
+                    inner
+                        .device
+                        .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?
+                };
+                inner
+                    .device
+                    .set_debug_name(present_semaphore, c"Swapchain Present Semaphore")
+                    .ok();
+                let present_fence = unsafe {
+                    inner.device.create_fence(
+                        &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
+                        None,
+                    )?
+                };
+                inner
+                    .device
+                    .set_debug_name(present_fence, c"Present Fence")
+                    .ok();
+                let acquire_fence = unsafe {
+                    inner.device.create_fence(
+                        &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
+                        None,
+                    )?
+                };
+                inner
+                    .device
+                    .set_debug_name(acquire_fence, c"Acquire Fence")
+                    .ok();
                 let img = SwapchainImageInner {
                     image,
                     indice: i as u32,
@@ -209,29 +251,10 @@ impl SwapchainInner {
                             .unwrap_or(vk::Format::UNDEFINED),
                     ),
                     linear_view: SwapchainImageView(linear_view, linear_format.into()),
-                    acquire_semaphore: SharedSemaphore::new_binary(inner.device.clone(), true)?
-                        .with_name(c"Swapchain Acquire Semaphore"),
-                    present_semaphore: SharedSemaphore::new_binary(inner.device.clone(), true)?
-                        .with_name(c"Swapchain Present Semaphore"),
-                    command_buffer: unsafe {
-                        let mut command_buffer = vk::CommandBuffer::null();
-                        (inner.device.fp_v1_0().allocate_command_buffers)(
-                            inner.device.handle(),
-                            &vk::CommandBufferAllocateInfo {
-                                command_pool,
-                                level: vk::CommandBufferLevel::PRIMARY,
-                                command_buffer_count: 1,
-                                ..Default::default()
-                            },
-                            &mut command_buffer,
-                        )
-                        .result()?;
-                        inner
-                            .device
-                            .set_debug_name(command_buffer, c"Swapchain Img Layout Command Buffer")
-                            .ok();
-                        command_buffer
-                    },
+                    acquire_semaphore,
+                    acquire_fence,
+                    present_semaphore,
+                    present_fence,
                     last_present_queue: vk::Queue::null(),
                 };
                 Ok(Some(Box::new(img)))
@@ -248,7 +271,6 @@ impl Drop for SwapchainInner {
             self.device
                 .extension::<KhrSwapchain>()
                 .destroy_swapchain(self.inner, None);
-            self.device.destroy_command_pool(self.command_pool, None);
         }
     }
 }
@@ -271,9 +293,6 @@ pub struct SwapchainCreateInfo {
     /// When `present_scaling` is enabled, this specifies
     /// where a scaled image is placed on the surface, along x and y.
     pub present_gravity: [vk::PresentGravityFlagsKHR; 2],
-    /// Queue family index for the command pool used for pre-present layout transitions.
-    /// This should match the queue family of the queue used for presentation.
-    pub queue_family_index: u32,
 }
 
 /// Unsafe APIs for Swapchain
@@ -290,13 +309,28 @@ impl Swapchain {
         );
         let (inner, images) =
             SwapchainInner::create(device.clone(), surface, info, vk::SwapchainKHR::null())?;
+        let extra_acquire_semaphore =
+            unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)? };
+        device
+            .set_debug_name(extra_acquire_semaphore, c"Swapchain Acquire Semaphore")
+            .ok();
+        let extra_acquire_fence =
+            unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None)? };
+        device
+            .set_debug_name(extra_acquire_fence, c"Swapchain Acquire Fence")
+            .ok();
+
+        let has_maintenance_1 = device
+            .feature::<vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT>()
+            .is_some_and(|x| x.swapchain_maintenance1 == vk::TRUE);
         Ok(Swapchain {
             images,
             inner,
-            extra_acquire_semaphore: SharedSemaphore::new_binary(device, false)?
-                .with_name(c"Swapchain Acquire Semaphore"),
+            extra_acquire_semaphore,
+            extra_acquire_fence,
             is_valid: true,
             is_retired: false,
+            has_maintenance_1,
         })
     }
 
@@ -350,7 +384,7 @@ impl Swapchain {
         self.is_valid
     }
 
-    pub fn acquire(&mut self) -> DeviceResult<(GPUMutex<SwapchainImageInner>, bool)> {
+    pub fn acquire(&mut self) -> DeviceResult<(Box<SwapchainImageInner>, bool)> {
         // Check if swapchain is still valid. Once invalidated by VK_ERROR_OUT_OF_DATE_KHR,
         // the swapchain must be recreated before further use.
         if !self.is_valid {
@@ -364,8 +398,9 @@ impl Swapchain {
                 .acquire_next_image(
                     self.inner.inner,
                     !0,
-                    self.extra_acquire_semaphore.vk_handle(),
-                    self.extra_acquire_semaphore.raw_fence(),
+                    // We don't know which swapchain image we will get, so use the extra acquire semaphore.
+                    self.extra_acquire_semaphore,
+                    self.extra_acquire_fence,
                 );
 
             let (indice, suboptimal) = match result {
@@ -378,25 +413,34 @@ impl Swapchain {
             };
 
             let mut image = self.images[indice as usize].take().unwrap();
-            image.acquire_semaphore.timestamp(0).wait_blocked(!0)?;
+            // The image takes the semaphore and fence this acquire signals, and its previous
+            // pair becomes the extra pair for the next acquire.
             std::mem::swap(
                 &mut image.acquire_semaphore,
                 &mut self.extra_acquire_semaphore,
             );
+            std::mem::swap(&mut image.acquire_fence, &mut self.extra_acquire_fence);
+            self.device()
+                .wait_for_fences(&[self.extra_acquire_fence], true, !0)
+                .with_device(self.device())?;
+            self.device().reset_fences(&[self.extra_acquire_fence])?;
+            if self.has_maintenance_1 {
+                // The previous present of this image must finish before its present semaphore
+                // can be signaled again.
+                self.device()
+                    .wait_for_fences(&[image.present_fence], true, !0)
+                    .with_device(self.device())?;
+            }
 
-            let acquire_timestamp = image.acquire_semaphore.timestamp(0);
-            image
-                .present_semaphore
-                .timestamp(0)
-                .wait_blocked(!0)
-                .unwrap();
-            Ok((GPUMutex::new_locked(image, acquire_timestamp), suboptimal))
+            Ok((image, suboptimal))
         }
     }
+
+    /// The image must have been transitioned into [`vk::ImageLayout::PRESENT_SRC_KHR`] before calling this function,
+    /// by a submission that signals its [`present_semaphore`](SwapchainImageInner::present_semaphore).
     pub fn present(
         &mut self,
-        image: GPUMutex<SwapchainImageInner>,
-        image_state: ResourceState,
+        mut image: Box<SwapchainImageInner>,
         queue: &mut Queue,
     ) -> DeviceResult<()> {
         // Check if swapchain is still valid. Once invalidated by VK_ERROR_OUT_OF_DATE_KHR,
@@ -406,100 +450,27 @@ impl Swapchain {
         }
 
         unsafe {
-            let (mut image, semaphore, wait_value) = image.into_inner();
             let indice = image.indice;
             assert!(self.images[indice as usize].is_none());
-            {
-                // Record pre-present command buffer
-                self.device().reset_command_buffer(
-                    image.command_buffer,
-                    vk::CommandBufferResetFlags::empty(),
-                )?;
-                self.device().begin_command_buffer(
-                    image.command_buffer,
-                    &vk::CommandBufferBeginInfo {
-                        flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
-                        ..Default::default()
-                    },
-                )?;
-                self.device().cmd_pipeline_barrier2(
-                    image.command_buffer,
-                    &vk::DependencyInfo::default().image_memory_barriers(&[
-                        vk::ImageMemoryBarrier2 {
-                            src_access_mask: image_state.write.access,
-                            src_stage_mask: image_state.write.stage | image_state.reads,
-                            dst_access_mask: vk::AccessFlags2::empty(),
-                            dst_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-                            old_layout: image_state.layout,
-                            new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-                            image: image.image,
-                            subresource_range: vk::ImageSubresourceRange {
-                                aspect_mask: vk::ImageAspectFlags::COLOR,
-                                base_mip_level: 0,
-                                level_count: vk::REMAINING_MIP_LEVELS,
-                                base_array_layer: 0,
-                                layer_count: vk::REMAINING_ARRAY_LAYERS,
-                            },
-                            ..Default::default()
-                        },
-                    ]),
-                );
-                self.device()
-                    .end_command_buffer(image.command_buffer)
-                    .unwrap();
-            }
-            let has_maintenance_1 = self
-                .device()
-                .feature::<vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT>()
-                .is_some_and(|x| x.swapchain_maintenance1 == vk::TRUE);
-            if !has_maintenance_1 {
+            if !self.has_maintenance_1 {
                 // Workaround: when we don't have VK_KHR_swapchain_maintenance1, set
                 // last_present_queue to be the last presented queue.
                 image.last_present_queue = queue.vk_handle();
             }
-            self.device()
-                .queue_submit2(
-                    queue.vk_handle(),
-                    &[vk::SubmitInfo2::default()
-                        .command_buffer_infos(&[vk::CommandBufferSubmitInfo {
-                            command_buffer: image.command_buffer,
-                            ..Default::default()
-                        }])
-                        .wait_semaphore_infos(&[vk::SemaphoreSubmitInfo {
-                            // unwrap the semaphore because there should always be a semaphore here
-                            // because we need to at least wait on the swapchain acquire semaphore.
-                            semaphore: semaphore.unwrap().vk_handle(),
-                            value: wait_value,
-                            stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-                            ..Default::default()
-                        }])
-                        .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo {
-                            semaphore: image.present_semaphore.vk_handle(),
-                            stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-                            value: 0,
-                            ..Default::default()
-                        }])],
-                    if has_maintenance_1 {
-                        vk::Fence::null()
-                    } else {
-                        // If without maintenance 1, signal the fence at the end of this submission.
-                        image.present_semaphore.raw_fence()
-                    },
-                )
-                .with_device(self.device())?;
 
             {
-                let wait_semaphores = [image.present_semaphore.vk_handle()];
+                let wait_semaphores = [image.present_semaphore];
                 let image_indices = [image.indice];
                 let swapchains = [image.swapchain.inner];
                 let mut present_info = vk::PresentInfoKHR::default()
                     .wait_semaphores(&wait_semaphores)
                     .image_indices(&image_indices)
                     .swapchains(&swapchains);
-                let fences = [image.present_semaphore.raw_fence()];
+                let fences = [image.present_fence];
                 let mut fence_info = vk::SwapchainPresentFenceInfoEXT::default().fences(&fences);
-                if has_maintenance_1 {
+                if self.has_maintenance_1 {
                     // If has maintenance 1, signal the fence at the actual queue present step.
+                    self.device().reset_fences(&fences)?;
                     present_info = present_info.push(&mut fence_info);
                 }
                 let present_result = self
@@ -533,11 +504,11 @@ pub struct SwapchainImageInner {
     srgb_view: SwapchainImageView,
     indice: u32,
     swapchain: Arc<SwapchainInner>,
-    /// A command buffer for pre-present commands
-    command_buffer: vk::CommandBuffer,
 
-    acquire_semaphore: SharedSemaphore,
-    present_semaphore: SharedSemaphore,
+    acquire_semaphore: vk::Semaphore,
+    acquire_fence: vk::Fence,
+    present_semaphore: vk::Semaphore,
+    present_fence: vk::Fence,
 
     /// Workaround for when implementation does not have VK_KHR_swapchain_maintenance1.
     last_present_queue: vk::Queue,
@@ -546,6 +517,16 @@ pub struct SwapchainImageInner {
 impl SwapchainImageInner {
     pub fn color_space(&self) -> vk::ColorSpaceKHR {
         self.swapchain.color_space
+    }
+    /// The binary semaphore that the acquire of this image signals. The submission that
+    /// renders to the image must wait on it.
+    pub fn acquire_semaphore(&self) -> vk::Semaphore {
+        self.acquire_semaphore
+    }
+    /// The binary semaphore that [`Swapchain::present`] waits on. The submission that renders
+    /// to the image must signal it.
+    pub fn present_semaphore(&self) -> vk::Semaphore {
+        self.present_semaphore
     }
 }
 crate::command::project_host_metadata! {
@@ -557,14 +538,38 @@ crate::command::project_host_metadata! {
 
 impl Drop for SwapchainImageInner {
     fn drop(&mut self) {
-        self.acquire_semaphore
-            .timestamp(0)
-            .wait_blocked(!0)
-            .unwrap();
-        self.present_semaphore
-            .timestamp(0)
-            .wait_blocked(!0)
-            .unwrap();
+        unsafe {
+            self.swapchain
+                .device
+                .wait_for_fences(&[self.acquire_fence, self.present_fence], true, !0)
+                .with_device(&self.swapchain.device)
+                .unwrap();
+        }
+        if self.last_present_queue != vk::Queue::null() {
+            unsafe {
+                // Workaround: when VK_KHR_swapchain_maintenance1 is unavailable,
+                // we conservatively wait for the queue itself to become idle.
+                self.swapchain
+                    .device
+                    .queue_wait_idle(self.last_present_queue)
+                    .with_device(&self.swapchain.device)
+                    .unwrap();
+            }
+        }
+        unsafe {
+            self.swapchain
+                .device
+                .destroy_fence(self.acquire_fence, None);
+            self.swapchain
+                .device
+                .destroy_fence(self.present_fence, None);
+            self.swapchain
+                .device
+                .destroy_semaphore(self.acquire_semaphore, None);
+            self.swapchain
+                .device
+                .destroy_semaphore(self.present_semaphore, None);
+        }
         if !self.linear_view.0.is_null() {
             unsafe {
                 self.swapchain
@@ -577,17 +582,6 @@ impl Drop for SwapchainImageInner {
                 self.swapchain
                     .device
                     .destroy_image_view(self.srgb_view.0, None);
-            }
-        }
-        if self.last_present_queue != vk::Queue::null() {
-            unsafe {
-                // Workaround: when VK_KHR_swapchain_maintenance1 is unavailable,
-                // we conservatively wait for the queue itself to become idle.
-                self.swapchain
-                    .device
-                    .queue_wait_idle(self.last_present_queue)
-                    .with_device(&self.swapchain.device)
-                    .unwrap();
             }
         }
     }

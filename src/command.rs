@@ -234,7 +234,7 @@ impl<'a, T: ?Sized> GPURefMut<'a, T> {
 
 /// By default, `GPURef<T>` does not allow the host to access any fields of the underlying resource,
 /// being pessimistic that the GPU will access everything about the property.
-/// 
+///
 /// # Safety
 ///
 /// Types that implement [`NoHostMapping`] are indicating that the GPU has exclusive access to the resource
