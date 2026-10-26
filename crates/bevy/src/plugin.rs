@@ -719,8 +719,10 @@ fn get_instance_builder(app: &mut App) -> Mut<'_, InstanceBuilder> {
     app.world_mut().get_resource_or_init::<InstanceBuilder>()
 }
 
+/// Configuration for a submission set, passed to [`PumiciteApp::add_submission_set`].
 #[derive(Debug, Clone)]
 pub struct SubmissionSetConfig {
+    /// The color of the debug label around the set's commands.
     pub debug_color: Vec4,
 }
 impl Default for SubmissionSetConfig {

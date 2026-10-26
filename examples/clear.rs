@@ -21,21 +21,21 @@ fn main() {
     app.run();
 }
 
-fn clear(mut swapchain_image: ResMut<SwapchainImage>, mut state: SubmissionState, time: Res<Time>) {
+fn clear(mut swapchain: ResMut<Swapchain>, mut state: SubmissionState, time: Res<Time>) {
     // Cycle through hues over time (full cycle every 5 seconds)
     let hue = (time.elapsed_secs() * 72.0) % 360.0;
     let color = bevy::color::Hsla::new(hue, 0.8, 0.5, 1.0);
     let rgba: bevy::color::Srgba = color.into();
 
     state.record(|encoder| {
-        let Some(current_swapchain_image) = swapchain_image.current_image() else {
+        let Some(current_swapchain_image) = swapchain.current_image() else {
             return;
         };
         let current_swapchain_image =
             encoder.lock(current_swapchain_image, vk::PipelineStageFlags2::CLEAR);
         encoder.use_image_resource(
             current_swapchain_image,
-            &mut swapchain_image.state,
+            swapchain.state_mut(),
             Access::CLEAR,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             0..1,

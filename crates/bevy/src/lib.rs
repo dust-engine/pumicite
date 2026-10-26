@@ -98,7 +98,7 @@ pub use debug::{DebugUtilsPlugin, DeviceFaultPlugin};
 pub use heap::DescriptorHeap;
 pub use plugin::{
     CreateDevice, DefaultComputeSet, DefaultRenderSet, DefaultTransferSet,
-    PhysicalDeviceSearchStrategy, PumiciteApp, PumicitePlugin,
+    PhysicalDeviceSearchStrategy, PumiciteApp, PumicitePlugin, SubmissionSetConfig,
 };
 #[cfg(feature = "bevy_window")]
 pub use surface::{SurfaceCapabilities, SurfacePlugin};
@@ -113,7 +113,7 @@ pub mod prelude {
     #[cfg(all(feature = "bevy_window", feature = "swapchain"))]
     pub use crate::swapchain::SwapchainConfig;
     #[cfg(feature = "swapchain")]
-    pub use crate::swapchain::{SwapchainImage, SwapchainSet};
+    pub use crate::swapchain::{Swapchain, SwapchainSet};
     pub use crate::{
         DefaultComputeSet, DefaultRenderSet, DefaultTransferSet, DescriptorHeap, PumiciteApp,
         SubmissionState,

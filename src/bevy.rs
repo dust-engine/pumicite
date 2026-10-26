@@ -95,4 +95,3 @@ impl Component for crate::Surface {
     type Mutability = Immutable;
 }
 
-impl_resource!(crate::swapchain::Swapchain);

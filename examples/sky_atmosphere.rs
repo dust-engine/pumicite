@@ -577,9 +577,9 @@ fn egui_ui(mut contexts: EguiContexts, mut atmosphere: ResMut<AtmosphereState>) 
         });
 }
 
-fn start_main_render_pass(mut ctx: SubmissionState, mut swapchain_image: ResMut<SwapchainImage>) {
+fn start_main_render_pass(mut ctx: SubmissionState, mut swapchain: ResMut<Swapchain>) {
     ctx.record(|encoder| {
-        let Some(current_swapchain_image) = swapchain_image.current_image() else {
+        let Some(current_swapchain_image) = swapchain.current_image() else {
             return;
         };
         let current_swapchain_image = encoder.lock(
@@ -589,7 +589,7 @@ fn start_main_render_pass(mut ctx: SubmissionState, mut swapchain_image: ResMut<
 
         encoder.use_image_resource(
             current_swapchain_image,
-            &mut swapchain_image.state,
+            swapchain.state_mut(),
             Access::COLOR_ATTACHMENT_WRITE,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             0..1,

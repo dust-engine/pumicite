@@ -71,7 +71,7 @@ fn setup(mut commands: Commands, asset_server: ResMut<AssetServer>) {
 }
 
 fn mandelbrot_rendering(
-    mut swapchain_image: ResMut<SwapchainImage>,
+    mut swapchain: ResMut<Swapchain>,
     mut state: SubmissionState,
     pipeline: Res<MandelbrotPipeline>,
     compute_pipelines: Res<Assets<ComputePipeline>>,
@@ -81,7 +81,7 @@ fn mandelbrot_rendering(
     let pipeline = compute_pipelines.get(&pipeline.draw);
 
     state.record(|encoder| {
-        let Some(current_swapchain_image) = swapchain_image.current_image() else {
+        let Some(current_swapchain_image) = swapchain.current_image() else {
             return;
         };
         // allocate new portion of ring buffer
@@ -133,7 +133,7 @@ fn mandelbrot_rendering(
 
         encoder.use_image_resource(
             current_swapchain_image,
-            &mut swapchain_image.state,
+            swapchain.state_mut(),
             Access::COMPUTE_WRITE,
             vk::ImageLayout::GENERAL,
             0..1,

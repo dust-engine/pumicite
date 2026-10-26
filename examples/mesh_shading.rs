@@ -33,7 +33,7 @@ fn setup(mut commands: Commands, asset_server: ResMut<AssetServer>) {
 }
 
 fn mesh_shading(
-    mut swapchain_image: ResMut<SwapchainImage>,
+    mut swapchain: ResMut<Swapchain>,
     mut state: SubmissionState,
     pipeline: Res<MeshShadingPipeline>,
     graphics_pipelines: Res<Assets<GraphicsPipeline>>,
@@ -41,7 +41,7 @@ fn mesh_shading(
     let pipeline = graphics_pipelines.get(&pipeline.draw);
 
     state.record(|encoder| {
-        let Some(current_swapchain_image) = swapchain_image.current_image() else {
+        let Some(current_swapchain_image) = swapchain.current_image() else {
             return;
         };
         let current_swapchain_image = encoder.lock(
@@ -50,7 +50,7 @@ fn mesh_shading(
         );
         encoder.use_image_resource(
             current_swapchain_image,
-            &mut swapchain_image.state,
+            swapchain.state_mut(),
             Access::COLOR_ATTACHMENT_WRITE,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             0..1,

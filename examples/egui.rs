@@ -48,9 +48,9 @@ fn ui_example_system(mut contexts: EguiContexts, mut state: Local<UIState>) {
 /// For egui, you are always responsible for setting up the render pass. This
 /// is so that egui can piggy-back on an already existing render pass and doesn't
 /// have to start a new one - important for mobile performance.
-fn start_main_render_pass(mut ctx: SubmissionState, mut swapchain_image: ResMut<SwapchainImage>) {
+fn start_main_render_pass(mut ctx: SubmissionState, mut swapchain: ResMut<Swapchain>) {
     ctx.record(|encoder| {
-        let Some(current_swapchain_image) = swapchain_image.current_image() else {
+        let Some(current_swapchain_image) = swapchain.current_image() else {
             return;
         };
         let current_swapchain_image = encoder.lock(
@@ -60,7 +60,7 @@ fn start_main_render_pass(mut ctx: SubmissionState, mut swapchain_image: ResMut<
 
         encoder.use_image_resource(
             current_swapchain_image,
-            &mut swapchain_image.state,
+            swapchain.state_mut(),
             Access::COLOR_ATTACHMENT_WRITE,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             0..1,

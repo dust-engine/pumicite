@@ -30,12 +30,12 @@ fn main() {
     app.run();
 }
 
-fn clear(mut swapchain_image: ResMut<SwapchainImage>, mut state: SubmissionState, time: Res<Time>) {
+fn clear(mut swapchain: ResMut<Swapchain>, mut state: SubmissionState, time: Res<Time>) {
     state.record(|encoder| {
-        let Some(current) = swapchain_image.current_image() else { return };
+        let Some(current) = swapchain.current_image() else { return };
         let current = encoder.lock(current, vk::PipelineStageFlags2::CLEAR);
         encoder.use_image_resource(
-            current, &mut swapchain_image.state,
+            current, swapchain.state_mut(),
             Access::CLEAR, vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             0..1, 0..1, false,
         );

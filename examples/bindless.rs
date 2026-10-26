@@ -97,7 +97,7 @@ struct ExamplePushConstant {
 }
 
 fn clear(
-    mut swapchain_image: ResMut<SwapchainImage>,
+    mut swapchain: ResMut<Swapchain>,
     mut state: SubmissionState,
     example_resource: Res<ExampleResource>,
     pipelines: Res<Assets<ComputePipeline>>,
@@ -112,7 +112,7 @@ fn clear(
         return;
     };
     state.record(|encoder| {
-        let Some(current_swapchain_image) = swapchain_image.current_image() else {
+        let Some(current_swapchain_image) = swapchain.current_image() else {
             return;
         };
         let target_image = encoder.retain(example.image.clone()).deref_inner();
@@ -146,7 +146,7 @@ fn clear(
             encoder.lock(current_swapchain_image, vk::PipelineStageFlags2::CLEAR);
         encoder.use_image_resource(
             current_swapchain_image,
-            &mut swapchain_image.state,
+            swapchain.state_mut(),
             Access::BLIT_DST,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             0..1,
