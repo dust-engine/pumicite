@@ -636,8 +636,16 @@ pub fn acquire_swapchain_image(
     // image this frame, and the image destroys both semaphores only after its last present
     // finishes.
     unsafe {
-        submission
-            .set_binary_semaphores(new_image.acquire_semaphore(), new_image.present_semaphore());
+        submission.wait_semaphore(
+            new_image.acquire_semaphore(),
+            0,
+            vk::PipelineStageFlags2::ALL_COMMANDS,
+        );
+        submission.signal_semaphore(
+            new_image.present_semaphore(),
+            0,
+            vk::PipelineStageFlags2::ALL_COMMANDS,
+        );
     }
     swapchain.image = Some(GPUMutex::from_boxed(new_image));
     swapchain.state = ResourceState::default();

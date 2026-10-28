@@ -102,9 +102,12 @@ pub(crate) struct RenderSetSharedState {
     name: CString,
     /// Debug color for the debug region of this submission set.
     color: Vec4,
-    /// Binary semaphores the next submission waits on and signals, for swapchain images.
-    binary_wait: Option<vk::Semaphore>,
-    binary_signal: Option<vk::Semaphore>,
+    /// The semaphores that [`SubmissionState::wait_semaphore`] added for the next
+    /// submission to wait on, besides the semaphores that pumicite tracks.
+    waits: Vec<vk::SemaphoreSubmitInfo<'static>>,
+    /// The semaphores that [`SubmissionState::signal_semaphore`] added for the next
+    /// submission to signal, besides its timeline.
+    signals: Vec<vk::SemaphoreSubmitInfo<'static>>,
 }
 impl Drop for RenderSetSharedState {
     fn drop(&mut self) {
@@ -134,8 +137,8 @@ impl RenderSetSharedState {
             set,
             name: cstring,
             color,
-            binary_wait: None,
-            binary_signal: None,
+            waits: Vec::new(),
+            signals: Vec::new(),
         })
     }
 }
@@ -222,18 +225,49 @@ impl SubmissionState<'_> {
         self.state.encoder.render_pass_state()
     }
 
-    /// Makes this frame's submission wait on the binary semaphore `wait` and signal the binary
-    /// semaphore `signal`.
+    /// Makes this frame's submission wait on `semaphore` before its commands at
+    /// `stage_mask` start: until a timeline semaphore reaches `value`, or until a binary
+    /// semaphore is signaled. The `value` of a binary semaphore is ignored. This is for
+    /// semaphores that pumicite doesn't own, such as a timeline semaphore shared with
+    /// another API.
     ///
     /// # Safety
-    /// Same as [`pumicite::Queue::submit_with_binary_semaphores`].
-    pub(crate) unsafe fn set_binary_semaphores(
+    /// Same as for a semaphore in the `waits` of
+    /// [`pumicite::Queue::submit_with_semaphores`].
+    pub unsafe fn wait_semaphore(
         &mut self,
-        wait: vk::Semaphore,
-        signal: vk::Semaphore,
+        semaphore: vk::Semaphore,
+        value: u64,
+        stage_mask: vk::PipelineStageFlags2,
     ) {
-        self.state.binary_wait = Some(wait);
-        self.state.binary_signal = Some(signal);
+        self.state.waits.push(vk::SemaphoreSubmitInfo {
+            semaphore,
+            value,
+            stage_mask,
+            ..Default::default()
+        });
+    }
+
+    /// Makes this frame's submission signal `semaphore` once its commands at `stage_mask`
+    /// finish. A timeline semaphore is signaled to `value`, and the `value` of a binary
+    /// semaphore is ignored. This is for semaphores that pumicite doesn't own, such as a
+    /// timeline semaphore shared with another API.
+    ///
+    /// # Safety
+    /// Same as for a semaphore in the `signals` of
+    /// [`pumicite::Queue::submit_with_semaphores`].
+    pub unsafe fn signal_semaphore(
+        &mut self,
+        semaphore: vk::Semaphore,
+        value: u64,
+        stage_mask: vk::PipelineStageFlags2,
+    ) {
+        self.state.signals.push(vk::SemaphoreSubmitInfo {
+            semaphore,
+            value,
+            stage_mask,
+            ..Default::default()
+        });
     }
 }
 
@@ -398,16 +432,18 @@ pub(crate) fn submission_system(
     unsafe {
         shared.encoder.reset();
     }
-    let binary_wait = shared.binary_wait.take();
-    let binary_signal = shared.binary_signal.take();
     let Some(mut cb) = shared.recording_command_buffer.take() else {
+        shared.waits.clear();
+        shared.signals.clear();
         return;
     };
     shared.command_pool.finish(&mut cb).unwrap();
     queue.begin_label(shared.name.as_c_str(), shared.color);
-    // Safety: the binary semaphores were set with `SubmissionState::set_binary_semaphores`,
-    // whose caller upholds this.
-    unsafe { queue.submit_with_binary_semaphores(&mut cb, binary_wait, binary_signal) }.unwrap();
+    // Safety: the semaphores were added with `SubmissionState::wait_semaphore` and
+    // `SubmissionState::signal_semaphore`, whose callers uphold this.
+    unsafe { queue.submit_with_semaphores(&mut cb, &shared.waits, &shared.signals) }.unwrap();
+    shared.waits.clear();
+    shared.signals.clear();
     queue.end_label();
     shared.pending_command_buffers.push(cb);
 }

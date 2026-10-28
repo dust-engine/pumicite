@@ -869,6 +869,46 @@ impl<'a> CommandEncoder<'a> {
         });
     }
 
+    /// Creates an image memory barrier with a queue family ownership transfer.
+    ///
+    /// - Creates an exeuction dependency such that `before.stage` completes before any
+    ///   operations in `after.stage` begin
+    /// - Creates a memory dependency such that memory regions touched by `before.access` are flushed,
+    ///   and memory regions that will be touched by `after.access` are invalidated.
+    /// - Transition the image layout from `old_layout` to `new_layout`
+    /// - Transfers ownership of the image from `src_queue_family` to `dst_queue_family`
+    /// 
+    /// 
+    /// The receiving queue family must record a matching barrier, acquiring the image, before
+    /// using it, unless it discards the image's contents. A release ignores `after`, and an
+    /// acquire ignores `before`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn image_ownership_transfer<I: ImageLike>(
+        &mut self,
+        image: impl Into<GPURefMut<'a, I>>,
+        before: Access,
+        after: Access,
+        old_layout: vk::ImageLayout,
+        new_layout: vk::ImageLayout,
+        src_queue_family: u32,
+        dst_queue_family: u32,
+        mip_level_range: Range<u32>,
+        array_layer_range: Range<u32>,
+    ) {
+        self.image_barrier(
+            image,
+            before,
+            after,
+            old_layout,
+            new_layout,
+            mip_level_range,
+            array_layer_range,
+        );
+        let barrier = self.pending_image_barrier.last_mut().unwrap();
+        barrier.src_queue_family_index = src_queue_family;
+        barrier.dst_queue_family_index = dst_queue_family;
+    }
+
     /// Transitions a resource to a new state and adds necessary global barriers.
     ///
     /// # Parameters

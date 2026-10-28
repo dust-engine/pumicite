@@ -83,26 +83,27 @@ impl Queue {
     /// Note: Submission order does not guarantee completion order. Use
     /// [`Timeline`](crate::sync::Timeline) for sequential execution guarantees.
     pub fn submit(&mut self, cb: &mut CommandBuffer) -> DeviceResult<()> {
-        // Safety: no binary semaphores.
-        unsafe { self.submit_with_binary_semaphores(cb, None, None) }
+        // Safety: there are no semaphores besides the ones pumicite tracks.
+        unsafe { self.submit_with_semaphores(cb, &[], &[]) }
     }
 
-    /// Like [`submit`](Self::submit), but the submission also waits on the binary semaphore
-    /// `wait` before any of its commands start, and signals the binary semaphore `signal`
-    /// once all of them finish. This is for swapchain images: wait on
-    /// [`SwapchainImageInner::acquire_semaphore`](crate::swapchain::SwapchainImageInner::acquire_semaphore)
-    /// and signal
-    /// [`SwapchainImageInner::present_semaphore`](crate::swapchain::SwapchainImageInner::present_semaphore).
+    /// Like [`submit`](Self::submit), but the submission also waits on each semaphore in
+    /// `waits` and signals each semaphore in `signals`.
     ///
     /// # Safety
-    /// - `wait` must be a binary semaphore with a pending signal that nothing else waits on.
-    /// - `signal` must be an unsignaled binary semaphore that nothing else signals.
-    /// - Both must stay alive until the submission finishes.
-    pub unsafe fn submit_with_binary_semaphores(
+    /// - A binary semaphore in `waits` must have a pending signal that nothing else waits
+    ///   on.
+    /// - A binary semaphore in `signals` must be unsignaled, and nothing else may signal
+    ///   it.
+    /// - A timeline semaphore in `signals` must be signaled to a value greater than its
+    ///   current value, and greater than any value that something else signals it to
+    ///   before this submission does.
+    /// - Every semaphore must stay alive until the submission finishes.
+    pub unsafe fn submit_with_semaphores(
         &mut self,
         cb: &mut CommandBuffer,
-        binary_wait: Option<vk::Semaphore>,
-        binary_signal: Option<vk::Semaphore>,
+        waits: &[vk::SemaphoreSubmitInfo<'static>],
+        signals: &[vk::SemaphoreSubmitInfo<'static>],
     ) -> DeviceResult<()> {
         assert_eq!(
             cb.state(),
@@ -130,30 +131,18 @@ impl Queue {
                     stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
                     ..Default::default()
                 }))
-                .chain(binary_wait.map(|semaphore| vk::SemaphoreSubmitInfo {
-                    semaphore,
-                    stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-                    ..Default::default()
-                }));
+                .chain(waits.iter().cloned());
             self.reused_semaphore_submit_info.extend(waits);
-            let signals = [
-                vk::SemaphoreSubmitInfo {
-                    semaphore: timestamp.semaphore().vk_handle(),
-                    stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-                    value: timestamp.value(),
-                    ..Default::default()
-                },
-                vk::SemaphoreSubmitInfo {
-                    semaphore: binary_signal.unwrap_or_default(),
-                    stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-                    ..Default::default()
-                },
-            ];
-            let signals = if binary_signal.is_some() {
-                &signals[..]
-            } else {
-                &signals[..1]
-            };
+            let wait_count = self.reused_semaphore_submit_info.len();
+            let signals = std::iter::once(vk::SemaphoreSubmitInfo {
+                semaphore: timestamp.semaphore().vk_handle(),
+                stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
+                value: timestamp.value(),
+                ..Default::default()
+            })
+            .chain(signals.iter().cloned());
+            self.reused_semaphore_submit_info.extend(signals);
+            let (waits, signals) = self.reused_semaphore_submit_info.split_at(wait_count);
             let result = self
                 .device
                 .queue_submit2(
@@ -163,7 +152,7 @@ impl Queue {
                             command_buffer: cb.buffer,
                             ..Default::default()
                         }])
-                        .wait_semaphore_infos(&self.reused_semaphore_submit_info)
+                        .wait_semaphore_infos(waits)
                         .signal_semaphore_infos(signals)],
                     vk::Fence::null(),
                 )
