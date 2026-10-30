@@ -16,8 +16,14 @@ use std::ffi::{CStr, CString};
 
 use crate::{DescriptorHeap, SubmissionState, shader::ShaderModule, staging::AsyncTransfer};
 
-use super::pass::SubmissionSetsPass;
-use super::queue::QueueConfiguration;
+use super::pass::{RenderSetMetaSystems, SubmissionSetsPass};
+use super::queue::{QueueConfig, QueueConfiguration};
+use super::system::{
+    RenderSetSharedState, RenderSetSharedStateConfig, prelude_system, render_set_ending_system,
+    submission_system,
+};
+use bevy_ecs::component::ComponentDescriptor;
+use bevy_ecs::system::SystemParamBuilder;
 use pumicite::{
     Device, Extension, Instance, MissingFeatureError,
     device::DeviceBuilder,
@@ -841,12 +847,57 @@ impl PumiciteApp for App {
         let component_id = queue_config
             .component_id_of_queue::<Q>()
             .expect("Please register this queue first");
+        // The set's shared state, which the build pass inserts once the device exists
+        // and the set has systems to record.
+        let shared_state = self
+            .world_mut()
+            .register_component_with_descriptor(ComponentDescriptor::new::<RenderSetSharedState>());
 
+        // The prelude begins recording the set's commands, and the submission submits
+        // them. They're in the set like its other systems, and the build pass orders them
+        // before and after those.
         let schedule = self.get_schedule_mut(PostUpdate).unwrap();
+        let graph = schedule.graph_mut();
+        let prelude = graph
+            .process_configs(
+                (RenderSetSharedStateConfig::new(shared_state),)
+                    .build_system(prelude_system)
+                    .in_set(set)
+                    .ambiguous_with_all()
+                    .into_configs(),
+                true,
+            )
+            .nodes[0]
+            .as_system()
+            .unwrap();
+        let submission = graph
+            .process_configs(
+                (
+                    RenderSetSharedStateConfig::new(shared_state),
+                    QueueConfig(component_id),
+                )
+                    .build_system(submission_system)
+                    .in_set(set)
+                    .ambiguous_with_all()
+                    .into_configs(),
+                true,
+            )
+            .nodes[0]
+            .as_system()
+            .unwrap();
+
         let build_pass = schedule.get_build_pass_mut::<SubmissionSetsPass>().unwrap();
         build_pass
             .submission_sets_to_queue
             .insert(set.intern(), (component_id, config));
+        build_pass.submission_sets_to_meta_systems.insert(
+            set.intern(),
+            RenderSetMetaSystems {
+                prelude,
+                submission,
+                shared_state,
+            },
+        );
         self
     }
 
@@ -875,10 +926,29 @@ impl PumiciteApp for App {
         );
         assert_eq!(result.nodes.len(), 1);
         let system_key = result.nodes[0].as_system().unwrap();
+        // And the ending system, which ends the render pass after the set's other
+        // systems. The build pass gives it the submission set's command encoder, as it
+        // does them.
+        let ending_system = schedule
+            .graph_mut()
+            .process_configs(
+                render_set_ending_system
+                    .in_set(interned_set)
+                    .ambiguous_with_all()
+                    .into_configs(),
+                true,
+            )
+            .nodes[0]
+            .as_system()
+            .unwrap();
+        let set_key = schedule.graph().system_sets.get_key(interned_set).unwrap();
 
         let build_pass = schedule.get_build_pass_mut::<SubmissionSetsPass>().unwrap();
         build_pass
             .render_sets_to_systems
             .insert(interned_set, system_key);
+        build_pass
+            .render_sets_to_ending_systems
+            .insert(set_key, ending_system);
     }
 }

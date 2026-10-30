@@ -77,8 +77,9 @@ use super::queue::Queue;
 /// - Command encoding state
 /// - Timeline synchronization
 ///
-/// This resource is created automatically when you call
-/// [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set) and should
+/// This resource is created automatically when the schedule is first built with systems
+/// in a set registered with
+/// [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set), and should
 /// not be accessed directly.
 #[derive(Resource)]
 pub(crate) struct RenderSetSharedState {
@@ -293,7 +294,15 @@ unsafe impl SystemParam for SubmissionState<'_> {
                     system_meta.name()
                 )
             }
-            let value = world.get_resource_mut_by_id(*state).unwrap();
+            // A submission set's state is made once the set has systems besides its
+            // prelude and submission systems, which are skipped until then.
+            let Some(value) = world.get_resource_mut_by_id(*state) else {
+                return Err(
+                    bevy_ecs::system::SystemParamValidationError::skipped::<Self>(
+                        "its submission set has no other systems",
+                    ),
+                );
+            };
             Ok(SubmissionState {
                 state: value.with_type(),
             })
@@ -377,8 +386,9 @@ impl RenderSetSharedStateConfig {
     }
 }
 
-// SAFETY: `RenderSetSharedStateConfig` is only constructed by `SubmissionSetsPass`, with
-// component IDs it registered for a `RenderSetSharedState` resource.
+// SAFETY: `RenderSetSharedStateConfig` is only constructed by `add_submission_set` and
+// `SubmissionSetsPass`, with the component ID `add_submission_set` registered for the
+// set's `RenderSetSharedState` resource.
 unsafe impl<'w> SystemParamBuilder<SubmissionState<'w>> for RenderSetSharedStateConfig {
     fn build(self, _world: &mut World) -> ComponentId {
         self.id

@@ -11,13 +11,14 @@
 //! # Implementation
 //!
 //! When you register a submission set via [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set),
+//! it adds `prelude` and `submission` systems to the set, like any other system, and
 //! this build pass:
 //!
-//! 1. **Maps** the system set to include `prelude` and `submission` systems
-//! 2. **Creates** shared state ([`RenderSetSharedState`](crate::system::RenderSetSharedState))
-//! 3. **Configures** all systems in the set to use the shared command encoder
-//! 4. **Adds dependencies** so `prelude`` runs before all systems in the set, and
-//!     `submission` runs after all systems in the set.
+//! 1. **Creates** shared state ([`RenderSetSharedState`](crate::system::RenderSetSharedState))
+//!    once the set has other systems; until then, `prelude` and `submission` are skipped
+//! 2. **Configures** all systems in the set to use the shared command encoder
+//! 3. **Adds dependencies** so `prelude` runs before all systems in the set, and
+//!    `submission` runs after all systems in the set.
 //!
 //! # Internal Use Only
 //!
@@ -34,26 +35,23 @@ use bevy_ecs::{
     component::ComponentId,
     query::FilteredAccess,
     resource::IS_RESOURCE,
-    schedule::{
-        InternedSystemSet, NodeId, ScheduleBuildPass, ScheduleGraph, SystemKey, SystemSetKey,
-    },
-    system::{IntoSystem, System, SystemAccess, SystemParamBuilder},
+    schedule::{InternedSystemSet, NodeId, ScheduleBuildPass, SystemKey, SystemSetKey},
+    system::{System, SystemAccess},
     world::World,
 };
 
-use crate::{
-    plugin::SubmissionSetConfig,
-    queue::{QueueConfig, SharedQueue},
-};
+use crate::{plugin::SubmissionSetConfig, queue::SharedQueue};
 use pumicite::Device;
 
 use super::system::{RenderSetSharedState, RenderSetSharedStateConfig};
 
 #[derive(Debug)]
-struct RenderSetMetaSystems {
-    prelude: SystemKey,
-    submission: SystemKey,
-    shared_state: ComponentId,
+pub(crate) struct RenderSetMetaSystems {
+    pub(crate) prelude: SystemKey,
+    pub(crate) submission: SystemKey,
+    /// The resource holding the set's [`RenderSetSharedState`], once the set has
+    /// systems besides `prelude` and `submission`.
+    pub(crate) shared_state: ComponentId,
 }
 
 /// Schedule build pass that configures submission sets for GPU command encoding.
@@ -68,12 +66,16 @@ struct RenderSetMetaSystems {
 /// # Internal Implementation
 ///
 /// For each registered submission set, this pass:
-/// 1. Inserts a prelude system that begins command recording
+/// 1. Creates the shared state, once the set has systems besides its prelude and
+///    submission systems
 /// 2. Configures member systems to share the command encoder
-/// 3. Inserts a submission system that ends recording and submits
+/// 3. Orders the prelude system, which begins command recording, before the set's
+///    other systems, and the submission system, which ends recording and submits,
+///    after them
 ///
 /// For each registered render set, this pass:
-/// 1. Ensures the config system (which begins the render pass) runs before other systems
+/// 1. Ensures the config system (which begins the render pass) runs before other systems,
+///    and the ending system (which ends it) after them
 /// 2. Validates the render set belongs to exactly one submission set
 /// 3. Runs it as one block: the submission set's other systems that record commands,
 ///    including other render sets, run entirely before or after it
@@ -84,14 +86,15 @@ pub(super) struct SubmissionSetsPass {
     /// Maps submission set to its associated queue component ID.
     pub(crate) submission_sets_to_queue:
         HashMap<InternedSystemSet, (ComponentId, SubmissionSetConfig)>,
-    /// Maps submission set to its prelude/submission meta-systems and shared state.
-    /// These are reused when the schedule is rebuilt.
-    submission_sets_to_meta_systems: HashMap<InternedSystemSet, RenderSetMetaSystems>,
+    /// Maps submission set to its prelude/submission meta-systems and shared state,
+    /// which [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set)
+    /// adds to the set.
+    pub(crate) submission_sets_to_meta_systems: HashMap<InternedSystemSet, RenderSetMetaSystems>,
     /// Maps render sets to its config system
     pub(crate) render_sets_to_systems: HashMap<InternedSystemSet, SystemKey>,
-    /// Maps render sets to its ending system (added during schedule build, and reused
-    /// when the schedule is rebuilt)
-    render_sets_to_ending_systems: BTreeMap<SystemSetKey, SystemKey>,
+    /// Maps render sets to its ending system, which
+    /// [`PumiciteApp::add_render_set`](crate::PumiciteApp::add_render_set) adds to the set
+    pub(crate) render_sets_to_ending_systems: BTreeMap<SystemSetKey, SystemKey>,
     /// Systems in submission sets that have a `SubmissionState` param, and so record into
     /// the set's command encoder (collected during schedule build)
     systems_using_encoder: HashSet<SystemKey>,
@@ -108,154 +111,32 @@ impl ScheduleBuildPass for SubmissionSetsPass {
     ) {
     }
 
-    fn map_set_to_systems(
-        &mut self,
-        set: bevy_ecs::schedule::SystemSetKey,
-        systems: &mut indexmap::IndexSet<SystemKey, bevy_platform::hash::FixedHasher>,
-        world: &mut World,
-        graph: &mut ScheduleGraph,
-    ) {
-        let interned_set = graph.system_sets.get(set).unwrap();
-
-        // Handle render sets - add ending system
-        if let Some(&config_system) = self.render_sets_to_systems.get(&interned_set) {
-            if graph.systems.get(config_system).is_none() {
-                // The config system was removed from the schedule, so this is no longer
-                // a render set. `add_render_set` registers it again.
-                self.render_sets_to_systems.remove(&interned_set);
-                self.render_sets_to_ending_systems.remove(&set);
-            } else {
-                // Reuse the ending system from an earlier build, unless it was removed.
-                let ending = match self.render_sets_to_ending_systems.get(&set) {
-                    Some(&ending) if graph.systems.get(ending).is_some() => ending,
-                    _ => {
-                        let ending =
-                            add_system(graph, world, super::system::render_set_ending_system);
-                        self.render_sets_to_ending_systems.insert(set, ending);
-                        ending
-                    }
-                };
-                systems.insert(ending);
-            }
-        }
-
-        let Some((queue_component_id, config)) = self.submission_sets_to_queue.get(&interned_set)
-        else {
-            return; // not a submission set.
-        };
-
-        // Meta systems left out of an empty set don't run, and are reused if the set
-        // gets systems again.
-        if systems.is_empty() {
-            return; // Skip empty submission sets
-        }
-
-        // Reuse the meta systems from an earlier build, so that rebuilding the schedule
-        // doesn't create a second shared state for this set.
-        let existing = self.submission_sets_to_meta_systems.get(&interned_set);
-        if let Some(meta_systems) = existing
-            && graph.systems.get(meta_systems.prelude).is_some()
-            && graph.systems.get(meta_systems.submission).is_some()
-        {
-            systems.insert(meta_systems.submission);
-            systems.insert(meta_systems.prelude);
-            return;
-        }
-
-        // The meta systems are new, or were removed from the schedule along with the
-        // set's other systems. In the latter case, keep using the existing shared state.
-        let shared_state_component_id = match existing {
-            Some(meta_systems) => meta_systems.shared_state,
-            None => {
-                let device = world.resource::<Device>().clone();
-                let queue_family_index = unsafe {
-                    world
-                        .get_resource_by_id(*queue_component_id)
-                        .unwrap()
-                        .deref::<SharedQueue>()
-                        .family_index()
-                };
-                // create shared state
-                let shared_state_component_id = world.register_component_with_descriptor(
-                    bevy_ecs::component::ComponentDescriptor::new::<RenderSetSharedState>(),
-                );
-                bevy_ptr::OwningPtr::make(
-                    RenderSetSharedState::new(
-                        device,
-                        queue_family_index,
-                        interned_set,
-                        config.debug_color,
-                    )
-                    .unwrap(),
-                    |ptr| unsafe {
-                        if world
-                            .resource_entities()
-                            .get(shared_state_component_id)
-                            .is_none()
-                        {
-                            world.spawn(bevy_ecs::resource::IsResource::new(
-                                shared_state_component_id,
-                            ));
-                        }
-                        // SAFETY: forwarded from this function's contract.
-                        world.insert_resource_by_id(
-                            shared_state_component_id,
-                            ptr,
-                            MaybeLocation::caller(),
-                        );
-                    },
-                );
-                shared_state_component_id
-            }
-        };
-
-        // These are built with their param state already set, so their access
-        // is declared by the params themselves.
-        let submission = add_system(
-            graph,
-            world,
-            (
-                RenderSetSharedStateConfig::new(shared_state_component_id),
-                QueueConfig(*queue_component_id),
-            )
-                .build_system(super::system::submission_system),
-        );
-        let prelude = add_system(
-            graph,
-            world,
-            (RenderSetSharedStateConfig::new(shared_state_component_id),)
-                .build_system(super::system::prelude_system),
-        );
-        self.submission_sets_to_meta_systems.insert(
-            interned_set,
-            RenderSetMetaSystems {
-                prelude,
-                submission,
-                shared_state: shared_state_component_id,
-            },
-        );
-        systems.insert(submission);
-        systems.insert(prelude);
-    }
-
     fn collapse_set(
         &mut self,
         set: bevy_ecs::schedule::SystemSetKey,
         systems: &indexmap::IndexSet<SystemKey, bevy_platform::hash::FixedHasher>,
-        _world: &mut World,
+        world: &mut World,
         graph: &mut bevy_ecs::schedule::ScheduleGraph,
-        dependency_flattened: &bevy_ecs::schedule::graph::DiGraph<NodeId>,
+        _dependency_flattened: &bevy_ecs::schedule::graph::DiGraph<NodeId>,
     ) -> impl Iterator<Item = (bevy_ecs::schedule::NodeId, bevy_ecs::schedule::NodeId)> {
         let mut edges: Vec<(NodeId, NodeId)> = Vec::new();
         let interned_set = graph.system_sets.get(set).unwrap();
 
         // --- Handle render sets ---
-        if let Some(&config_system) = self.render_sets_to_systems.get(&interned_set) {
-            let ending_system = self
-                .render_sets_to_ending_systems
-                .get(&set)
-                .copied()
-                .unwrap();
+        let render_set = self
+            .render_sets_to_systems
+            .get(&interned_set)
+            .copied()
+            .zip(self.render_sets_to_ending_systems.get(&set).copied());
+        if let Some((config_system, ending_system)) = render_set
+            && (graph.systems.get(config_system).is_none()
+                || graph.systems.get(ending_system).is_none())
+        {
+            // Its config or ending system was removed from the schedule, so this is no
+            // longer a render set. `add_render_set` registers it again.
+            self.render_sets_to_systems.remove(&interned_set);
+            self.render_sets_to_ending_systems.remove(&set);
+        } else if let Some((config_system, ending_system)) = render_set {
             // Config system must run before all other systems in this render set.
             // The config system is responsible for beginning the render pass.
             // Ending system must run after all other systems in this render set.
@@ -271,14 +152,39 @@ impl ScheduleBuildPass for SubmissionSetsPass {
         }
 
         // --- Handle submission sets ---
-        if self.submission_sets_to_queue.contains_key(&interned_set) {
-            if systems.is_empty() {
-                return Vec::new().into_iter();
+        // Without other systems, the set gets no shared state, and `prelude` and
+        // `submission` are skipped.
+        if let Some((queue_component_id, config)) = self.submission_sets_to_queue.get(&interned_set)
+            && let Some(meta_systems) = self.submission_sets_to_meta_systems.get(&interned_set)
+            && systems
+                .iter()
+                .any(|&x| x != meta_systems.prelude && x != meta_systems.submission)
+        {
+            let user_systems = systems
+                .iter()
+                .copied()
+                .filter(|&x| x != meta_systems.prelude && x != meta_systems.submission)
+                .collect::<Vec<_>>();
+            assert!(
+                systems.contains(&meta_systems.prelude)
+                    && systems.contains(&meta_systems.submission),
+                "The prelude and submission systems of submission set {interned_set:?} were \
+                 removed from the schedule. Register the set again with `add_submission_set`."
+            );
+            // Made once the set has systems to record, and kept when the schedule is
+            // rebuilt.
+            if world
+                .get_resource_by_id(meta_systems.shared_state)
+                .is_none()
+            {
+                insert_shared_state(
+                    world,
+                    interned_set,
+                    *queue_component_id,
+                    config,
+                    meta_systems.shared_state,
+                );
             }
-            let meta_systems = self
-                .submission_sets_to_meta_systems
-                .get(&interned_set)
-                .unwrap();
 
             let mut shared_config = RenderSetSharedStateConfig::new(meta_systems.shared_state);
             for system_node in systems.iter() {
@@ -289,9 +195,8 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                     continue; // It doesn't record into the shared command encoder.
                 }
                 self.systems_using_encoder.insert(*system_node);
-                // On the build that adds them, systems added by build passes are initialized
-                // again after the passes run, which replaces this access with what their
-                // params declare. For every other system, the access added here sticks.
+                // `prelude` and `submission` declare this access with their params, which
+                // are built with the set's state. The set's other systems only get it here.
                 let mut shared_state_write = FilteredAccess::default();
                 shared_state_write.add_write(meta_systems.shared_state);
                 shared_state_write.and_with(IS_RESOURCE);
@@ -313,29 +218,12 @@ impl ScheduleBuildPass for SubmissionSetsPass {
                 }
             }
 
-            let user_systems = systems
-                .iter()
-                .copied()
-                .filter(|&x| x != meta_systems.prelude && x != meta_systems.submission)
-                .collect::<Vec<_>>();
-
-            // prelude → each user system, each user system → submission
+            // prelude → each user system, each user system → submission. The set's own
+            // orderings reach `prelude` and `submission`, which are in it, as they do its
+            // other systems.
             for &system in &user_systems {
                 edges.push((meta_systems.prelude.into(), system.into()));
                 edges.push((system.into(), meta_systems.submission.into()));
-            }
-
-            // Forward parent deps → prelude
-            for parent in dependency_flattened
-                .neighbors_directed(set.into(), bevy_ecs::schedule::graph::Direction::Incoming)
-            {
-                edges.push((parent, meta_systems.prelude.into()));
-            }
-            // Forward submission → child deps
-            for child in dependency_flattened
-                .neighbors_directed(set.into(), bevy_ecs::schedule::graph::Direction::Outgoing)
-            {
-                edges.push((meta_systems.submission.into(), child));
             }
         }
 
@@ -719,21 +607,31 @@ fn collect_descendant_systems(
     }
 }
 
-fn add_system<Marker, T: IntoSystem<(), (), Marker>>(
-    graph: &mut ScheduleGraph,
+/// Inserts the shared state of the submission set `set`, which records commands for the
+/// queue with the resource `queue_component_id`, as the resource `shared_state`.
+fn insert_shared_state(
     world: &mut World,
-    system: T,
-) -> SystemKey {
-    let mut system: T::System = IntoSystem::into_system(system);
-    // Initialize now so that `collapse_set` can call `configurate` on it. The schedule
-    // initializes it again after the build passes run, and takes its access from that.
-    system.initialize(world);
-
-    let id = graph.systems.insert(Box::new(system), Vec::new());
-
-    // ignore ambiguities with auto sync points
-    // They aren't under user control, so no one should know or care.
-    graph.ambiguous_with_all.insert(id.into());
-
-    id
+    set: InternedSystemSet,
+    queue_component_id: ComponentId,
+    config: &SubmissionSetConfig,
+    shared_state: ComponentId,
+) {
+    let device = world.resource::<Device>().clone();
+    let queue_family_index = unsafe {
+        world
+            .get_resource_by_id(queue_component_id)
+            .unwrap()
+            .deref::<SharedQueue>()
+            .family_index()
+    };
+    bevy_ptr::OwningPtr::make(
+        RenderSetSharedState::new(device, queue_family_index, set, config.debug_color).unwrap(),
+        |ptr| unsafe {
+            if world.resource_entities().get(shared_state).is_none() {
+                world.spawn(bevy_ecs::resource::IsResource::new(shared_state));
+            }
+            // SAFETY: `shared_state` was registered for a `RenderSetSharedState`.
+            world.insert_resource_by_id(shared_state, ptr, MaybeLocation::caller());
+        },
+    );
 }

@@ -320,7 +320,7 @@ unsafe impl<'a, T: 'static> SystemParam for Queue<'a, T> {
 /// regardless of the param's marker type.
 pub struct QueueConfig(pub ComponentId);
 
-// SAFETY: `QueueConfig` is only constructed by `SubmissionSetsPass`, with component IDs
+// SAFETY: `QueueConfig` is only constructed by `add_submission_set`, with component IDs
 // registered in `QueueConfiguration`. Those always refer to a `SharedQueue` resource.
 unsafe impl<'w, T: 'static> SystemParamBuilder<Queue<'w, T>> for QueueConfig {
     fn build(self, _world: &mut World) -> ComponentId {
