@@ -218,10 +218,6 @@ fn drain_built_blas_system(mut commands: Commands, mut cmd_pool: ResMut<ASBuildC
         .pop_front_if(|build| build.command_buffer.try_complete())
     {
         cmd_pool.pool.free(build.command_buffer);
-        tracing::info!(
-            "BLAS build completed for {} entities",
-            build.accel_structs.len()
-        );
         let compacted_sizes = if let Some(mut query_pool) = build.query_pool {
             let query_pool = query_pool.try_deref_mut().unwrap();
             let mut sizes = vec![0; query_pool.len() as usize];
@@ -534,10 +530,6 @@ fn build_blas_system<T: BLASBuilder>(
     // scheduled command buffer always carries a build and is always submitted.
     debug_assert!(!pending_accel_structs.is_empty());
     queue.submit(&mut cmd_buf).unwrap();
-    tracing::info!(
-        "Scheduled BLAS build for {} entities",
-        pending_accel_structs.len()
-    );
 
     let pending_entities = pending_accel_structs
         .iter()
