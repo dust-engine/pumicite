@@ -152,6 +152,14 @@ impl PhysicalDevice {
         }
     }
 
+    /// How many low bits of the timestamps that queues of `queue_family` write are
+    /// valid; 0 for a family that can't write timestamps.
+    pub fn timestamp_valid_bits(&self, queue_family: u32) -> u32 {
+        self.get_queue_family_properties()
+            .get(queue_family as usize)
+            .map_or(0, |family| family.timestamp_valid_bits)
+    }
+
     /// Returns the physical device properties.
     pub fn properties(&self) -> &PhysicalDeviceProperties {
         &self.0.properties

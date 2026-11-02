@@ -52,7 +52,7 @@ use bevy_ecs::{
     query::FilteredAccess,
     resource::{IS_RESOURCE, Resource},
     schedule::InternedSystemSet,
-    system::{SystemMeta, SystemParam, SystemParamBuilder},
+    system::{Res, SystemMeta, SystemParam, SystemParamBuilder},
     world::{Mut, World, unsafe_world_cell::UnsafeWorldCell},
 };
 
@@ -66,9 +66,29 @@ use pumicite::{
     debug::DebugObject,
     sync::Timeline,
 };
-use std::{ffi::CString, mem::MaybeUninit};
+use std::{ffi::CString, mem::MaybeUninit, sync::Arc};
 
 use super::queue::Queue;
+
+/// Commands to record at the start and the end of every submission set's command
+/// buffer, each frame, such as a GPU profiler's timestamps around each submission.
+///
+/// Install one by inserting [`SubmissionHooks`]. The hooks run on whichever thread
+/// runs the set's first and last systems, which record nothing else meanwhile.
+pub trait SubmissionHook: Send + Sync + 'static {
+    /// Records into `set`'s command buffer once it has begun, before any of the
+    /// set's systems record into it. The buffer is submitted to a queue of
+    /// `queue_family`.
+    fn begin(&self, set: InternedSystemSet, queue_family: u32, encoder: &mut CommandEncoder);
+
+    /// Records into `set`'s command buffer after all of the set's systems, just
+    /// before it ends and is submitted.
+    fn end(&self, set: InternedSystemSet, queue_family: u32, encoder: &mut CommandEncoder);
+}
+
+/// The [`SubmissionHook`] every submission set runs while this resource exists.
+#[derive(Resource, Clone)]
+pub struct SubmissionHooks(pub Arc<dyn SubmissionHook>);
 
 /// Internal state shared by all systems in a submission set.
 ///
@@ -99,6 +119,8 @@ pub(crate) struct RenderSetSharedState {
     stage_index: u32,
     /// The submission set this state belongs to.
     set: InternedSystemSet,
+    /// The family of the queue the set submits to.
+    queue_family: u32,
     /// Debug name for this submission set.
     name: CString,
     /// Debug color for the debug region of this submission set.
@@ -136,6 +158,7 @@ impl RenderSetSharedState {
             timeline: Timeline::new(device)?.with_name(cstring.as_c_str()),
             stage_index: 0,
             set,
+            queue_family: queue_family_index,
             name: cstring,
             color,
             waits: Vec::new(),
@@ -395,22 +418,29 @@ unsafe impl<'w> SystemParamBuilder<SubmissionState<'w>> for RenderSetSharedState
     }
 }
 
-pub(crate) fn prelude_system(mut shared: SubmissionState) {
+pub(crate) fn prelude_system(mut shared: SubmissionState, hooks: Option<Res<SubmissionHooks>>) {
     let shared = shared.state.as_mut();
     shared.stage_index = 0;
     assert!(shared.recording_command_buffer.is_none());
-    let mut cb =
-        if let Some(mut reused_command_buffer) = shared.pending_command_buffers.pop_if_full() {
+    let mut cb = if let Some(mut reused_command_buffer) =
+        shared.pending_command_buffers.pop_if_full()
+    {
+        if !reused_command_buffer.try_complete() {
+            // The GPU is still running the submission that this buffer
+            // carried three frames ago: the CPU is ahead, and waits for it.
+            let _wait = tracing::info_span!(target: "pumicite", "wait for GPU", set = ?shared.set)
+                .entered();
             reused_command_buffer.block_until_completion().unwrap();
-            shared.command_pool.reset(&mut reused_command_buffer);
-            reused_command_buffer
-        } else {
-            shared
-                .command_pool
-                .alloc()
-                .unwrap()
-                .with_name(shared.name.as_c_str())
-        };
+        }
+        shared.command_pool.reset(&mut reused_command_buffer);
+        reused_command_buffer
+    } else {
+        shared
+            .command_pool
+            .alloc()
+            .unwrap()
+            .with_name(shared.name.as_c_str())
+    };
 
     shared.timeline.schedule(&mut cb);
     shared.command_pool.begin(&mut cb).unwrap();
@@ -420,6 +450,11 @@ pub(crate) fn prelude_system(mut shared: SubmissionState) {
         shared
             .encoder
             .set_buffer(shared.recording_command_buffer.as_mut().as_mut().unwrap());
+    }
+    if let Some(hooks) = hooks {
+        hooks
+            .0
+            .begin(shared.set, shared.queue_family, &mut shared.encoder);
     }
 }
 
@@ -436,9 +471,17 @@ pub(crate) fn render_set_ending_system(mut shared: SubmissionState) {
 pub(crate) fn submission_system(
     mut shared: SubmissionState,
     mut queue: Queue<()>, // built with `QueueConfig`.
+    hooks: Option<Res<SubmissionHooks>>,
 ) {
     shared.record(|_| {}); // Close any open encoders.
     let shared = shared.state.as_mut();
+    if let Some(hooks) = hooks
+        && shared.recording_command_buffer.is_some()
+    {
+        hooks
+            .0
+            .end(shared.set, shared.queue_family, &mut shared.encoder);
+    }
     unsafe {
         shared.encoder.reset();
     }
@@ -448,6 +491,7 @@ pub(crate) fn submission_system(
         return;
     };
     shared.command_pool.finish(&mut cb).unwrap();
+    let _submit = tracing::info_span!(target: "pumicite", "submit", set = ?shared.set).entered();
     queue.begin_label(shared.name.as_c_str(), shared.color);
     // Safety: the semaphores were added with `SubmissionState::wait_semaphore` and
     // `SubmissionState::signal_semaphore`, whose callers uphold this.

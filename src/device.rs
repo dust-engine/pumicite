@@ -233,6 +233,53 @@ impl Device {
         self.get_extension::<T>().unwrap()
     }
 
+    /// The time domains [`get_calibrated_timestamps`](Self::get_calibrated_timestamps)
+    /// can sample on this device, such as `DEVICE` and a host clock, for placing the
+    /// GPU's timestamps on the host's clock. Empty unless `VK_KHR_calibrated_timestamps`
+    /// or `VK_EXT_calibrated_timestamps` is enabled.
+    pub fn calibrateable_time_domains(&self) -> Vec<vk::TimeDomainKHR> {
+        let instance = self.instance();
+        let physical_device = self.physical_device().vk_handle();
+        // The query is an instance-level function of the device extension, which
+        // pumicite doesn't load with the device's functions.
+        let domains = if self.has_extension_named(ash::khr::calibrated_timestamps::NAME) {
+            unsafe {
+                ash::khr::calibrated_timestamps::Instance::load(instance.entry(), instance)
+                    .get_physical_device_calibrateable_time_domains(physical_device)
+            }
+        } else if self.has_extension_named(ash::ext::calibrated_timestamps::NAME) {
+            unsafe {
+                ash::ext::calibrated_timestamps::Instance::load(instance.entry(), instance)
+                    .get_physical_device_calibrateable_time_domains(physical_device)
+            }
+        } else {
+            return Vec::new();
+        };
+        domains.unwrap_or_default()
+    }
+
+    /// Samples the clocks of `domains` together, and returns each one's timestamp,
+    /// in that domain's units, and the most they may be apart, in nanoseconds. Every
+    /// domain must be one of [`calibrateable_time_domains`](Self::calibrateable_time_domains).
+    pub fn get_calibrated_timestamps(
+        &self,
+        domains: &[vk::TimeDomainKHR],
+    ) -> VkResult<(Vec<u64>, u64)> {
+        let infos: Vec<_> = domains
+            .iter()
+            .map(|&domain| vk::CalibratedTimestampInfoKHR::default().time_domain(domain))
+            .collect();
+        unsafe {
+            if let Ok(khr) = self.get_extension::<ash::khr::calibrated_timestamps::Meta>() {
+                khr.get_calibrated_timestamps(&infos)
+            } else if let Ok(ext) = self.get_extension::<ash::ext::calibrated_timestamps::Meta>() {
+                ext.get_calibrated_timestamps(&infos)
+            } else {
+                Err(vk::Result::ERROR_EXTENSION_NOT_PRESENT)
+            }
+        }
+    }
+
     /// Gets a reference to an enabled device feature.
     ///
     /// # Returns

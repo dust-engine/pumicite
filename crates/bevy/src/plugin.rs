@@ -23,7 +23,7 @@ use super::system::{
     submission_system,
 };
 use bevy_ecs::component::ComponentDescriptor;
-use bevy_ecs::system::SystemParamBuilder;
+use bevy_ecs::system::{ParamBuilder, SystemParamBuilder};
 use pumicite::{
     Device, Extension, Instance, MissingFeatureError,
     device::DeviceBuilder,
@@ -860,7 +860,7 @@ impl PumiciteApp for App {
         let graph = schedule.graph_mut();
         let prelude = graph
             .process_configs(
-                (RenderSetSharedStateConfig::new(shared_state),)
+                (RenderSetSharedStateConfig::new(shared_state), ParamBuilder)
                     .build_system(prelude_system)
                     .in_set(set)
                     .ambiguous_with_all()
@@ -875,6 +875,7 @@ impl PumiciteApp for App {
                 (
                     RenderSetSharedStateConfig::new(shared_state),
                     QueueConfig(component_id),
+                    ParamBuilder,
                 )
                     .build_system(submission_system)
                     .in_set(set)

@@ -409,11 +409,11 @@ impl crate::queue::Queue {
             }
         }
     }
-    /// Open a new queue debug label region.
+    /// Insert a queue debug label.
     pub fn insert_label(&mut self, name: &CStr, color: Vec4) {
         unsafe {
             if let Ok(debug_utils) = self.device().get_extension::<DebugUtilsExt>() {
-                debug_utils.queue_begin_debug_utils_label(
+                debug_utils.queue_insert_debug_utils_label(
                     self.vk_handle(),
                     &vk::DebugUtilsLabelEXT {
                         p_label_name: name.as_ptr(),
