@@ -929,6 +929,10 @@ impl_feature_for_ext!(
     vk::PhysicalDeviceFaultFeaturesEXT<'static>,
     ext::device_fault::Meta
 );
+impl_feature_for_ext!(
+    vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT<'static>,
+    ext::shader_atomic_float::Meta
+);
 
 #[cfg(test)]
 mod tests {

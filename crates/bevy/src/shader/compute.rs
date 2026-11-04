@@ -52,13 +52,13 @@ impl FromWorld for ComputePipelineLoader {
 #[cfg(any(feature = "ron", feature = "postcard"))]
 impl AssetLoader for ComputePipelineLoader {
     type Asset = ComputePipeline;
-    type Settings = ();
+    type Settings = pumicite_types::PipelineVariant;
     type Error = PipelineLoaderError;
 
     async fn load(
         &self,
         reader: &mut dyn bevy_asset::io::Reader,
-        _settings: &Self::Settings,
+        settings: &Self::Settings,
         load_context: &mut bevy_asset::LoadContext<'_>,
     ) -> Result<ComputePipeline, Self::Error> {
         let mut bytes = Vec::new();
@@ -108,6 +108,7 @@ impl AssetLoader for ComputePipelineLoader {
             .load_value(&pipeline.shader.path)
             .await?;
         let shader_flags = pipeline.shader.flags();
+        let specialization_info = super::specialization_info(&pipeline.shader, settings);
         let entry_point: CString = CString::new(pipeline.shader.entry_point)
             .map_err(|_| PipelineLoaderError::PipelineError("Invalid entry name"))?;
 
@@ -125,7 +126,7 @@ impl AssetLoader for ComputePipelineLoader {
                 entry: Cow::Owned(entry_point),
                 flags: shader_flags,
                 stage: vk::ShaderStageFlags::COMPUTE,
-                specialization_info: Cow::Owned(Default::default()),
+                specialization_info: Cow::Owned(specialization_info),
             },
         )?;
         span.exit();

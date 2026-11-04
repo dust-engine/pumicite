@@ -257,6 +257,18 @@ impl GraphicsPipelineVariant {
     }
 }
 
+/// A "patch" to a [`ComputePipeline`] or [`RayTracingPipeline`] asset, for values only known at
+/// runtime, such as a code path that depends on what the device supports. Provide it as the
+/// settings when loading the asset.
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineVariant {
+    /// Specialization constants for every shader of the pipeline, over those the asset sets. A
+    /// shader that doesn't declare a constant ignores it.
+    #[serde(default)]
+    pub specialization_constants: BTreeMap<u32, SpecializationConstantType>,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Attachment {

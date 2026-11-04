@@ -65,6 +65,31 @@ use crate::DescriptorHeap;
 pub mod compute;
 pub mod graphics;
 
+/// The specialization constants of `shader` in a pipeline loaded with `variant`.
+#[cfg(any(feature = "ron", feature = "postcard"))]
+fn specialization_info(
+    shader: &pumicite_types::Shader,
+    variant: &pumicite_types::PipelineVariant,
+) -> pumicite::pipeline::SpecializationInfo {
+    use pumicite_types::SpecializationConstantType as Constant;
+    let mut constants = shader.specialization_constants.clone();
+    constants.extend(variant.specialization_constants.clone());
+    let mut info = pumicite::pipeline::SpecializationInfo::new();
+    for (constant_id, value) in constants {
+        match value {
+            Constant::UInt32(v) => info.push(constant_id, v),
+            Constant::UInt16(v) => info.push(constant_id, v),
+            Constant::UInt8(v) => info.push(constant_id, v),
+            Constant::Int32(v) => info.push(constant_id, v),
+            Constant::Int16(v) => info.push(constant_id, v),
+            Constant::Int8(v) => info.push(constant_id, v),
+            Constant::Bool(v) => info.push(constant_id, v),
+            Constant::Float(v) => info.push(constant_id, v),
+        }
+    }
+    info
+}
+
 /// Error type for shader loading failures.
 #[derive(Error, Debug)]
 pub enum ShaderLoadError {
@@ -307,13 +332,13 @@ impl RayTracingPipelineLibrary {
 #[cfg(any(feature = "ron", feature = "postcard"))]
 impl AssetLoader for RayTracingPipelineLoader {
     type Asset = RayTracingPipelineLibrary;
-    type Settings = ();
+    type Settings = pumicite_types::PipelineVariant;
     type Error = PipelineLoaderError;
 
     async fn load(
         &self,
         reader: &mut dyn bevy_asset::io::Reader,
-        _settings: &Self::Settings,
+        settings: &Self::Settings,
         load_context: &mut bevy_asset::LoadContext<'_>,
     ) -> Result<RayTracingPipelineLibrary, Self::Error> {
         let mut bytes = Vec::new();
@@ -379,7 +404,7 @@ impl AssetLoader for RayTracingPipelineLoader {
                     entry: Cow::Owned(entry),
                     flags: shader.flags(),
                     stage,
-                    specialization_info: Cow::Owned(Default::default()),
+                    specialization_info: Cow::Owned(specialization_info(shader, settings)),
                 });
                 Ok(index)
             };
