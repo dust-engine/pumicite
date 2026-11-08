@@ -26,7 +26,7 @@ use pumicite::{
 
 use crate::{
     DefaultComputeSet, DefaultTransferSet, SubmissionState,
-    rtx::blas::BLAS,
+    rtx::blas::{BLAS, BLASUpdateSet},
     staging::{BufferInitializer, DeviceLocalRingBuffer},
 };
 
@@ -345,6 +345,8 @@ pub struct AllTLASBuilderSet;
 /// instance's fields (`blas`, transform, SBT record offset and flags, custom
 /// index, mask) and its `data` into the GPU buffers at that point, so any
 /// system that sets those fields for the current frame must be in this set.
+/// The set runs after [`BLASUpdateSet`], so its systems see the BLASes the
+/// upload will use.
 ///
 /// Each payload type has its own set: `TLASBuilderSet<A>` orders nothing
 /// against the upload for `TLAS<B>`.
@@ -401,11 +403,19 @@ impl<T> Default for TLASBuilderPlugin<T> {
 }
 impl<T: Pod + Send + Sync + TypePath> Plugin for TLASBuilderPlugin<T> {
     fn build(&self, app: &mut bevy_app::App) {
+        // The upload takes each instance's BLAS as it is then, and systems in
+        // `TLASBuilderSet<T>` set data that must match that BLAS, such as its SBT record
+        // offset. Both run after this frame's BLAS updates, so they see the same BLASes.
+        app.configure_sets(
+            PostUpdate,
+            TLASBuilderSet::<T>::default().after(BLASUpdateSet),
+        );
         app.add_systems(
             PostUpdate,
             (
                 tlas_build_input_upload_system::<T>
                     .in_set(DefaultTransferSet)
+                    .after(BLASUpdateSet)
                     .after(TLASBuilderSet::<T>::default()),
                 tlas_build_system::<T>.in_set(DefaultComputeSet),
             )

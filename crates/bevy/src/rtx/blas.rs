@@ -6,7 +6,7 @@ use bevy_ecs::{
     entity::Entity,
     query::{QueryFilter, QueryItem, ReadOnlyQueryData, Without},
     resource::Resource,
-    schedule::IntoScheduleConfigs,
+    schedule::{IntoScheduleConfigs, SystemSet},
     system::{
         Commands, Local, Query, Res, ResMut, StaticSystemParam, SystemParam, SystemParamItem,
     },
@@ -567,12 +567,19 @@ impl<T: BLASBuilder> Default for BLASBuilderPlugin<T> {
     }
 }
 
+/// The systems that insert and replace [`BLAS`] components as builds and compactions
+/// finish on the GPU. A system ordered after this set sees this frame's BLASes.
+#[derive(SystemSet, Hash, PartialEq, Eq, Debug, Clone, Copy)]
+pub struct BLASUpdateSet;
+
 struct BLASPlugin;
 impl Plugin for BLASPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             PostUpdate,
-            (drain_built_blas_system, compact_blas_system).chain(),
+            (drain_built_blas_system, compact_blas_system)
+                .chain()
+                .in_set(BLASUpdateSet),
         );
     }
 }
