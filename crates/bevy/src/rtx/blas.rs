@@ -616,7 +616,7 @@ impl Plugin for BLASPlugin {
 /// 1. the freshly-allocated compacted [`AccelStruct`] (owned, becomes the new
 ///    [`BLAS`] when the copy completes);
 /// 2. an [`Arc`] of the source AS, kept alive until the GPU has finished
-///    reading it.
+///    reading it, and compared with the entity's [`BLAS`] once it has.
 struct PendingCompaction {
     command_buffer: CommandBuffer,
     entries: Vec<(Entity, AccelStruct, Arc<AccelStruct>)>,
@@ -627,7 +627,9 @@ struct PendingCompaction {
 /// On every [`PostUpdate`]:
 /// 1. Pops any in-flight compaction command buffers from `pending` whose GPU
 ///    work has finished, frees their command buffer, and replaces each
-///    entity's [`BLAS`] with the compacted copy.
+///    entity's [`BLAS`] with the compacted copy, if the entity's BLAS is still
+///    the one that was copied. If a newer build has replaced it, the compacted
+///    copy is dropped.
 /// 2. For every entity that has [`BLASNeedsCompaction`] (and is not currently
 ///    being rebuilt), allocates a destination [`AccelStruct`] sized to
 ///    `compacted_size`, records `vkCmdCopyAccelerationStructureKHR` in
@@ -646,6 +648,7 @@ fn compact_blas_system(
     allocator: Res<Allocator>,
     device: Res<Device>,
     needs_compaction: Query<(Entity, &BLAS, &BLASNeedsCompaction), Without<BLASBuildPending>>,
+    blases: Query<&BLAS>,
     mut queue: Queue<AsyncComputeQueue>,
     mut pending: Local<VecDeque<PendingCompaction>>,
 ) {
@@ -658,7 +661,17 @@ fn compact_blas_system(
             "BLAS compaction completed for {} entities",
             done.entries.len()
         );
-        for (entity, mut compacted, _retain_src) in done.entries.into_iter() {
+        for (entity, mut compacted, original) in done.entries.into_iter() {
+            // This runs after `drain_built_blas_system`'s commands are applied, so a
+            // build that finished this frame has already replaced the original. Putting
+            // the copy back would undo that build, and leave whatever its `on_built`
+            // inserted describing a BLAS the entity no longer has.
+            let is_current = blases
+                .get(entity)
+                .is_ok_and(|blas| Arc::ptr_eq(&blas.accel_struct, &original));
+            if !is_current {
+                continue;
+            }
             compacted.set_name(
                 CString::new(format!("BLAS {:?} (compacted)", entity))
                     .unwrap()
