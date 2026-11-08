@@ -8,7 +8,8 @@ use bevy_ecs::{
     resource::Resource,
     schedule::{IntoScheduleConfigs, SystemSet},
     system::{
-        Commands, Local, Query, Res, ResMut, StaticSystemParam, SystemParam, SystemParamItem,
+        Commands, EntityCommands, Local, Query, Res, ResMut, StaticSystemParam, SystemParam,
+        SystemParamItem,
     },
     world::{FromWorld, World},
 };
@@ -105,6 +106,23 @@ pub trait BLASBuilder:
             | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION
     }
 
+    /// Called once per entity per submitted batch, with the same `data` as
+    /// [`geometries`](Self::geometries). The returned closure runs on the entity right
+    /// after the command that inserts its new [`BLAS`], so systems see both or neither.
+    ///
+    /// An entity's [`BLAS`] lags the entity: while a new build is on the GPU, the TLAS
+    /// keeps using the old BLAS. Data that has to match the BLAS the TLAS uses, such as
+    /// an SBT record that looks up geometry by primitive index, should be captured here
+    /// and put on the entity by the closure. Does nothing by default.
+    #[allow(unused_variables)]
+    fn on_built(
+        &mut self,
+        params: &mut SystemParamItem<Self::Params>,
+        data: &QueryItem<Self::QueryData>,
+    ) -> Box<dyn FnOnce(&mut EntityCommands) + Send + Sync> {
+        Box::new(|_| {})
+    }
+
     /// Buffer type backing the geometry data returned by [`geometries`](Self::geometries).
     type BufferType: BufferLike;
 
@@ -172,9 +190,13 @@ pub enum BLASBuildGeometry<'a, A: BufferLike> {
     },
 }
 
+/// The closure returned by [`BLASBuilder::on_built`].
+type OnBuilt = Box<dyn FnOnce(&mut EntityCommands) + Send + Sync>;
+
 struct QueuedBuild {
     command_buffer: CommandBuffer,
-    accel_structs: Vec<(Entity, AccelStruct)>,
+    /// Each entity's new BLAS, with the closure to run when it's inserted.
+    accel_structs: Vec<(Entity, AccelStruct, OnBuilt)>,
     query_pool: Option<GPUMutex<QueryPool>>,
 }
 
@@ -229,7 +251,7 @@ fn drain_built_blas_system(mut commands: Commands, mut cmd_pool: ResMut<ASBuildC
             Vec::new()
         };
         let mut compacted_i = 0;
-        for (entity, mut accel_struct) in build.accel_structs.into_iter() {
+        for (entity, mut accel_struct, on_built) in build.accel_structs.into_iter() {
             let mut target = commands.entity(entity);
 
             accel_struct.set_name(
@@ -250,6 +272,7 @@ fn drain_built_blas_system(mut commands: Commands, mut cmd_pool: ResMut<ASBuildC
             target.insert(BLAS {
                 accel_struct: Arc::new(accel_struct),
             });
+            on_built(&mut target);
             target.remove::<BLASBuildPending>();
         }
     }
@@ -438,7 +461,8 @@ fn build_blas_system<T: BLASBuilder>(
                 accel_structs_to_query_compaction_sizes.push(blas.vk_handle());
             }
             info.dst_acceleration_structure = blas.vk_handle();
-            pending_accel_structs.push((entity, blas));
+            let on_built = T::on_built(builder, &mut params, &query);
+            pending_accel_structs.push((entity, blas, on_built));
 
             infos.push(info);
         }
@@ -533,7 +557,7 @@ fn build_blas_system<T: BLASBuilder>(
 
     let pending_entities = pending_accel_structs
         .iter()
-        .map(|(entity, _)| *entity)
+        .map(|(entity, _, _)| *entity)
         .collect::<Vec<_>>();
     commands.insert_batch(
         pending_entities
