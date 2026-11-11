@@ -5,7 +5,7 @@
 //!
 //! # Ring Buffers
 //!
-//! Three specialized ring buffers are provided for transient data, each optimized for a
+//! Four specialized ring buffers are provided for transient data, each optimized for a
 //!  different use cases:
 //!
 //! - [`DeviceLocalRingBuffer`]: For transient device-local buffers, like acceleration structures,
@@ -15,6 +15,8 @@
 //!   on all platforms.
 //!
 //! - [`HostVisibleRingBuffer`]: For staging buffers. Always `HOST_VISIBLE`, never `DEVICE_LOCAL`.
+//!
+//! - [`ReadbackRingBuffer`]: For data the GPU copies back to the CPU. Always `HOST_CACHED`.
 //!
 //! # Buffer Initialization
 //!
@@ -44,7 +46,7 @@ use bevy_ecs::{
 use pumicite::{
     ash::{self, VkResult, vk},
     buffer::{RingBuffer, RingBufferSuballocation, StagingBufferAllocator},
-    command::{CommandEncoderRenderPassState, CommandPool, GPURefMut},
+    command::{CommandEncoderRenderPassState, CommandPool, GPURef, GPURefMut},
     device::DeviceBuilder,
     fault::{DeviceError, DeviceResult},
     prelude::*,
@@ -58,8 +60,9 @@ use crate::{
 
 /// Bevy plugin that initializes the staging belt infrastructure.
 ///
-/// This plugin creates the three ring buffer resources ([`DeviceLocalRingBuffer`],
-/// [`UniformRingBuffer`], [`HostVisibleRingBuffer`]) and the [`AsyncTransfer`] resource.
+/// This plugin creates the four ring buffer resources ([`DeviceLocalRingBuffer`],
+/// [`UniformRingBuffer`], [`HostVisibleRingBuffer`], [`ReadbackRingBuffer`]) and the
+/// [`AsyncTransfer`] resource.
 ///
 /// # Configuration
 ///
@@ -71,12 +74,14 @@ use crate::{
 ///     device_local_chunk_size: 64 * 1024 * 1024,  // 64MB for device-local
 ///     uniform_chunk_size: 512 * 1024,              // 512KB for uniforms
 ///     host_visible_chunk_size: 64 * 1024 * 1024,   // 64MB for staging
+///     readback_chunk_size: 1024 * 1024,            // 1MB for readback
 /// });
 /// ```
 pub struct StagingBeltPlugin {
     pub device_local_chunk_size: u32,
     pub uniform_chunk_size: u32,
     pub host_visible_chunk_size: u32,
+    pub readback_chunk_size: u32,
 }
 impl Default for StagingBeltPlugin {
     fn default() -> Self {
@@ -84,6 +89,7 @@ impl Default for StagingBeltPlugin {
             device_local_chunk_size: 64 * 1024 * 1024,
             uniform_chunk_size: 512 * 1024,
             host_visible_chunk_size: 64 * 1024 * 1024,
+            readback_chunk_size: 1024 * 1024,
         }
     }
 }
@@ -92,6 +98,7 @@ impl Plugin for StagingBeltPlugin {
         let device_local_chunk_size = self.device_local_chunk_size;
         let uniform_chunk_size = self.uniform_chunk_size;
         let host_visible_chunk_size = self.host_visible_chunk_size;
+        let readback_chunk_size = self.readback_chunk_size;
         app.add_systems(
             Startup,
             (
@@ -114,6 +121,10 @@ impl Plugin for StagingBeltPlugin {
                         HostVisibleRingBuffer::new(device.clone(), host_visible_chunk_size)
                             .unwrap(),
                     );
+                    world.insert_resource(ReadbackRingBuffer::new(
+                        device.clone(),
+                        readback_chunk_size,
+                    ));
                     world.insert_resource(
                         UniformRingBuffer::new(device, uniform_chunk_size).unwrap(),
                     );
@@ -295,6 +306,61 @@ impl HostVisibleRingBuffer {
             vk::MemoryAllocateFlags::DEVICE_ADDRESS,
             "HostVisibleRingBuffer",
         )))
+    }
+}
+
+/// Ring buffer for data the GPU copies back to the CPU.
+///
+/// A system allocates a buffer from the ring with
+/// [`allocate_buffer`](RingBuffer::allocate_buffer), keeps it as its frame state with
+/// [`SubmissionState::set_frame_state`](crate::SubmissionState::set_frame_state), and
+/// records the copy into it with [`read_back`](Self::read_back). `set_frame_state` hands the
+/// buffer back once the GPU has written it. The chunk is reused once every buffer allocated
+/// from it is dropped.
+///
+/// Uses the [`dynamic`](pumicite::physical_device::MemoryTypeMapInner::dynamic) memory type:
+/// `HOST_CACHED`, for fast CPU reads, and `HOST_COHERENT`, so reads need no invalidation.
+///
+/// Default chunk size: 1MB.
+#[derive(Resource)]
+pub struct ReadbackRingBuffer(RingBuffer);
+
+impl Deref for ReadbackRingBuffer {
+    type Target = RingBuffer;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl DerefMut for ReadbackRingBuffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl ReadbackRingBuffer {
+    pub fn new(device: Device, chunk_size: u32) -> Self {
+        let memory_type_index = device.memory_type_map().dynamic;
+        Self(RingBuffer::new(
+            device,
+            chunk_size as u64,
+            memory_type_index,
+            vk::BufferUsageFlags::TRANSFER_DST,
+            vk::MemoryAllocateFlags::empty(),
+            "ReadbackRingBuffer",
+        ))
+    }
+
+    /// Records a copy of `src` into `dst` for the host to read once the GPU has finished
+    /// the command buffer. `src`'s writes must already be visible to copies.
+    pub fn read_back<'a, S: BufferLike, D: BufferLike>(
+        encoder: &mut CommandEncoder<'a>,
+        src: impl Into<GPURef<'a, S>>,
+        dst: impl Into<GPURefMut<'a, D>>,
+    ) {
+        encoder.copy_buffer(src, dst);
+        // Waiting on the command buffer's semaphore doesn't make the copy visible to the
+        // host by itself; that takes a memory dependency on host reads.
+        encoder.memory_barrier(Access::COPY_WRITE, Access::HOST_READ);
+        encoder.emit_barriers();
     }
 }
 

@@ -119,7 +119,8 @@ pub mod prelude {
         SubmissionState,
         shader::{compute::ComputePipeline, graphics::GraphicsPipeline},
         staging::{
-            BufferInitializer, DeviceLocalRingBuffer, HostVisibleRingBuffer, UniformRingBuffer,
+            BufferInitializer, DeviceLocalRingBuffer, HostVisibleRingBuffer, ReadbackRingBuffer,
+            UniformRingBuffer,
         },
     };
 }
