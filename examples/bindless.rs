@@ -111,7 +111,7 @@ fn clear(
     let Some(mut example) = example_assets.get_mut(&example_resource.image) else {
         return;
     };
-    state.record(|encoder| {
+    state.record(|encoder, _| {
         let Some(current_swapchain_image) = swapchain.current_image() else {
             return;
         };

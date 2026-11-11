@@ -67,7 +67,7 @@ struct PushConstants {
 }
 
 fn start_main_render_pass(mut ctx: SubmissionState, mut swapchain: ResMut<Swapchain>) {
-    ctx.record(|encoder| {
+    ctx.record(|encoder, _| {
         let Some(current_swapchain_image) = swapchain.current_image() else {
             return;
         };
@@ -110,7 +110,7 @@ fn mesh_shader_culling(
     };
     let pipeline = pipeline.clone();
 
-    state.render(move |mut pass| {
+    state.render(move |mut pass, _| {
         let render_area = pass.render_area();
         let pipeline = pass.retain(pipeline.into_inner()).deref_inner();
         pass.bind_pipeline(pipeline);

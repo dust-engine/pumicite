@@ -288,7 +288,7 @@ fn collect_outputs<Filter: QueryFilter + Send + Sync + 'static>(
         return;
     }
 
-    ctx.record(|encoder| {
+    ctx.record(|encoder, _| {
         let index_buffer = uploader.create_preinitialized_buffer(
             encoder,
             Layout::new::<u32>().repeat(total_indices_count).unwrap().0,
@@ -523,7 +523,7 @@ fn prepare_image<Filter: QueryFilter + Send + Sync + 'static>(
             });
             buffer_offset += len;
         }
-        ctx.record(|encoder| {
+        ctx.record(|encoder, _| {
             let image = encoder.lock(texture, vk::PipelineStageFlags2::COPY);
             let host_buffer = encoder.retain(host_buffer);
 
@@ -592,7 +592,7 @@ fn draw<Filter: QueryFilter + Send + Sync + 'static>(
         return;
     };
 
-    state.render(move |mut pass| {
+    state.render(move |mut pass, _| {
         let index_buffer = pass.lock(&index_buffer, vk::PipelineStageFlags2::INDEX_INPUT);
         let vertex_buffer = pass.lock(
             &vertex_buffer,

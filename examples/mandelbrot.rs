@@ -80,7 +80,7 @@ fn mandelbrot_rendering(
 ) {
     let pipeline = compute_pipelines.get(&pipeline.draw);
 
-    state.record(|encoder| {
+    state.record(|encoder, _| {
         let Some(current_swapchain_image) = swapchain.current_image() else {
             return;
         };

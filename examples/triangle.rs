@@ -57,7 +57,7 @@ fn triangle_rendering(
         },
     ];
 
-    state.record(|encoder| {
+    state.record(|encoder, _| {
         let Some(current_swapchain_image) = swapchain.current_image() else {
             return;
         };

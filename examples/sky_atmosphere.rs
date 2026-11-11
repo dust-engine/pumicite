@@ -578,7 +578,7 @@ fn egui_ui(mut contexts: EguiContexts, mut atmosphere: ResMut<AtmosphereState>) 
 }
 
 fn start_main_render_pass(mut ctx: SubmissionState, mut swapchain: ResMut<Swapchain>) {
-    ctx.record(|encoder| {
+    ctx.record(|encoder, _| {
         let Some(current_swapchain_image) = swapchain.current_image() else {
             return;
         };
@@ -647,7 +647,7 @@ fn compute_luts(
     atmosphere.needs_lut_update = false;
     let atmosphere_uniform_buffer = atmosphere.uniform_buffer.as_ref().unwrap().clone();
 
-    state.record(|encoder| {
+    state.record(|encoder, _| {
         let buffer = encoder.retain(atmosphere_uniform_buffer).deref_inner();
 
         let buffer_info = vk::DescriptorBufferInfo {
@@ -822,7 +822,7 @@ fn render_skyview_lut(
     };
     let atmosphere_uniform_buffer = atmosphere.uniform_buffer.as_ref().unwrap().clone();
 
-    state.record(|encoder| {
+    state.record(|encoder, _| {
         let buffer = encoder.retain(atmosphere_uniform_buffer).deref_inner();
 
         let buffer_info = vk::DescriptorBufferInfo {
@@ -951,7 +951,7 @@ fn render_skyview_lut(
 }
 
 fn prepare_render_sky(mut luts: ResMut<AtmosphereLUTs>, mut state: SubmissionState) {
-    state.record(|encoder| {
+    state.record(|encoder, _| {
         let transmittance_view = encoder.lock(
             &luts.transmittance.view,
             vk::PipelineStageFlags2::FRAGMENT_SHADER,
@@ -996,7 +996,7 @@ fn render_sky(
 
     let atmosphere_uniform_buffer = atmosphere.uniform_buffer.as_ref().unwrap().clone();
 
-    state.render(|mut pass| {
+    state.render(|mut pass, _| {
         // Final sky render
         {
             let buffer = pass.retain(atmosphere_uniform_buffer).deref_inner();

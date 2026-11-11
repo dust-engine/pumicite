@@ -27,7 +27,7 @@ fn clear(mut swapchain: ResMut<Swapchain>, mut state: SubmissionState, time: Res
     let color = bevy::color::Hsla::new(hue, 0.8, 0.5, 1.0);
     let rgba: bevy::color::Srgba = color.into();
 
-    state.record(|encoder| {
+    state.record(|encoder, _| {
         let Some(current_swapchain_image) = swapchain.current_image() else {
             return;
         };

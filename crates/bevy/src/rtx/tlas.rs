@@ -186,7 +186,7 @@ pub fn tlas_build_input_upload_system<T: Pod + Send + Sync>(
     if num_instances == 0 {
         return;
     }
-    ctx.record(|encoder| {
+    ctx.record(|encoder, _| {
         let buffer = uploader.create_preinitialized_buffer(
             encoder,
             Layout::new::<vk::AccelerationStructureInstanceKHR>()
@@ -309,7 +309,7 @@ pub fn tlas_build_system<T: Send + Sync + 'static>(
         tlas,
         _referenced_blas: referenced_blas,
     });
-    ctx.record(|encoder| {
+    ctx.record(|encoder, _| {
         let locked_buffer = encoder.lock(
             &buffer,
             vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,

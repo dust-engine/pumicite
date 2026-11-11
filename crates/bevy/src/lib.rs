@@ -102,7 +102,7 @@ pub use plugin::{
 };
 #[cfg(feature = "bevy_window")]
 pub use surface::{SurfaceCapabilities, SurfacePlugin};
-pub use system::SubmissionState;
+pub use system::{FRAMES_IN_FLIGHT, SubmissionState, SubmissionStateLocal};
 
 /// Convenience re-exports for the most commonly used types.
 pub mod prelude {

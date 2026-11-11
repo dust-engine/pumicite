@@ -662,7 +662,7 @@ fn prepare_present(mut submission: SubmissionState, swapchain: Option<ResMut<Swa
         return;
     };
     let swapchain = swapchain.into_inner();
-    submission.record(|encoder| {
+    submission.record(|encoder, _| {
         let Some(image) = swapchain.current_image() else {
             return;
         };

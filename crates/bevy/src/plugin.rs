@@ -907,7 +907,7 @@ impl PumiciteApp for App {
         let name = std::any::type_name_of_val(&set);
 
         let start_render_set_debug_system = move |mut state: SubmissionState| {
-            state.record(|x| {
+            state.record(|x, _| {
                 let name = name.split("::").last().unwrap_or("??");
                 x.begin_label(
                     CString::new(name).unwrap_or_default().as_c_str(),

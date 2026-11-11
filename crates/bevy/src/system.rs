@@ -23,11 +23,11 @@
 //! use bevy_pumicite::{SubmissionState, DefaultRenderSet};
 //!
 //! fn my_render_system(mut ctx: SubmissionState) {
-//!     ctx.record(|encoder| {
+//!     ctx.record(|encoder, _| {
 //!         // Record transfer, compute, or setup commands
 //!     });
 //!
-//!     ctx.render(|mut render_pass| {
+//!     ctx.render(|mut render_pass, _| {
 //!         // Record rendering commands inside an active render pass
 //!         render_pass.draw(0..3, 0..1);
 //!     });
@@ -61,14 +61,19 @@ use pumicite::{
     Device,
     ash::{VkResult, vk},
     command::{
-        CommandBuffer, CommandEncoder, CommandEncoderRenderPassState, CommandPool, RenderPass,
+        CommandBuffer, CommandEncoder, CommandEncoderRenderPassState, CommandPool, GPURefMut,
+        RenderPass,
     },
     debug::DebugObject,
     sync::Timeline,
 };
-use std::{ffi::CString, mem::MaybeUninit};
+use std::{any::TypeId, ffi::CString, mem::MaybeUninit};
 
 use super::queue::Queue;
+
+/// How many submissions of a submission set can be on the GPU at once. Each frame's
+/// prelude waits for the submission from this many frames ago.
+pub const FRAMES_IN_FLIGHT: usize = 3;
 
 /// Internal state shared by all systems in a submission set.
 ///
@@ -86,7 +91,9 @@ pub(crate) struct RenderSetSharedState {
     /// Command pool for allocating command buffers.
     command_pool: CommandPool,
     /// Ring buffer of pending command buffers for triple-buffering.
-    pending_command_buffers: RingBuffer<CommandBuffer, 3>,
+    pending_command_buffers: RingBuffer<CommandBuffer, FRAMES_IN_FLIGHT>,
+    /// The number of times that the prelude system has been executed.
+    frame_index: u64,
 
     /// The command buffer currently being recorded.
     recording_command_buffer: Box<Option<CommandBuffer>>,
@@ -131,6 +138,7 @@ impl RenderSetSharedState {
             command_pool: CommandPool::new_resettable(device.clone(), queue_family_index)?
                 .with_name(cstring.as_c_str()),
             pending_command_buffers: RingBuffer::new(),
+            frame_index: 0,
             recording_command_buffer: Box::new(None),
             encoder: unsafe { CommandEncoder::new() },
             timeline: Timeline::new(device)?.with_name(cstring.as_c_str()),
@@ -158,6 +166,15 @@ unsafe impl Sync for RenderSetSharedState {}
 /// Submission sets are (SystemSet)[`bevy_ecs::schedule::SystemSet`]s added via
 /// [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set).
 ///
+/// # Frame State
+/// 
+/// A system may optionally associate each frame with a value with a generic type `T`.
+/// Its lifetime is tied to the current submission represented by this `SubmissionState`.
+/// To set this value for the current frame, use [`set_frame_state`](Self::set_frame_state),
+/// which may also return a previously set value that the application passed in a few frames
+/// ago. Internally, frame states are maintained in a ring buffer keyed by the frame index.
+/// Up to [`FRAMES_IN_FLIGHT`] instances of state may coexist concurrently.
+///
 /// # Panics
 ///
 /// Panics if used in a system that isn't part of a submission set, or if a system has
@@ -170,11 +187,11 @@ unsafe impl Sync for RenderSetSharedState {}
 /// use bevy_pumicite::{SubmissionState, DefaultRenderSet};
 ///
 /// fn my_render_system(mut ctx: SubmissionState) {
-///     ctx.record(|encoder| {
+///     ctx.record(|encoder, _| {
 ///         // Record transfer, compute, or setup commands
 ///     });
 ///
-///     ctx.render(|mut render_pass| {
+///     ctx.render(|mut render_pass, _| {
 ///         // Record rendering commands inside an active render pass
 ///         render_pass.draw(0..3, 0..1);
 ///     });
@@ -184,16 +201,25 @@ unsafe impl Sync for RenderSetSharedState {}
 /// // Add to a submission set
 /// app.add_systems(PostUpdate, my_render_system.in_set(DefaultRenderSet));
 /// ```
-pub struct SubmissionState<'world> {
+pub struct SubmissionState<'world, 'state, T: Send + Sync + 'static = ()> {
     state: Mut<'world, RenderSetSharedState>,
+    local: &'state mut SubmissionStateLocal<T>,
 }
-impl SubmissionState<'_> {
-    /// Encode commands outside an active render pass.
+impl<T: Send + Sync + 'static> SubmissionState<'_, '_, T> {
+    /// Encode commands outside an active render pass. `encode` also gets this frame's
+    /// state.
     ///
     /// If the command encoder has an active render pass, `encode` will not be called
     /// and nothing will be encoded.
+    ///
+    /// # Panics
+    /// If `T` isn't `()` and [`set_frame_state`](Self::set_frame_state) hasn't been called
+    /// this frame.
     #[track_caller]
-    pub fn record(&mut self, encode: impl FnOnce(&mut CommandEncoder)) {
+    pub fn record(
+        &mut self,
+        encode: impl for<'a> FnOnce(&mut CommandEncoder<'a>, GPURefMut<'a, T>),
+    ) {
         if let CommandEncoderRenderPassState::InsideRenderPass { start_location, .. } = self.state()
         {
             tracing::warn!(
@@ -203,15 +229,24 @@ impl SubmissionState<'_> {
             );
             return;
         }
-        encode(&mut self.state.encoder);
+        let frame_state = self.frame_state();
+        encode(&mut self.state.encoder, frame_state);
     }
 
-    /// Encode commands on an active render pass.
+    /// Encode commands on an active render pass. `encode` also gets this frame's state.
     ///
     /// If the command encoder doesn't already have an active render pass,
     /// `encode` will not be called and nothing will be encoded.
+    ///
+    /// # Panics
+    /// If `T` isn't `()` and [`set_frame_state`](Self::set_frame_state) hasn't been called
+    /// this frame.
     #[track_caller]
-    pub fn render(&mut self, encode: impl FnOnce(RenderPass)) {
+    pub fn render(
+        &mut self,
+        encode: impl for<'a, 'b> FnOnce(RenderPass<'a, 'b>, GPURefMut<'b, T>),
+    ) {
+        let frame_state = self.frame_state();
         let Some(pass) = self.state.encoder.continue_rendering() else {
             tracing::warn!(
                 "`SubmissionState::render` called at {} without an active render pass",
@@ -219,7 +254,51 @@ impl SubmissionState<'_> {
             );
             return;
         };
-        encode(pass);
+        encode(pass, frame_state);
+    }
+
+    /// Associate the current frame with a value of a generic type `T`.
+    /// The value will have its lifetime tied to the current submission represented by this `SubmissionState`.
+    /// This will also return a previously set value that the application passed in a few frames
+    /// ago. Internally, frame states are maintained in a ring buffer keyed by the frame index.
+    /// Up to [`FRAMES_IN_FLIGHT`] instances of state may coexist concurrently.
+    ///
+    /// Panics if called twice in a frame.
+    #[track_caller]
+    pub fn set_frame_state(&mut self, value: T) -> Option<T> {
+        let frame = self.state.frame_index;
+        assert!(
+            self.local.last_set_frame != frame,
+            "`SubmissionState::set_frame_state` called twice in a frame"
+        );
+        let finished = self.local.frame_states.pop_if_full();
+        self.local.frame_states.push(value);
+        self.local.last_set_frame = frame;
+        finished
+    }
+
+    #[track_caller]
+    fn frame_state(&self) -> GPURefMut<'static, T> {
+        let value: &T = if self.local.last_set_frame == self.state.frame_index {
+            self.local.frame_states.peek_back()
+        } else if TypeId::of::<T>() == TypeId::of::<()>() {
+            // SAFETY: `T` is `()`.
+            unsafe { &*std::ptr::from_ref(&()).cast::<T>() }
+        } else {
+            panic!(
+                "`SubmissionState<{}>::set_frame_state` must be called before any commands\
+                can be recorded in the current system. If you do not need per-frame states\
+                for the current system, use SubmissionState without any generic types",
+                std::any::type_name::<T>()
+            );
+        };
+        // SAFETY: `record` and `render` hand the token to closures generic over its
+        // lifetime, so it can't outlive their call, which holds `&mut self`: the state
+        // stays where it is. It stays in `frame_states` until `FRAMES_IN_FLIGHT` more
+        // calls to `set_frame_state`, in as many later frames, by when the GPU has
+        // finished this frame's submission. Until then, the host only reaches the states
+        // `set_frame_state` returns, which the GPU has finished with.
+        unsafe { GPURefMut::new_unchecked(value) }
     }
 
     pub fn state(&self) -> &CommandEncoderRenderPassState {
@@ -272,13 +351,34 @@ impl SubmissionState<'_> {
     }
 }
 
-unsafe impl SystemParam for SubmissionState<'_> {
-    type State = ComponentId;
+/// Local state of a [`SubmissionState`] system param.
+pub struct SubmissionStateLocal<T> {
+    /// The submission set's [`RenderSetSharedState`].
+    id: ComponentId,
+    /// The frame states the GPU may still use, oldest first.
+    frame_states: RingBuffer<T, FRAMES_IN_FLIGHT>,
+    /// The frame index of the last [`SubmissionState::set_frame_state`] call.
+    /// Starts at 0.
+    last_set_frame: u64,
+}
 
-    type Item<'world, 'state> = SubmissionState<'world>;
+impl<T> SubmissionStateLocal<T> {
+    fn new(id: ComponentId) -> Self {
+        Self {
+            id,
+            frame_states: RingBuffer::new(),
+            last_set_frame: 0,
+        }
+    }
+}
 
-    fn init_state(_world: &mut World) -> ComponentId {
-        ComponentId::new(usize::MAX)
+unsafe impl<T: Send + Sync + 'static> SystemParam for SubmissionState<'_, '_, T> {
+    type State = SubmissionStateLocal<T>;
+
+    type Item<'world, 'state> = SubmissionState<'world, 'state, T>;
+
+    fn init_state(_world: &mut World) -> Self::State {
+        SubmissionStateLocal::new(ComponentId::new(usize::MAX))
     }
 
     unsafe fn get_param<'world, 'state>(
@@ -288,7 +388,7 @@ unsafe impl SystemParam for SubmissionState<'_> {
         _change_tick: Tick,
     ) -> Result<Self::Item<'world, 'state>, bevy_ecs::system::SystemParamValidationError> {
         unsafe {
-            if *state == ComponentId::new(usize::MAX) {
+            if state.id == ComponentId::new(usize::MAX) {
                 panic!(
                     "System {} was never added to a SubmissionSet!",
                     system_meta.name()
@@ -296,7 +396,7 @@ unsafe impl SystemParam for SubmissionState<'_> {
             }
             // A submission set's state is made once the set has systems besides its
             // prelude and submission systems, which are skipped until then.
-            let Some(value) = world.get_resource_mut_by_id(*state) else {
+            let Some(value) = world.get_resource_mut_by_id(state.id) else {
                 return Err(
                     bevy_ecs::system::SystemParamValidationError::skipped::<Self>(
                         "its submission set has no other systems",
@@ -305,6 +405,7 @@ unsafe impl SystemParam for SubmissionState<'_> {
             };
             Ok(SubmissionState {
                 state: value.with_type(),
+                local: state,
             })
         }
     }
@@ -315,7 +416,7 @@ unsafe impl SystemParam for SubmissionState<'_> {
         config: &mut dyn std::any::Any,
     ) {
         if let Some(config) = config.downcast_mut::<RenderSetSharedStateConfig>() {
-            *state = config.id;
+            state.id = config.id;
             config.used = true;
         }
     }
@@ -352,9 +453,9 @@ unsafe impl SystemParam for SubmissionState<'_> {
 
         // User systems are only configured after initialization, so the build pass
         // declares their write instead.
-        if *state != ComponentId::new(usize::MAX) {
+        if state.id != ComponentId::new(usize::MAX) {
             let mut shared_state_write = FilteredAccess::default();
-            shared_state_write.add_write(*state);
+            shared_state_write.add_write(state.id);
             shared_state_write.and_with(IS_RESOURCE);
             if system_access.try_add(shared_state_write).is_err() {
                 panic!(
@@ -389,15 +490,18 @@ impl RenderSetSharedStateConfig {
 // SAFETY: `RenderSetSharedStateConfig` is only constructed by `add_submission_set` and
 // `SubmissionSetsPass`, with the component ID `add_submission_set` registered for the
 // set's `RenderSetSharedState` resource.
-unsafe impl<'w> SystemParamBuilder<SubmissionState<'w>> for RenderSetSharedStateConfig {
-    fn build(self, _world: &mut World) -> ComponentId {
-        self.id
+unsafe impl<'w, 's, T: Send + Sync + 'static> SystemParamBuilder<SubmissionState<'w, 's, T>>
+    for RenderSetSharedStateConfig
+{
+    fn build(self, _world: &mut World) -> SubmissionStateLocal<T> {
+        SubmissionStateLocal::new(self.id)
     }
 }
 
 pub(crate) fn prelude_system(mut shared: SubmissionState) {
     let shared = shared.state.as_mut();
     shared.stage_index = 0;
+    shared.frame_index += 1;
     assert!(shared.recording_command_buffer.is_none());
     let mut cb =
         if let Some(mut reused_command_buffer) = shared.pending_command_buffers.pop_if_full() {
@@ -437,7 +541,7 @@ pub(crate) fn submission_system(
     mut shared: SubmissionState,
     mut queue: Queue<()>, // built with `QueueConfig`.
 ) {
-    shared.record(|_| {}); // Close any open encoders.
+    shared.record(|_, _| {}); // Close any open encoders.
     let shared = shared.state.as_mut();
     unsafe {
         shared.encoder.reset();
@@ -531,6 +635,17 @@ impl<T, const N: usize> RingBuffer<T, N> {
             panic!()
         }
         unsafe { self.items[self.start as usize].assume_init_ref() }
+    }
+    /// The newest item.
+    pub fn peek_back(&self) -> &T {
+        if self.is_empty() {
+            panic!()
+        }
+        let mut location = self.start + self.len - 1;
+        if location >= N as u32 {
+            location -= N as u32;
+        }
+        unsafe { self.items[location as usize].assume_init_ref() }
     }
     #[allow(dead_code)]
     pub fn peek_mut(&mut self) -> &mut T {
@@ -765,8 +880,12 @@ mod tests {
 
         buf.push(34);
         assert_eq!(buf.len(), 3);
+        assert_eq!(*buf.peek_back(), 34);
         assert_eq!(buf.pop(), 12);
+        buf.push(45);
+        assert_eq!(*buf.peek_back(), 45);
         assert_eq!(buf.pop(), 23);
         assert_eq!(buf.pop(), 34);
+        assert_eq!(buf.pop(), 45);
     }
 }

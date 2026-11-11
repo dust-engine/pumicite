@@ -49,7 +49,7 @@ fn ui_example_system(mut contexts: EguiContexts, mut state: Local<UIState>) {
 /// is so that egui can piggy-back on an already existing render pass and doesn't
 /// have to start a new one - important for mobile performance.
 fn start_main_render_pass(mut ctx: SubmissionState, mut swapchain: ResMut<Swapchain>) {
-    ctx.record(|encoder| {
+    ctx.record(|encoder, _| {
         let Some(current_swapchain_image) = swapchain.current_image() else {
             return;
         };
