@@ -94,4 +94,3 @@ impl Component for crate::Surface {
     const STORAGE_TYPE: StorageType = StorageType::Table;
     type Mutability = Immutable;
 }
-

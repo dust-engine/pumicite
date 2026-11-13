@@ -877,8 +877,8 @@ impl<'a> CommandEncoder<'a> {
     ///   and memory regions that will be touched by `after.access` are invalidated.
     /// - Transition the image layout from `old_layout` to `new_layout`
     /// - Transfers ownership of the image from `src_queue_family` to `dst_queue_family`
-    /// 
-    /// 
+    ///
+    ///
     /// The receiving queue family must record a matching barrier, acquiring the image, before
     /// using it, unless it discards the image's contents. A release ignores `after`, and an
     /// acquire ignores `before`.

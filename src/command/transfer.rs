@@ -38,6 +38,31 @@ impl<'a> CommandEncoder<'a> {
         }
     }
 
+    /// Fills `size` bytes of `buffer`, starting `offset` bytes in, with copies
+    /// of `value`. `offset` and `size` must be multiples of 4.
+    pub fn fill_buffer<B: BufferLike>(
+        &mut self,
+        buffer: impl Into<GPURefMut<'a, B>>,
+        offset: vk::DeviceSize,
+        size: vk::DeviceSize,
+        value: u32,
+    ) {
+        debug_assert!(matches!(
+            self.render_pass_state(),
+            CommandEncoderRenderPassState::OutsideRenderPass
+        ));
+        let buffer = buffer.into();
+        unsafe {
+            self.device().cmd_fill_buffer(
+                self.buffer().buffer,
+                buffer.vk_handle(),
+                buffer.offset() + offset,
+                size,
+                value,
+            );
+        }
+    }
+
     /// Copies the entire contents of one buffer to another.
     ///
     /// The copy size is the minimum of the source and destination buffer sizes.
