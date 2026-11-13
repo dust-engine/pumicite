@@ -38,6 +38,27 @@ impl<'a> CommandEncoder<'a> {
         }
     }
 
+    pub fn fill_buffer<B: BufferLike>(
+        &mut self,
+        buffer: impl Into<GPURefMut<'a, B>>,
+        value: u32,
+    ) {
+        debug_assert!(matches!(
+            self.render_pass_state(),
+            CommandEncoderRenderPassState::OutsideRenderPass
+        ));
+        let buffer = buffer.into();
+        unsafe {
+            self.device().cmd_fill_buffer(
+                self.buffer().buffer,
+                buffer.vk_handle(),
+                buffer.offset(),
+                buffer.size(),
+                value,
+            );
+        }
+    }
+
     /// Copies the entire contents of one buffer to another.
     ///
     /// The copy size is the minimum of the source and destination buffer sizes.

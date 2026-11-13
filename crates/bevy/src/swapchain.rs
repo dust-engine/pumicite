@@ -67,17 +67,17 @@ App::new().add_systems(PostUpdate, my_render_system.in_set(SwapchainSet));
 use bevy_app::{App, Plugin, Startup};
 use bevy_ecs::prelude::*;
 use glam::Vec4;
+use pumicite::ash::khr::swapchain::Meta as KhrSwapchain;
 use pumicite::ash::vk;
 use pumicite::device::DeviceBuilder;
+#[cfg(feature = "bevy_window")]
+use pumicite::swapchain::SwapchainColorMode;
 use pumicite::{
     ash::khr::surface_maintenance1::Meta as KhrSurfaceMaintenance1,
     ash::khr::swapchain_maintenance1::Meta as KhrSwapchainMaintenance1,
     ash::khr::swapchain_mutable_format::Meta as ExtSwapchainMutableFormat,
     tracking::{Access, ResourceState},
 };
-use pumicite::ash::khr::swapchain::Meta as KhrSwapchain;
-#[cfg(feature = "bevy_window")]
-use pumicite::swapchain::SwapchainColorMode;
 
 use crate::plugin::SubmissionSetConfig;
 use crate::queue::RenderQueue;
@@ -371,12 +371,9 @@ pub(super) fn extract_swapchains(
             create_info.image_format,
             create_info.image_color_space
         );
-        let new_swapchain = pumicite::swapchain::Swapchain::create(
-            device.clone(),
-            surface.clone(),
-            &create_info,
-        )
-        .unwrap();
+        let new_swapchain =
+            pumicite::swapchain::Swapchain::create(device.clone(), surface.clone(), &create_info)
+                .unwrap();
         commands.insert_resource(Swapchain::new(new_swapchain));
         return;
     };

@@ -167,7 +167,7 @@ unsafe impl Sync for RenderSetSharedState {}
 /// [`PumiciteApp::add_submission_set`](crate::PumiciteApp::add_submission_set).
 ///
 /// # Frame State
-/// 
+///
 /// A system may optionally associate each frame with a value with a generic type `T`.
 /// Its lifetime is tied to the current submission represented by this `SubmissionState`.
 /// To set this value for the current frame, use [`set_frame_state`](Self::set_frame_state),
