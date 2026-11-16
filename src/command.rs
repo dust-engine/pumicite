@@ -914,7 +914,7 @@ impl<'a> CommandEncoder<'a> {
     /// # Parameters
     /// - `state`: Mutable reference to the resource's current state
     /// - `access`: The new access pattern for the resource
-    pub fn use_resource<T>(&mut self, state: &mut ResourceState, access: Access) {
+    pub fn use_resource(&mut self, state: &mut ResourceState, access: Access) {
         let memory_barrier = state.transition(access, false);
         self.pending_memory_barrier |= memory_barrier;
     }
