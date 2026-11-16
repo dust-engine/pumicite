@@ -926,6 +926,26 @@ impl_feature_for_ext!(
     khr::maintenance4::Meta
 );
 impl_feature_for_ext!(
+    vk::PhysicalDeviceMaintenance5Features<'static>,
+    khr::maintenance5::Meta
+);
+impl_feature_for_ext!(
+    vk::PhysicalDeviceMaintenance6Features<'static>,
+    khr::maintenance6::Meta
+);
+impl_feature_for_ext!(
+    vk::PhysicalDeviceMaintenance7FeaturesKHR<'static>,
+    khr::maintenance7::Meta
+);
+impl_feature_for_ext!(
+    vk::PhysicalDeviceMaintenance8FeaturesKHR<'static>,
+    khr::maintenance8::Meta
+);
+impl_feature_for_ext!(
+    vk::PhysicalDeviceMaintenance9FeaturesKHR<'static>,
+    khr::maintenance9::Meta
+);
+impl_feature_for_ext!(
     vk::PhysicalDeviceFaultFeaturesEXT<'static>,
     ext::device_fault::Meta
 );
