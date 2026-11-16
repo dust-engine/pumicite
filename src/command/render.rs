@@ -633,10 +633,12 @@ impl<'a> RenderPass<'_, 'a> {
 
     /// Draws non-indexed primitives with draw parameters read from an indirect buffer on GPU timeline.
     ///
-    /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndirectCommand`] structs.
+    /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndirectCommand`] structs,
+    /// starting `indirect_offset` bytes in.
     pub fn draw_indirect<B: BufferLike>(
         &mut self,
         indirect_buffer: impl Into<GPURef<'a, B>>,
+        indirect_offset: vk::DeviceSize,
         draw_count: u32,
         stride: u32,
     ) {
@@ -645,7 +647,7 @@ impl<'a> RenderPass<'_, 'a> {
             self.encoder.device().cmd_draw_indirect(
                 self.encoder.buffer().buffer,
                 indirect_buffer.vk_handle(),
-                indirect_buffer.offset(),
+                indirect_buffer.offset() + indirect_offset,
                 draw_count,
                 stride,
             );
@@ -654,10 +656,12 @@ impl<'a> RenderPass<'_, 'a> {
 
     /// Draws indexed primitives with draw parameters read from an indirect buffer on GPU timeline.
     ///
-    /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndexedIndirectCommand`] structs.
+    /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndexedIndirectCommand`] structs,
+    /// starting `indirect_offset` bytes in.
     pub fn draw_indexed_indirect<B: BufferLike>(
         &mut self,
         indirect_buffer: impl Into<GPURef<'a, B>>,
+        indirect_offset: vk::DeviceSize,
         draw_count: u32,
         stride: u32,
     ) {
@@ -666,7 +670,7 @@ impl<'a> RenderPass<'_, 'a> {
             self.encoder.device().cmd_draw_indexed_indirect(
                 self.encoder.buffer().buffer,
                 indirect_buffer.vk_handle(),
-                indirect_buffer.offset(),
+                indirect_buffer.offset() + indirect_offset,
                 draw_count,
                 stride,
             );
@@ -675,12 +679,15 @@ impl<'a> RenderPass<'_, 'a> {
 
     /// Draws non-indexed primitives with both draw parameters and draw count read from an indirect buffer on GPU timeline.
     ///
-    /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndirectCommand`] structs.
-    /// `count_buffer` contains a `u32` specifying the actual number of draws.
+    /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndirectCommand`] structs,
+    /// starting `indirect_offset` bytes in.
+    /// `count_buffer` contains a `u32`, `count_offset` bytes in, specifying the actual number of draws.
     pub fn draw_indirect_count<B: BufferLike, C: BufferLike>(
         &mut self,
         indirect_buffer: impl Into<GPURef<'a, B>>,
+        indirect_offset: vk::DeviceSize,
         count_buffer: impl Into<GPURef<'a, C>>,
+        count_offset: vk::DeviceSize,
         max_draw_count: u32,
         stride: u32,
     ) {
@@ -690,9 +697,9 @@ impl<'a> RenderPass<'_, 'a> {
             self.encoder.device().cmd_draw_indirect_count(
                 self.encoder.buffer().buffer,
                 indirect_buffer.vk_handle(),
-                indirect_buffer.offset(),
+                indirect_buffer.offset() + indirect_offset,
                 count_buffer.vk_handle(),
-                count_buffer.offset(),
+                count_buffer.offset() + count_offset,
                 max_draw_count,
                 stride,
             );
@@ -701,12 +708,15 @@ impl<'a> RenderPass<'_, 'a> {
 
     /// Draws indexed primitives with draw count from a buffer.
     ///
-    /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndexedIndirectCommand`] structs.
-    /// `count_buffer` contains a `u32` specifying the actual number of draws.
+    /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndexedIndirectCommand`] structs,
+    /// starting `indirect_offset` bytes in.
+    /// `count_buffer` contains a `u32`, `count_offset` bytes in, specifying the actual number of draws.
     pub fn draw_indexed_indirect_count<B: BufferLike, C: BufferLike>(
         &mut self,
         indirect_buffer: impl Into<GPURef<'a, B>>,
+        indirect_offset: vk::DeviceSize,
         count_buffer: impl Into<GPURef<'a, C>>,
+        count_offset: vk::DeviceSize,
         max_draw_count: u32,
         stride: u32,
     ) {
@@ -716,9 +726,9 @@ impl<'a> RenderPass<'_, 'a> {
             self.encoder.device().cmd_draw_indexed_indirect_count(
                 self.encoder.buffer().buffer,
                 indirect_buffer.vk_handle(),
-                indirect_buffer.offset(),
+                indirect_buffer.offset() + indirect_offset,
                 count_buffer.vk_handle(),
-                count_buffer.offset(),
+                count_buffer.offset() + count_offset,
                 max_draw_count,
                 stride,
             );
@@ -754,10 +764,12 @@ impl<'a> RenderPass<'_, 'a> {
     ///
     /// Uses `VK_EXT_mesh_shader` if available, otherwise panics.
     ///
-    /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawIndirectCommand`] structs.
+    /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawMeshTasksIndirectCommandEXT`] structs,
+    /// starting `indirect_offset` bytes in.
     pub fn draw_mesh_tasks_indirect<B: BufferLike>(
         &mut self,
         indirect_buffer: impl Into<GPURef<'a, B>>,
+        indirect_offset: vk::DeviceSize,
         draw_count: u32,
         stride: u32,
     ) {
@@ -771,7 +783,7 @@ impl<'a> RenderPass<'_, 'a> {
                 (extension.fp().cmd_draw_mesh_tasks_indirect_ext)(
                     self.encoder.buffer().buffer,
                     indirect_buffer.vk_handle(),
-                    indirect_buffer.offset(),
+                    indirect_buffer.offset() + indirect_offset,
                     draw_count,
                     stride,
                 );
@@ -788,12 +800,15 @@ impl<'a> RenderPass<'_, 'a> {
     ///
     /// Uses `VK_EXT_mesh_shader` if available, otherwise panics.
     ///
-    /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawMeshTasksIndirectCommandEXT`] structs.
-    /// `count_buffer` contains a `u32` specifying the actual number of draws.
+    /// `indirect_buffer` should contain `draw_count` number of [`vk::DrawMeshTasksIndirectCommandEXT`] structs,
+    /// starting `indirect_offset` bytes in.
+    /// `count_buffer` contains a `u32`, `count_offset` bytes in, specifying the actual number of draws.
     pub fn draw_mesh_tasks_indirect_count<B: BufferLike, C: BufferLike>(
         &mut self,
         indirect_buffer: impl Into<GPURef<'a, B>>,
+        indirect_offset: vk::DeviceSize,
         count_buffer: impl Into<GPURef<'a, C>>,
+        count_offset: vk::DeviceSize,
         max_draw_count: u32,
         stride: u32,
     ) {
@@ -808,9 +823,9 @@ impl<'a> RenderPass<'_, 'a> {
                 (extension.fp().cmd_draw_mesh_tasks_indirect_count_ext)(
                     self.encoder.buffer().buffer,
                     indirect_buffer.vk_handle(),
-                    indirect_buffer.offset(),
+                    indirect_buffer.offset() + indirect_offset,
                     count_buffer.vk_handle(),
-                    count_buffer.offset(),
+                    count_buffer.offset() + count_offset,
                     max_draw_count,
                     stride,
                 );
