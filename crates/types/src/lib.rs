@@ -23,13 +23,69 @@ pub struct ComputePipeline {
     pub dispatch_base: bool,
 }
 
-#[derive(Serialize, Deserialize, Default)]
-#[serde(untagged)]
+/// Serialized untagged in human-readable formats like RON, so that a static state
+/// is written bare (`true`, not `Static(true)`), and tagged otherwise, since
+/// postcard can't read untagged enums back.
+#[derive(Default)]
 pub enum OptionalDynamicState<T, const DYNAMIC_STATE: i32> {
     Dynamic,
     #[default]
     None,
     Static(T),
+}
+
+impl<T: Serialize, const DYNAMIC_STATE: i32> Serialize for OptionalDynamicState<T, DYNAMIC_STATE> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        const NAME: &str = "OptionalDynamicState";
+        if serializer.is_human_readable() {
+            match self {
+                Self::Dynamic | Self::None => serializer.serialize_unit(),
+                Self::Static(value) => value.serialize(serializer),
+            }
+        } else {
+            match self {
+                Self::Dynamic => serializer.serialize_unit_variant(NAME, 0, "Dynamic"),
+                Self::None => serializer.serialize_unit_variant(NAME, 1, "None"),
+                Self::Static(value) => {
+                    serializer.serialize_newtype_variant(NAME, 2, "Static", value)
+                }
+            }
+        }
+    }
+}
+
+impl<'de, T: Deserialize<'de>, const DYNAMIC_STATE: i32> Deserialize<'de>
+    for OptionalDynamicState<T, DYNAMIC_STATE>
+{
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if deserializer.is_human_readable() {
+            #[derive(Deserialize)]
+            #[serde(untagged)]
+            enum Untagged<T> {
+                Dynamic,
+                None,
+                Static(T),
+            }
+            Ok(match Untagged::deserialize(deserializer)? {
+                Untagged::Dynamic => Self::Dynamic,
+                Untagged::None => Self::None,
+                Untagged::Static(value) => Self::Static(value),
+            })
+        } else {
+            #[derive(Deserialize)]
+            #[serde(rename = "OptionalDynamicState")]
+            enum Tagged<T> {
+                Dynamic,
+                None,
+                Static(T),
+            }
+            Ok(match Tagged::deserialize(deserializer)? {
+                Tagged::Dynamic => Self::Dynamic,
+                Tagged::None => Self::None,
+                Tagged::Static(value) => Self::Static(value),
+            })
+        }
+    }
 }
 
 impl<T, const DYNAMIC_STATE: i32> OptionalDynamicState<T, DYNAMIC_STATE> {
@@ -44,11 +100,60 @@ impl<T, const DYNAMIC_STATE: i32> OptionalDynamicState<T, DYNAMIC_STATE> {
         }
     }
 }
-#[derive(Serialize, Deserialize)]
-#[serde(untagged)]
+/// Serialized like [`OptionalDynamicState`]: untagged in human-readable formats,
+/// tagged otherwise.
 pub enum RequiredDynamicState<T, const DYNAMIC_STATE: i32> {
     Dynamic,
     Static(T),
+}
+
+impl<T: Serialize, const DYNAMIC_STATE: i32> Serialize for RequiredDynamicState<T, DYNAMIC_STATE> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        const NAME: &str = "RequiredDynamicState";
+        if serializer.is_human_readable() {
+            match self {
+                Self::Dynamic => serializer.serialize_unit(),
+                Self::Static(value) => value.serialize(serializer),
+            }
+        } else {
+            match self {
+                Self::Dynamic => serializer.serialize_unit_variant(NAME, 0, "Dynamic"),
+                Self::Static(value) => {
+                    serializer.serialize_newtype_variant(NAME, 1, "Static", value)
+                }
+            }
+        }
+    }
+}
+
+impl<'de, T: Deserialize<'de>, const DYNAMIC_STATE: i32> Deserialize<'de>
+    for RequiredDynamicState<T, DYNAMIC_STATE>
+{
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if deserializer.is_human_readable() {
+            #[derive(Deserialize)]
+            #[serde(untagged)]
+            enum Untagged<T> {
+                Dynamic,
+                Static(T),
+            }
+            Ok(match Untagged::deserialize(deserializer)? {
+                Untagged::Dynamic => Self::Dynamic,
+                Untagged::Static(value) => Self::Static(value),
+            })
+        } else {
+            #[derive(Deserialize)]
+            #[serde(rename = "RequiredDynamicState")]
+            enum Tagged<T> {
+                Dynamic,
+                Static(T),
+            }
+            Ok(match Tagged::deserialize(deserializer)? {
+                Tagged::Dynamic => Self::Dynamic,
+                Tagged::Static(value) => Self::Static(value),
+            })
+        }
+    }
 }
 impl<T: Default, const DYNAMIC_STATE: i32> Default for RequiredDynamicState<T, DYNAMIC_STATE> {
     fn default() -> Self {
@@ -1021,5 +1126,44 @@ mod tests {
                 _ => panic!("variant mismatch"),
             }
         }
+    }
+
+    /// The dynamic-state enums read bare static values from RON, and survive a
+    /// postcard round trip, as `ron2bin` and the `.bin` loaders need.
+    #[test]
+    fn test_graphics_pipeline_postcard_roundtrip() {
+        let ron = "
+            GraphicsPipeline(
+                shaders: {
+                    Vertex: (path: \"a.spv\", entry_point: \"vertexMain\"),
+                    Fragment: (path: \"a.spv\", entry_point: \"fragmentMain\"),
+                },
+                topology: TriangleStrip,
+                depth_test_enable: true,
+                depth_compare_op: \">\",
+                depth_format: D32_SFLOAT,
+                attachments: [(blend_enable: false, format: R8G8B8A8_SRGB)],
+            )
+        ";
+        let pipeline: GraphicsPipeline = ron::de::from_str(ron).unwrap();
+        let bytes = postcard::to_allocvec(&pipeline).unwrap();
+        let decoded: GraphicsPipeline = postcard::from_bytes(&bytes).unwrap();
+        assert!(matches!(
+            decoded.topology,
+            RequiredDynamicState::Static(PrimitiveTopology::TriangleStrip)
+        ));
+        assert!(matches!(
+            decoded.depth_test_enable,
+            RequiredDynamicState::Static(true)
+        ));
+        assert!(matches!(
+            &decoded.depth_compare_op,
+            RequiredDynamicState::Static(op) if op == ">"
+        ));
+        assert!(matches!(decoded.vertex_bindings, OptionalDynamicState::None));
+        assert!(matches!(
+            decoded.attachments[0].blend_enable,
+            RequiredDynamicState::Static(false)
+        ));
     }
 }
