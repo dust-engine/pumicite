@@ -866,7 +866,11 @@ impl_feature_for_ext!(
 );
 impl_feature_for_ext!(
     vk::PhysicalDeviceScalarBlockLayoutFeatures<'static>,
-    khr::shader_float16_int8::Meta
+    ext::scalar_block_layout::Meta
+);
+impl_feature_for_ext!(
+    vk::PhysicalDeviceUniformBufferStandardLayoutFeatures<'static>,
+    khr::uniform_buffer_standard_layout::Meta
 );
 impl_feature_for_ext!(
     vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT<'static>,
