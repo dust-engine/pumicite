@@ -77,6 +77,12 @@ project_host_metadata! {
 /// - The view and its image must stay valid until that owner is dropped.
 /// - The other methods must describe the view accurately.
 pub unsafe trait ImageViewLike: AsVkHandle<Handle = vk::ImageView> + Send + Sync {
+    /// Returns the image behind the view, for barriers on the subresources it covers.
+    fn image_handle(&self) -> vk::Image;
+
+    /// Returns the aspects of the image the view covers.
+    fn aspects(&self) -> vk::ImageAspectFlags;
+
     /// Returns the image view type (1D, 2D, 3D, Cube, etc.).
     fn ty(&self) -> vk::ImageViewType;
 
@@ -568,6 +574,8 @@ impl<T: ImageLike + HasDevice> Drop for MipImageViews<T> {
 /// Returned by the view accessors on [`FullImageView`], [`SrgbImageView`], and
 /// [`UintImageView`]. Implements [`ImageViewLike`] and [`AsVkHandle`].
 pub struct ImageViewItem {
+    image: vk::Image,
+    aspects: vk::ImageAspectFlags,
     ty: vk::ImageViewType,
     format: vk::Format,
     mip_levels: std::ops::Range<u32>,
@@ -586,6 +594,12 @@ unsafe impl NoHostMapping for ImageViewItem {}
 // own the image and destroy the view on drop. They aren't `Clone` and have no public
 // constructor, so they're only reachable through their owner.
 unsafe impl ImageViewLike for ImageViewItem {
+    fn image_handle(&self) -> vk::Image {
+        self.image
+    }
+    fn aspects(&self) -> vk::ImageAspectFlags {
+        self.aspects
+    }
     fn ty(&self) -> vk::ImageViewType {
         self.ty
     }
@@ -658,6 +672,8 @@ pub trait ImageExt: ImageLike {
             )?;
             Ok(FullImageView {
                 view: ImageViewItem {
+                    image: self.vk_handle(),
+                    aspects: self.aspects(),
                     ty: view_type,
                     format: self.format(),
                     mip_levels: 0..self.mip_level_count(),
@@ -720,6 +736,8 @@ pub trait ImageExt: ImageLike {
                 }
             };
             views.push(ImageViewItem {
+                image: self.vk_handle(),
+                aspects: self.aspects(),
                 ty: view_type,
                 format: self.format(),
                 mip_levels: level..level + 1,
@@ -790,6 +808,8 @@ pub trait ImageExt: ImageLike {
             )?;
             Ok(SrgbImageView {
                 srgb_view: ImageViewItem {
+                    image: self.vk_handle(),
+                    aspects: self.aspects(),
                     ty: view_type,
                     format: srgb_format,
                     mip_levels: 0..self.mip_level_count(),
@@ -858,6 +878,8 @@ pub trait ImageExt: ImageLike {
             )?;
             Ok(UintImageView {
                 uint_view: ImageViewItem {
+                    image: self.vk_handle(),
+                    aspects: self.aspects(),
                     ty: view_type,
                     format: uint_format,
                     mip_levels: 0..self.mip_level_count(),
@@ -921,6 +943,8 @@ pub trait ImageExt: ImageLike {
             )?;
             Ok(SwizzledImageView {
                 swizzled_view: ImageViewItem {
+                    image: self.vk_handle(),
+                    aspects: self.aspects(),
                     ty: view_type,
                     format: self.format(),
                     mip_levels: 0..self.mip_level_count(),

@@ -81,7 +81,7 @@ use crate::{
     Device, HasDevice,
     buffer::BufferLike,
     fault::DeviceResult,
-    image::ImageLike,
+    image::{ImageLike, ImageViewLike},
     sync::{GPUMutex, SharedSemaphore, Timestamp},
     tracking::{Access, MemoryBarrier, ResourceState},
     utils::AsVkHandle,
@@ -986,15 +986,81 @@ impl<'a> CommandEncoder<'a> {
         array_layer_range: Range<u32>,
         discard_content: bool,
     ) {
+        let writable = is_writable_token(&resource);
+        let resource = resource.into();
+        self.use_image_subresources(
+            resource.vk_handle(),
+            vk::ImageSubresourceRange {
+                aspect_mask: resource.aspects(),
+                base_mip_level: mip_level_range.start,
+                level_count: mip_level_range.end - mip_level_range.start,
+                base_array_layer: array_layer_range.start,
+                layer_count: array_layer_range.end - array_layer_range.start,
+            },
+            writable,
+            state,
+            access,
+            layout,
+            discard_content,
+        );
+    }
+
+    /// Transitions the part of an image a view covers to a new state, as
+    /// [`use_image_resource`](Self::use_image_resource) does for the view's image, aspects, mip
+    /// levels and array layers. A token for the view stands for one to its image: writing the
+    /// image, or changing its layout, takes a [`GPURefMut`].
+    #[track_caller]
+    pub fn use_image_view_resource<V: ImageViewLike + 'a>(
+        &mut self,
+        view: impl Into<GPURef<'a, V>>,
+        state: &mut ResourceState,
+        access: Access,
+        layout: vk::ImageLayout,
+        discard_content: bool,
+    ) {
+        let writable = is_writable_token(&view);
+        let view = view.into();
+        // Safety: only the view's handles and metadata are read.
+        let view = unsafe { view.get_unchecked() };
+        let (mip_levels, array_layers) = (view.mip_levels(), view.array_layers());
+        self.use_image_subresources(
+            view.image_handle(),
+            vk::ImageSubresourceRange {
+                aspect_mask: view.aspects(),
+                base_mip_level: mip_levels.start,
+                level_count: mip_levels.end - mip_levels.start,
+                base_array_layer: array_layers.start,
+                layer_count: array_layers.end - array_layers.start,
+            },
+            writable,
+            state,
+            access,
+            layout,
+            discard_content,
+        );
+    }
+
+    /// Records the barrier for `access` to `subresources` of `image`, whose state is `state`,
+    /// in `layout`. `writable` is whether the caller's token lets the GPU write the image.
+    #[track_caller]
+    #[allow(clippy::too_many_arguments)]
+    fn use_image_subresources(
+        &mut self,
+        image: vk::Image,
+        subresources: vk::ImageSubresourceRange,
+        writable: bool,
+        state: &mut ResourceState,
+        access: Access,
+        layout: vk::ImageLayout,
+        discard_content: bool,
+    ) {
         let with_layout_transition = state.layout != layout;
         // A layout transition or discarding content writes the image, even for read access.
         assert!(
-            (access.is_readonly() && !with_layout_transition && !discard_content)
-                || is_writable_token(&resource),
-            "use_image_resource: {access:?} in layout {layout:?} (from {:?}, discard_content: {discard_content}) writes the image and requires a GPURefMut, but got a GPURef",
+            (access.is_readonly() && !with_layout_transition && !discard_content) || writable,
+            "{access:?} in layout {layout:?} (from {:?}, discard_content: {discard_content}) writes the image and requires a GPURefMut, but got a GPURef",
             state.layout
         );
-        let resource = resource.into();
         let memory_barrier = state.transition(access, with_layout_transition);
         if with_layout_transition {
             // Layout transition requires image barrier
@@ -1010,14 +1076,8 @@ impl<'a> CommandEncoder<'a> {
                     state.layout
                 },
                 new_layout: layout,
-                image: resource.vk_handle(),
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: resource.aspects(),
-                    base_mip_level: mip_level_range.start,
-                    level_count: mip_level_range.end - mip_level_range.start,
-                    base_array_layer: array_layer_range.start,
-                    layer_count: array_layer_range.end - array_layer_range.start,
-                },
+                image,
+                subresource_range: subresources,
                 ..Default::default()
             });
         } else {

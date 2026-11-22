@@ -249,8 +249,9 @@ impl SwapchainInner {
                         srgb_format
                             .map(|f| f.into())
                             .unwrap_or(vk::Format::UNDEFINED),
+                        image,
                     ),
-                    linear_view: SwapchainImageView(linear_view, linear_format.into()),
+                    linear_view: SwapchainImageView(linear_view, linear_format.into(), image),
                     acquire_semaphore,
                     acquire_fence,
                     present_semaphore,
@@ -622,19 +623,27 @@ unsafe impl ImageLike for SwapchainImageInner {
     }
 }
 
-pub struct SwapchainImageView(vk::ImageView, vk::Format);
+pub struct SwapchainImageView(vk::ImageView, vk::Format, vk::Image);
 impl AsVkHandle for SwapchainImageView {
     type Handle = vk::ImageView;
     fn vk_handle(&self) -> Self::Handle {
         self.0
     }
 }
-// Safety: a `SwapchainImageView` holds only a view handle and its format.
+// Safety: a `SwapchainImageView` holds only a view handle, its format and its image's handle.
 unsafe impl crate::command::NoHostMapping for SwapchainImageView {}
 // Safety: `SwapchainImageView`s only exist inside the `SwapchainImageInner` that owns their
 // image, which destroys them on drop. Their fields are private and they aren't `Clone`, so
 // they're only reachable through it.
 unsafe impl ImageViewLike for SwapchainImageView {
+    fn image_handle(&self) -> vk::Image {
+        self.2
+    }
+
+    fn aspects(&self) -> vk::ImageAspectFlags {
+        vk::ImageAspectFlags::COLOR
+    }
+
     fn ty(&self) -> vk::ImageViewType {
         vk::ImageViewType::TYPE_2D
     }
