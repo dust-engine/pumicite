@@ -1160,7 +1160,10 @@ mod tests {
             &decoded.depth_compare_op,
             RequiredDynamicState::Static(op) if op == ">"
         ));
-        assert!(matches!(decoded.vertex_bindings, OptionalDynamicState::None));
+        assert!(matches!(
+            decoded.vertex_bindings,
+            OptionalDynamicState::None
+        ));
         assert!(matches!(
             decoded.attachments[0].blend_enable,
             RequiredDynamicState::Static(false)

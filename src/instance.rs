@@ -45,7 +45,7 @@
 use crate::{Extension, MissingFeatureError, device::DeviceMetaBuilder, utils::Version};
 use ash::{
     VkResult,
-    vk::{self, ExtensionMeta},
+    vk::{self, ExtensionMeta, TaggedStructure},
 };
 use std::{
     any::Any,
@@ -102,6 +102,8 @@ pub struct InstanceCreateInfo {
     pub engine_version: Version,
     /// The Vulkan API version to use.
     pub api_version: Version,
+    /// Drivers provided by the application.
+    pub drivers: Vec<vk::DirectDriverLoadingInfoLUNARG<'static>>,
 }
 
 impl Default for InstanceCreateInfo {
@@ -113,6 +115,7 @@ impl Default for InstanceCreateInfo {
             engine_name: Cow::Borrowed(c"Unnamed Engine"),
             engine_version: Default::default(),
             api_version: Version::new(0, 1, 3, 0),
+            drivers: Vec::new(),
         }
     }
 }
@@ -395,7 +398,10 @@ impl InstanceBuilder {
     /// # Returns
     ///
     /// `Ok(Instance)` on success, or a Vulkan error if instance creation fails.
-    pub fn build(self) -> VkResult<Instance> {
+    pub fn build(mut self) -> VkResult<Instance> {
+        let mut drivers = vk::DirectDriverLoadingListLUNARG::default()
+            .mode(vk::DirectDriverLoadingModeLUNARG::EXCLUSIVE)
+            .drivers(&self.info.drivers);
         let application_info = vk::ApplicationInfo {
             p_application_name: self.info.application_name.as_ptr(),
             application_version: self.info.application_version.0,
@@ -405,20 +411,27 @@ impl InstanceBuilder {
             ..Default::default()
         };
 
+        let mut create_info = vk::InstanceCreateInfo {
+            p_application_info: &application_info,
+            enabled_layer_count: self.enabled_layers.len() as u32,
+            pp_enabled_layer_names: self.enabled_layers.as_ptr(),
+            flags: self.info.flags,
+            ..Default::default()
+        };
+        if !self.info.drivers.is_empty() {
+            // If the loader doesn't have this extension, `vkCreateInstance` fails
+            // rather than falling back to the installed drivers.
+            self.enabled_extensions
+                .insert(ash::lunarg::direct_driver_loading::NAME, None);
+            create_info = create_info.push(&mut drivers);
+        }
         let enabled_extension_names = self
             .enabled_extensions
             .keys()
             .map(|name| name.as_ptr())
             .collect::<Vec<_>>();
-        let create_info = vk::InstanceCreateInfo {
-            p_application_info: &application_info,
-            enabled_layer_count: self.enabled_layers.len() as u32,
-            pp_enabled_layer_names: self.enabled_layers.as_ptr(),
-            enabled_extension_count: enabled_extension_names.len() as u32,
-            pp_enabled_extension_names: enabled_extension_names.as_ptr(),
-            flags: self.info.flags,
-            ..Default::default()
-        };
+        create_info.enabled_extension_count = enabled_extension_names.len() as u32;
+        create_info.pp_enabled_extension_names = enabled_extension_names.as_ptr();
         // Safety: No Host synchronization rules for vkCreateInstance.
         let instance = unsafe { self.entry.create_instance(&create_info, None)? };
         let extensions: BTreeMap<&'static CStr, _> = self
