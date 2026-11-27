@@ -243,6 +243,7 @@ impl Plugin for PumicitePlugin {
             } => physical_devices
                 .iter()
                 .enumerate()
+                .rev() // If multiple drivers have the same key, use the first listed one
                 .max_by_key(|(_, device)| {
                     let device_type = device.properties().device_type;
                     let driver_id = device
