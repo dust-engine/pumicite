@@ -185,8 +185,8 @@ impl Default for PumicitePlugin {
                 preferred_drivers: {
                     #[cfg(target_vendor = "apple")]
                     {
-                        // Apple platforms: prefer KosmicKrisp over MoltenVK
-                        smallvec::smallvec![vk::DriverId::MESA_KOSMICKRISP, vk::DriverId::MOLTENVK,]
+                        // Apple platforms: prefer KosmicKrisp
+                        smallvec::smallvec![vk::DriverId::MESA_KOSMICKRISP,]
                     }
                     #[cfg(target_os = "linux")]
                     {

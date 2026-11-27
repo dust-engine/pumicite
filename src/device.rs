@@ -505,17 +505,6 @@ impl DeviceBuilder {
             .unwrap();
         this.enable_feature::<vk::PhysicalDeviceMaintenance4Features>(|f| &mut f.maintenance4)
             .unwrap();
-
-        #[cfg(target_vendor = "apple")]
-        {
-            // Allow the enumeration of non-conformant implementations
-            if this
-                .enable_extension::<ash::khr::portability_subset::Meta>()
-                .is_ok()
-            {
-                tracing::warn!("Running on a Vulkan portability implementation");
-            }
-        }
         this
     }
 

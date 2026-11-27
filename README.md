@@ -80,7 +80,7 @@ fn clear(mut swapchain: ResMut<Swapchain>, mut state: SubmissionState, time: Res
 
 - **Rust**: Nightly
 - **Vulkan**: 1.2+ with `VK_KHR_synchronization2` and `VK_KHR_timeline_semaphore`
-- **Platform**: Windows, Linux, macOS (via MoltenVK or KosmicKrisp)
+- **Platform**: Windows, Linux, macOS (via KosmicKrisp)
 
 ## Getting Started
 

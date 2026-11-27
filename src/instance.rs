@@ -285,16 +285,6 @@ impl InstanceBuilder {
             enabled_layers: Vec::new(),
             info: InstanceCreateInfo::default(),
         };
-        #[cfg(target_vendor = "apple")]
-        {
-            // Allow the enumeration of non-conformant implementations
-            if this
-                .enable_extension::<ash::khr::portability_enumeration::Meta>()
-                .is_ok()
-            {
-                this.info.flags |= vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR;
-            }
-        }
 
         this
     }
